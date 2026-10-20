@@ -3,11 +3,21 @@ import { drizzle } from 'drizzle-orm/pglite';
 import { type Db, runMigrations } from '@/db/client';
 import * as schema from '@/db/schema';
 
+// Migrating a fresh PGlite takes seconds; cloning a migrated template takes about half a second.
+let template: Promise<PGlite> | undefined;
+function migratedTemplate(): Promise<PGlite> {
+  template ??= (async () => {
+    const client = new PGlite();
+    await runMigrations(drizzle(client, { schema }) as unknown as Db, 'pglite');
+    return client;
+  })();
+  return template;
+}
+
 /** Fresh in-memory Postgres with all migrations applied. */
 export async function createTestDb(): Promise<{ db: Db; close: () => Promise<void> }> {
-  const client = new PGlite();
+  const client = (await (await migratedTemplate()).clone()) as PGlite;
   const db = drizzle(client, { schema }) as unknown as Db;
-  await runMigrations(db, 'pglite');
   return { db, close: () => client.close() };
 }
 

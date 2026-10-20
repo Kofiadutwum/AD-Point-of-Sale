@@ -1,0 +1,28 @@
+export const PERMISSIONS = [
+  'manage_shop_settings', 'manage_staff', 'manage_devices', 'manage_products', 'receive_stock',
+  'make_sale', 'give_discount', 'approve_actions', 'view_dashboard', 'view_reports', 'export_data',
+] as const;
+export type Permission = (typeof PERMISSIONS)[number];
+export type RolePreset = 'owner' | 'manager' | 'cashier';
+
+export const ROLE_PRESETS: Record<RolePreset, readonly Permission[]> = {
+  owner: PERMISSIONS,
+  manager: PERMISSIONS.filter((p) => p !== 'manage_shop_settings'),
+  cashier: ['make_sale'],
+};
+
+/** What a shop whose subscription is past its grace period may still do. */
+export const READ_ONLY_PERMISSIONS: readonly Permission[] = ['view_dashboard', 'view_reports', 'export_data'];
+
+export type ShopType = 'retail' | 'pharmacy' | 'food';
+export const SHOP_TYPES: readonly ShopType[] = ['retail', 'pharmacy', 'food'];
+
+export const DEFAULT_MODULES: Record<ShopType, readonly string[]> = {
+  retail: ['serials', 'price_lists', 'scale_barcodes'],
+  pharmacy: ['batches', 'prescriptions', 'units'],
+  food: ['addons', 'tickets', 'kitchen', 'recipes'],
+};
+
+export function isPermission(value: string): value is Permission {
+  return (PERMISSIONS as readonly string[]).includes(value);
+}
