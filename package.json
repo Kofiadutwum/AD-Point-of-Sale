@@ -10,8 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx scripts/migrate.ts",
-    "create-platform-admin": "tsx scripts/create-platform-admin.ts"
+    "db:migrate": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/migrate.ts",
+    "create-platform-admin": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/create-platform-admin.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.10",
