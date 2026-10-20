@@ -8,6 +8,11 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
   const ctx = await pageCtx(slug, null);
   const home = await getHomeSummary(getDb(), ctx, new Date());
   const links = [
+    { href: `/${slug}/app/sell`, label: 'Sell', allowed: ctx.permissions.includes('make_sale') },
+    { href: `/${slug}/app/dashboard`, label: 'Dashboard', allowed: ctx.permissions.includes('view_dashboard') },
+    { href: `/${slug}/app/sales`, label: 'Sales', allowed: ctx.permissions.includes('view_dashboard') },
+    { href: `/${slug}/app/stock/receive`, label: 'Receive stock', allowed: ctx.permissions.includes('receive_stock') },
+    { href: `/${slug}/app/customers`, label: 'Customers', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/products`, label: 'Products', allowed: ctx.permissions.includes('manage_products') },
     { href: `/${slug}/app/price-lists`, label: 'Price lists', allowed: ctx.permissions.includes('manage_products') },
     { href: `/${slug}/app/settings`, label: 'Settings', allowed: ctx.permissions.includes('manage_shop_settings') },
