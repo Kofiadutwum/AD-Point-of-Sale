@@ -9,6 +9,7 @@ import { parseQuantity, rollUpCost, toMilli, validSaleQuantity } from '@/lib/dec
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { lockTenant } from './plan-limits';
+import { variantsInUse } from './usage';
 import {
   type CatalogueError, checkCodes, cleanVariant, type Fail, fail, insertVariant, isUuid, type NewVariantInput, normaliseSku,
   scaleCodeProblem, scaleLayoutOf, trackingAllowed,
@@ -74,7 +75,7 @@ const variantFieldsSchema = z.object({
   allowsFractions: z.boolean(),
 });
 
-export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: VariantFields): Promise<{ ok: true } | Fail<CatalogueError | 'not_found'>> {
+export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: VariantFields): Promise<{ ok: true } | Fail<CatalogueError | 'not_found' | 'in_use'>> {
   assertPermission(ctx, 'manage_products');
   const parsed = variantFieldsSchema.safeParse(input);
   if (!parsed.success) return fail('invalid_input');
@@ -92,6 +93,7 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
     const old = row.variant;
     const scaleItemCode = f.scaleItemCode === undefined ? old.scaleItemCode : f.scaleItemCode; // left out = keep (field hidden while labels are off)
     if (!trackingAllowed(row.tracking, old.kind, f.allowsFractions, scaleItemCode !== null)) return fail('invalid_input');
+    if (f.allowsFractions !== old.allowsFractions && await variantsInUse(tx, [variantId])) return fail('in_use');
     const layout = await scaleLayoutOf(tx, ctx.tenantId);
     // a kept code is inert while scale labels are off; it is checked again when a layout is saved
     const checkScale = scaleItemCode !== null && (layout !== null || f.scaleItemCode !== undefined);
@@ -179,7 +181,7 @@ export async function addUnit(
 
 export async function updateUnit(
   db: Db, ctx: Ctx, unitId: string, input: UnitFields,
-): Promise<{ ok: true } | Fail<'invalid_input' | 'duplicate_name' | 'not_found'>> {
+): Promise<{ ok: true } | Fail<'invalid_input' | 'duplicate_name' | 'not_found' | 'in_use'>> {
   assertPermission(ctx, 'manage_products');
   const u = cleanUnit(input);
   if (!u) return fail('invalid_input');
@@ -190,6 +192,7 @@ export async function updateUnit(
     if (!old) return fail('not_found');
     // the base unit is the stock unit: its factor stays 1 and its price is the variant's base price
     if (old.isBase ? u.factor !== '1.000' || u.pricePesewas !== null : !validFactor(u.factor)) return fail('invalid_input');
+    if (u.factor !== old.factor && await variantsInUse(tx, [old.variantId])) return fail('in_use');
     if (old.isBase && u.name.toLowerCase() !== 'kg') {
       // weight labels give grams of a kg item; renaming its base unit would make the till misread them
       const [v] = await tx.select({ code: variants.scaleItemCode }).from(variants).where(eq(variants.id, old.variantId));

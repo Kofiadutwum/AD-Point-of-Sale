@@ -10,6 +10,7 @@ import { type AccessCode, AccessError, type Ctx, requireContext } from '@/server
 import { hashSecret } from '@/server/crypto';
 import { createProduct, type NewProductInput } from '@/server/products';
 import { createSession } from '@/server/sessions';
+import { type ReceiveLine, receiveStock } from '@/server/stock';
 
 export type SeedUser = {
   key: string; name?: string; email?: string; phone?: string; rolePreset?: RolePreset;
@@ -105,4 +106,10 @@ export async function expectAccess(p: Promise<unknown>, code: AccessCode): Promi
 export async function tillCtxFor(db: Db, shop: SeededShop, userKey: string, now: Date): Promise<Ctx> {
   const { token } = await createSession(db, { tenantId: shop.tenantId, userId: shop.users[userKey].id, kind: 'pin', registerId: shop.registerId }, now);
   return requireContext(db, { slug: shop.slug, sessionToken: token, permission: null }, now);
+}
+
+/** Receives one line of stock; throws when it is refused. */
+export async function stockFor(db: Db, ctx: Ctx, branchId: string, line: ReceiveLine, now: Date): Promise<void> {
+  const r = await receiveStock(db, ctx, { branchId, kind: 'received', lines: [line] }, now);
+  if (!r.ok) throw new Error(`stockFor: ${r.error} ${r.detail ?? ''}`);
 }

@@ -12,6 +12,7 @@ import { parseQuantity } from '@/lib/decimal';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { checkPlanLimit, lockTenant } from './plan-limits';
+import { variantsInUse } from './usage';
 
 export type PharmacyFields = { genericName?: string; strength?: string; dosageForm?: string; registrationNumber?: string; prescriptionOnly?: boolean };
 export type ProductFields = {
@@ -235,7 +236,7 @@ export async function createProduct(
   });
 }
 
-export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: ProductFields): Promise<{ ok: true } | Fail<ProductError | 'not_found'>> {
+export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: ProductFields): Promise<{ ok: true } | Fail<ProductError | 'not_found' | 'in_use'>> {
   assertPermission(ctx, 'manage_products');
   const f = fieldsSchema.safeParse(input);
   if (!f.success) return fail('invalid_input');
@@ -245,9 +246,11 @@ export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: 
     await lockTenant(tx, ctx.tenantId);
     const [old] = await tx.select().from(products).where(eq(products.id, productId));
     if (!old) return fail('not_found');
-    const saved = await tx.select({ kind: variants.kind, allowsFractions: variants.allowsFractions, scaleItemCode: variants.scaleItemCode })
+    const saved = await tx.select({ id: variants.id, kind: variants.kind, allowsFractions: variants.allowsFractions, scaleItemCode: variants.scaleItemCode })
       .from(variants).where(eq(variants.productId, productId));
     if (!saved.every((v) => trackingAllowed(f.data.tracking, v.kind, v.allowsFractions, v.scaleItemCode !== null))) return fail('invalid_input');
+    // stock is held per batch or serial; switching the mode after stock or sales exist would orphan that history
+    if (f.data.tracking !== old.tracking && await variantsInUse(tx, saved.map((v) => v.id))) return fail('in_use');
     const ref = await refProblem(tx, f.data);
     if (ref) return fail(ref);
     const next = productColumns(f.data);
