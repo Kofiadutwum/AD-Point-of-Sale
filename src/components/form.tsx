@@ -29,6 +29,15 @@ export function Field({ label, name, type = 'text', required = true, ...rest }: 
   );
 }
 
+export function Check({ label, name, ...rest }: { label: string; name: string } & React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" name={name} {...rest} />
+      {label}
+    </label>
+  );
+}
+
 /** A link with a Copy button, for activation and invite links sent by WhatsApp. */
 export function CopyBox({ text }: { text: string }) {
   return (

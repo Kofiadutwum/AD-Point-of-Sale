@@ -4,6 +4,10 @@ import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { addBranch, addRegister } from '@/server/branches';
 import { updateShopProfile } from '@/server/onboarding';
+import type { Module } from '@/lib/permissions';
+import { parsePercent } from '@/lib/tax';
+import { saveSellingSettings } from '@/server/shop-settings';
+import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
 export async function saveProfileAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
@@ -41,4 +45,53 @@ export async function addRegisterAction(slug: string, _prev: FormState, formData
   if (!r.ok) return { error: LIMITS[r.error] };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Till added.' };
+}
+
+export async function saveSellingAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const value = (k: string) => String(formData.get(k) ?? '');
+  const carries = value('scaleCarries');
+  // digit positions are shown 1-based and stored 0-based
+  const scaleLayout = carries === 'weight' || carries === 'price'
+    ? {
+      prefix: value('scalePrefix').trim(), carries,
+      itemStart: Number(value('itemFrom')) - 1, itemLength: Number(value('itemLength')),
+      valueStart: Number(value('valueFrom')) - 1, valueLength: Number(value('valueLength')),
+    } as const
+    : null;
+  const r = await saveSellingSettings(getDb(), ctx, {
+    taxEnabled: formData.get('taxEnabled') === 'on', scaleLayout, modules: formData.getAll('modules').map(String) as Module[],
+  });
+  if (!r.ok) {
+    return { error: r.error === 'barcodes_clash'
+      ? `These barcodes would be read as scale labels: ${r.codes.join(', ')}. Change them or use another prefix.`
+      : 'Check the details.' };
+  }
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
+}
+
+const TAX_ERRORS: Record<string, string> = {
+  duplicate_name: 'A tax rule with that name already exists.',
+  in_use: 'Products use this rule. Move them to another rule first.',
+  invalid_input: 'Check the details.',
+  not_found: 'Check the details.',
+};
+
+export async function saveTaxRuleAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const value = (k: string) => String(formData.get(k) ?? '');
+  const rateBp = parsePercent(value('rate'));
+  const levies = [1, 2, 3].flatMap((i) => {
+    const name = value(`levyName${i}`).trim();
+    return name ? [{ name, rateBp: parsePercent(value(`levyRate${i}`)) ?? -1 }] : []; // -1 fails validation
+  });
+  if (rateBp === null) return { error: TAX_ERRORS.invalid_input };
+  const r = await saveTaxRule(getDb(), ctx, {
+    id: value('id') || undefined, name: value('name'), rateBp, levies,
+    vatOnLevies: formData.get('vatOnLevies') === 'on', isDefault: formData.get('isDefault') === 'on', active: formData.get('active') === 'on',
+  });
+  if (!r.ok) return { error: TAX_ERRORS[r.error] };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Tax rule saved.' };
 }

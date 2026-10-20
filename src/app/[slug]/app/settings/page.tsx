@@ -1,14 +1,22 @@
-import { ActionForm, Field } from '@/components/form';
+import { ActionForm, Check, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listBranches } from '@/server/branches';
 import { getShopProfile } from '@/server/onboarding';
+import { MODULE_LABELS } from '@/lib/permission-labels';
+import { MODULES } from '@/lib/permissions';
+import { effectiveRateBp } from '@/lib/tax';
+import { getSellingSettings } from '@/server/shop-settings';
+import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveProfileAction } from './actions';
+import { addBranchAction, addRegisterAction, saveProfileAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList] = await Promise.all([getShopProfile(getDb(), ctx), listBranches(getDb(), ctx)]);
+  const [p, branchList, selling, rules] = await Promise.all([
+    getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx),
+  ]);
+  const scale = selling.scaleLayout;
   return (
     <main className="flex flex-col gap-8">
       <a href={`/${slug}/app`} className="text-sm text-blue-800 underline">← Home</a>
@@ -27,6 +35,47 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
           </label>
           <Field label="Business day ends at (HH:MM)" name="businessDayCutoff" defaultValue={p.businessDayCutoff} pattern="([01]\d|2[0-3]):[0-5]\d" />
         </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Selling</h2>
+        <ActionForm action={saveSellingAction.bind(null, slug)} submitLabel="Save selling settings">
+          <Check name="taxEnabled" label="Charge tax (untick if the shop is not VAT-registered)" defaultChecked={selling.taxEnabled} />
+          <fieldset className="flex flex-col gap-2 rounded border p-3">
+            <legend className="text-sm font-medium">Scale labels</legend>
+            <label className="flex flex-col gap-1 text-sm">Labels carry
+              <select name="scaleCarries" defaultValue={scale?.carries ?? 'off'} className="rounded border border-gray-400 px-3 py-2">
+                <option value="off">Off (no scale labels)</option>
+                <option value="weight">Weight in grams</option>
+                <option value="price">Price in pesewas</option>
+              </select>
+            </label>
+            <Field label="Prefix (starts with 2, e.g. 21)" name="scalePrefix" defaultValue={scale?.prefix ?? '21'} required={false} />
+            <Field label="Item code starts at digit" name="itemFrom" type="number" defaultValue={(scale?.itemStart ?? 2) + 1} required={false} />
+            <Field label="Item code length" name="itemLength" type="number" defaultValue={scale?.itemLength ?? 5} required={false} />
+            <Field label="Value starts at digit" name="valueFrom" type="number" defaultValue={(scale?.valueStart ?? 7) + 1} required={false} />
+            <Field label="Value length" name="valueLength" type="number" defaultValue={scale?.valueLength ?? 5} required={false} />
+          </fieldset>
+          <fieldset className="flex flex-col gap-1 rounded border p-3">
+            <legend className="text-sm font-medium">Modules</legend>
+            {MODULES.map((m) => (
+              <Check key={m} name="modules" value={m} label={MODULE_LABELS[m]} defaultChecked={selling.modules.includes(m)} />
+            ))}
+          </fieldset>
+        </ActionForm>
+      </section>
+      <section className="flex max-w-md flex-col gap-4">
+        <h2 className="text-lg font-semibold">Tax rules</h2>
+        {rules.length === 0 && <p className="text-sm text-gray-700">No tax rules yet. Rates are set by the shop; confirm current GRA rates.</p>}
+        {rules.map((r) => (
+          <details key={r.id} className="rounded border p-3">
+            <summary className="cursor-pointer text-sm">
+              {r.name} — {effectiveRateBp(r) / 100}%{r.isDefault ? ' (default)' : ''}{r.active ? '' : ' (off)'}
+            </summary>
+            <TaxRuleForm slug={slug} rule={r} />
+          </details>
+        ))}
+        <h3 className="font-medium">Add a tax rule</h3>
+        <TaxRuleForm slug={slug} rule={null} />
       </section>
       <section className="flex max-w-md flex-col gap-4">
         <h2 className="text-lg font-semibold">Branches and tills</h2>
@@ -54,5 +103,25 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
         </ActionForm>
       </section>
     </main>
+  );
+}
+
+function TaxRuleForm({ slug, rule }: { slug: string; rule: TaxRule | null }) {
+  const percent = (bp: number | undefined) => (bp === undefined ? '' : String(bp / 100));
+  return (
+    <ActionForm action={saveTaxRuleAction.bind(null, slug)} submitLabel={rule ? 'Save rule' : 'Add rule'}>
+      {rule && <input type="hidden" name="id" value={rule.id} />}
+      <Field label="Name (e.g. VAT)" name="name" defaultValue={rule?.name} />
+      <Field label="Rate %" name="rate" inputMode="decimal" defaultValue={percent(rule?.rateBp)} />
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="grid grid-cols-2 gap-2">
+          <Field label={`Levy ${i} name`} name={`levyName${i}`} defaultValue={rule?.levies[i - 1]?.name} required={false} />
+          <Field label="Levy rate %" name={`levyRate${i}`} inputMode="decimal" defaultValue={percent(rule?.levies[i - 1]?.rateBp)} required={false} />
+        </div>
+      ))}
+      <Check name="vatOnLevies" label="VAT is charged on the levies too" defaultChecked={rule?.vatOnLevies ?? false} />
+      <Check name="isDefault" label="Default for products" defaultChecked={rule?.isDefault ?? false} />
+      <Check name="active" label="Active" defaultChecked={rule?.active ?? true} />
+    </ActionForm>
   );
 }
