@@ -1,14 +1,14 @@
 import 'server-only';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  barcodes, branches, products, serials, stockBalances, stockBatches, stockMovements, stockReceipts, type Tracking, variants, variantUnits,
+  barcodes, branches, components, products, serials, stockBalances, stockBatches, stockMovements, stockReceipts, type Tracking, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { normaliseBarcode } from '@/lib/barcode';
 import { todayIn } from '@/lib/dates';
-import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
+import { fromMilli, multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import { unitCostOf, weightedAverageCost } from '@/lib/stock';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
@@ -156,6 +156,93 @@ export async function receiveStock(
     });
     return { ok: true, receiptId: receipt.id } as const;
   });
+}
+
+export type DeductProblems = { negative: boolean; onlyExpired: boolean; serialsMissing: boolean };
+
+const minus = (milli: bigint) => `-${fromMilli(milli)}`;
+
+/**
+ * Spec 6.28, inside the sale's transaction. Bundles and recipes deduct their components; batch items take the earliest unexpired
+ * batch first; serial items mark each serial sold. Problems are reported, never refused here: the caller decides (6.8, 6.10).
+ */
+export async function deductStockForLine(
+  tx: Tx, s: { tenantId: string; branchId: string; saleId: string; saleLineId: string; userId: string; today: string },
+  line: { variantId: string; baseQty: string; serials: string[] },
+): Promise<DeductProblems> {
+  const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking }).from(variants)
+    .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.id, line.variantId));
+  if (!v) throw new Error(`unknown variant ${line.variantId}`);
+  const problems: DeductProblems = { negative: false, onlyExpired: false, serialsMissing: false };
+
+  if (v.kind !== 'standard') { // bundles and recipes hold no stock of their own
+    const parts = await tx.select({ id: components.componentVariantId, quantity: components.quantity }).from(components)
+      .where(eq(components.parentVariantId, line.variantId)).orderBy(asc(components.createdAt), asc(components.id));
+    for (const part of parts) {
+      const p = await deductStockForLine(tx, s, { variantId: part.id, baseQty: multiplyQty(part.quantity, line.baseQty), serials: [] });
+      problems.negative ||= p.negative;
+      problems.onlyExpired ||= p.onlyExpired;
+      problems.serialsMissing ||= p.serialsMissing;
+    }
+    return problems;
+  }
+
+  const move = (quantity: string, extra: { batchId?: string; serialId?: string } = {}) => tx.insert(stockMovements).values({
+    tenantId: s.tenantId, branchId: s.branchId, variantId: line.variantId, type: 'sale', quantity, referenceType: 'sale', referenceId: s.saleId,
+    saleLineId: s.saleLineId, userId: s.userId, ...extra,
+  });
+  const takeFromBatch = (batchId: string, milli: bigint) => tx.update(stockBatches)
+    .set({ onHand: sql`${stockBatches.onHand} - ${fromMilli(milli)}::numeric` }).where(eq(stockBatches.id, batchId));
+  let left = toMilli(line.baseQty);
+
+  if (v.tracking === 'batch') {
+    const here = and(eq(stockBatches.branchId, s.branchId), eq(stockBatches.variantId, line.variantId));
+    const live = await tx.select({ id: stockBatches.id, onHand: stockBatches.onHand }).from(stockBatches)
+      .where(and(here, sql`${stockBatches.onHand} > 0`, gt(stockBatches.expiryDate, s.today)))
+      .orderBy(asc(stockBatches.expiryDate), asc(stockBatches.createdAt)).for('update');
+    if (live.length === 0) {
+      const [stocked] = await tx.select({ id: stockBatches.id }).from(stockBatches).where(and(here, sql`${stockBatches.onHand} > 0`)).limit(1);
+      problems.onlyExpired = Boolean(stocked); // expired stock is never sold (4.17)
+    }
+    for (const b of live) {
+      const take = left < toMilli(b.onHand) ? left : toMilli(b.onHand);
+      if (take <= 0n) break;
+      await takeFromBatch(b.id, take);
+      await move(minus(take), { batchId: b.id });
+      left -= take;
+    }
+    if (left > 0n) { // batched stock ran out: the rest goes to the first unexpired batch, which goes negative
+      const [target] = live.length ? live : await tx.select({ id: stockBatches.id }).from(stockBatches)
+        .where(and(here, gt(stockBatches.expiryDate, s.today))).orderBy(asc(stockBatches.expiryDate), asc(stockBatches.createdAt)).limit(1);
+      if (target) await takeFromBatch(target.id, left);
+      await move(minus(left), target ? { batchId: target.id } : {});
+    }
+  } else if (v.tracking === 'serial') {
+    for (const serial of line.serials) {
+      if (left <= 0n) break;
+      const [row] = await tx.update(serials).set({ status: 'sold', saleId: s.saleId, soldAt: sql`now()` as unknown as Date }).where(and(
+        eq(serials.variantId, line.variantId), eq(serials.branchId, s.branchId), eq(serials.serial, serial), eq(serials.status, 'in_stock'),
+      )).returning({ id: serials.id });
+      if (!row) continue;
+      await move('-1', { serialId: row.id });
+      left -= 1000n;
+    }
+    if (left > 0n) {
+      problems.serialsMissing = true;
+      await move(minus(left));
+    }
+  } else {
+    await move(minus(left));
+  }
+
+  problems.negative = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  if (problems.negative) {
+    await writeAudit(tx, {
+      tenantId: s.tenantId, actorType: 'system', actorId: null, action: 'negative_stock', recordType: 'variant', recordId: line.variantId,
+      changes: { branchId: s.branchId, saleId: s.saleId },
+    });
+  }
+  return problems;
 }
 
 /** An item to receive by barcode (its own unit) or SKU (the base unit). */
