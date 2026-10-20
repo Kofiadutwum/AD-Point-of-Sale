@@ -8,6 +8,7 @@ import type { SubscriptionStatus } from '@/lib/subscription';
 import { expect } from 'vitest';
 import { type AccessCode, AccessError, type Ctx, requireContext } from '@/server/context';
 import { hashSecret } from '@/server/crypto';
+import { createProduct, type NewProductInput } from '@/server/products';
 import { createSession } from '@/server/sessions';
 
 export type SeedUser = {
@@ -79,6 +80,20 @@ export async function ctxFor(
 ): Promise<Ctx> {
   const { token } = await createSession(db, { tenantId: shop.tenantId, userId: shop.users[userKey].id, kind: 'password' }, now);
   return requireContext(db, { slug: shop.slug, sessionToken: token, permission, allowReadOnly: opts.allowReadOnly }, now);
+}
+
+let productCounter = 0;
+
+/** A one-variant product (piece, GHS 5.00, cost GHS 4.00) unless overridden; throws when the catalogue refuses it. */
+export async function productFor(
+  db: Db, ctx: Ctx, overrides: Partial<NewProductInput> = {},
+): Promise<{ productId: string; variantId: string; baseUnitId: string }> {
+  const r = await createProduct(db, ctx, {
+    name: `Item ${++productCounter}`, kind: 'standard', tracking: 'none', baseUnit: 'piece', allowsFractions: false,
+    variants: [{ basePricePesewas: 500, costPesewas: 400 }], ...overrides,
+  });
+  if (!r.ok) throw new Error(`productFor: ${r.error} ${r.detail ?? ''}`);
+  return { productId: r.productId, ...r.variants[0] };
 }
 
 /** Asserts that `p` rejects with an AccessError of `code`. */
