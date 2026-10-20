@@ -6,6 +6,7 @@ import { setProductStatus, updateProduct } from '@/server/products';
 import {
   addBarcode, addComponent, addUnit, addVariant, removeBarcode, removeComponent, removeUnit, setVariantStatus, updateUnit, updateVariant,
 } from '@/server/variants';
+import { removePriceListItem, setPriceListItem } from '@/server/price-lists';
 import { pageCtx } from '../../page-ctx';
 import { catalogueMessage, cedis, optionalNumber, readProductFields, readUnitFields, readVariantFields, value } from '../form-data';
 
@@ -84,4 +85,14 @@ export async function addComponentAction(slug: string, productId: string, varian
 
 export async function removeComponentAction(slug: string, productId: string, componentId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
   return run(slug, productId, 'Part removed.', (ctx) => removeComponent(getDb(), ctx, componentId));
+}
+
+export async function setListPriceAction(slug: string, productId: string, unitId: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'List price saved.', (ctx) => setPriceListItem(getDb(), ctx, {
+    priceListId: value(fd, 'priceListId'), unitId, minQuantity: value(fd, 'minQuantity') || '1', pricePesewas: cedis(fd, 'price'),
+  }));
+}
+
+export async function removeListPriceAction(slug: string, productId: string, itemId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'List price removed.', (ctx) => removePriceListItem(getDb(), ctx, itemId));
 }

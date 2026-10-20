@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
+import { listPriceLists } from '@/server/price-lists';
 import { getProduct, listCategories } from '@/server/products';
 import { getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules } from '@/server/tax-rules';
@@ -13,8 +14,9 @@ import { VariantSection } from './variant-section';
 export default async function ProductPage({ params }: { params: Promise<{ slug: string; productId: string }> }) {
   const { slug, productId } = await params;
   const ctx = await pageCtx(slug, 'manage_products');
-  const [product, cats, rules, selling] = await Promise.all([
+  const [product, cats, rules, selling, lists] = await Promise.all([
     getProduct(getDb(), ctx, productId), listCategories(getDb(), ctx), listTaxRules(getDb(), ctx), getSellingSettings(getDb(), ctx),
+    listPriceLists(getDb(), ctx),
   ]);
   if (!product) notFound();
   const archived = product.status === 'archived';
@@ -38,7 +40,8 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
       <section className="flex max-w-2xl flex-col gap-4">
         <h2 className="text-lg font-semibold">Variants</h2>
         {product.variants.map((v) => (
-          <VariantSection key={v.id} slug={slug} productId={productId} variant={v} cost={costs.get(v.id) ?? null} scaleOn={selling.scaleLayout !== null} />
+          <VariantSection key={v.id} slug={slug} productId={productId} variant={v} cost={costs.get(v.id) ?? null}
+            scaleOn={selling.scaleLayout !== null} lists={lists} />
         ))}
         <details className="max-w-md">
           <summary className="cursor-pointer text-sm text-blue-800">Add a variant (size, colour, flavour…)</summary>

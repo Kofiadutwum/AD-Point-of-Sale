@@ -1,17 +1,19 @@
 import { ActionForm, Check, Field } from '@/components/form';
 import { formatCedis } from '@/lib/money';
+import type { PriceListView } from '@/server/price-lists';
 import type { ProductDetail } from '@/server/products';
 import { cediText } from '../form-data';
 import {
-  addBarcodeAction, addComponentAction, addUnitAction, removeBarcodeAction, removeComponentAction, removeUnitAction, setVariantStatusAction,
+  addBarcodeAction, addComponentAction, addUnitAction, removeBarcodeAction, removeComponentAction, removeListPriceAction, removeUnitAction,
+  setListPriceAction, setVariantStatusAction,
   updateUnitAction, updateVariantAction,
 } from './actions';
 
 type Variant = ProductDetail['variants'][number];
 
 /** One variant: its fields, units with their barcodes, and (for bundles and recipes) its parts and their cost. */
-export function VariantSection({ slug, productId, variant: v, cost, scaleOn }: {
-  slug: string; productId: string; variant: Variant; cost: string | null; scaleOn: boolean;
+export function VariantSection({ slug, productId, variant: v, cost, scaleOn, lists }: {
+  slug: string; productId: string; variant: Variant; cost: string | null; scaleOn: boolean; lists: PriceListView[];
 }) {
   const ids = [slug, productId] as const;
   const costText = cediText(Math.round(Number(v.averageCost)));
@@ -57,6 +59,28 @@ export function VariantSection({ slug, productId, variant: v, cost, scaleOn }: {
             <ActionForm action={addBarcodeAction.bind(null, ...ids, u.id)} submitLabel="Add barcode">
               <Field label="Barcode (scan or type)" name="code" />
             </ActionForm>
+            {lists.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-blue-800">List prices</summary>
+                <ul className="my-2 flex flex-col gap-1">
+                  {lists.flatMap((l) => l.items.filter((i) => i.unitId === u.id).map((i) => (
+                    <li key={i.id} className="flex items-center gap-2">
+                      <span className="flex-1">{l.name} · from {i.minQuantity}: {formatCedis(i.pricePesewas)}</span>
+                      <ActionForm action={removeListPriceAction.bind(null, ...ids, i.id)} submitLabel="Remove"><span /></ActionForm>
+                    </li>
+                  )))}
+                </ul>
+                <ActionForm action={setListPriceAction.bind(null, ...ids, u.id)} submitLabel="Save list price">
+                  <label className="flex flex-col gap-1 text-sm">List
+                    <select name="priceListId" className="rounded border border-gray-400 px-3 py-2">
+                      {lists.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                  </label>
+                  <Field label={`From quantity (${u.name})`} name="minQuantity" inputMode="decimal" defaultValue="1" />
+                  <Field label="Price each (GHS)" name="price" inputMode="decimal" />
+                </ActionForm>
+              </details>
+            )}
             <details className="mt-2">
               <summary className="cursor-pointer text-blue-800">Edit unit</summary>
               <ActionForm action={updateUnitAction.bind(null, ...ids, u.id)} submitLabel="Save unit">
