@@ -13,7 +13,9 @@ export type HomeSummary = {
   securityEvents: Array<{ action: string; at: Date; detail: string }>;
 };
 
-const SECURITY_ACTIONS = ['failed_sign_in', 'pin_locked', 'staff_deactivated', 'device_registered'];
+const SECURITY_ACTIONS = [
+  'failed_sign_in', 'pin_locked', 'staff_deactivated', 'device_registered', 'device_deregistered', 'mfa_enabled', 'mfa_disabled', 'mfa_reset',
+];
 
 const days = (n: number) => `${n} ${n === 1 ? 'day' : 'days'}`;
 

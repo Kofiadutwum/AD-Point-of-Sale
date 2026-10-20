@@ -6,7 +6,7 @@ import { asPlatform } from '@/db/tenant';
 import { todayIn } from '@/lib/dates';
 import { type Permission, READ_ONLY_PERMISSIONS, type RolePreset } from '@/lib/permissions';
 import { type SubscriptionState, subscriptionState } from '@/lib/subscription';
-import { validateSession } from './sessions';
+import { type SessionKind, validateSession } from './sessions';
 
 export type AccessCode = 'not_signed_in' | 'wrong_shop' | 'suspended' | 'read_only' | 'forbidden';
 
@@ -20,6 +20,7 @@ export class AccessError extends Error {
 export type Ctx = {
   tenantId: string; slug: string; timezone: string; userId: string; name: string; rolePreset: RolePreset;
   permissions: Permission[]; registerId: string | null; subscription: SubscriptionState;
+  sessionId: string; sessionKind: SessionKind;
 };
 
 /** The signed-in user's context for the shop in the URL. The tenant always comes from the session. */
@@ -42,6 +43,7 @@ export async function requireContext(
     tenantId: shop.id, slug: shop.slug, timezone: shop.timezone, userId: session.userId, name: session.name,
     rolePreset: session.rolePreset, permissions: session.permissions, registerId: session.registerId,
     subscription: subscriptionState(shop.sub, todayIn(shop.timezone, now)),
+    sessionId: session.sessionId, sessionKind: session.kind,
   };
   if (input.permission !== null) assertPermission(ctx, input.permission, { allowReadOnly: input.allowReadOnly });
   return ctx;

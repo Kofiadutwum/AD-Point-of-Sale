@@ -1,7 +1,7 @@
 import 'server-only';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
-import { adminSessions, platformAdmins, subscriptions, tenants } from '@/db/schema';
+import { adminSessions, platformAdmins, subscriptions, tenants, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { normaliseEmail } from '@/lib/contact';
 import { todayIn } from '@/lib/dates';
@@ -9,6 +9,7 @@ import { type SubscriptionState, subscriptionState } from '@/lib/subscription';
 import { writeAudit } from './audit';
 import { AccessError } from './context';
 import { dummySecretHash, hashSecret, newToken, tokenHash, verifySecret } from './crypto';
+import { clearMfaAsPlatform } from './mfa';
 import { clearAttempts, countFailedAttempt, tooManyAttempts } from './rate-limit';
 
 export const ADMIN_SESSION_HOURS = 12;
@@ -58,6 +59,15 @@ export async function requirePlatformAdmin(db: Db, token: string | undefined, no
     .where(eq(adminSessions.id, tokenHash(token))));
   if (!row || row.expiresAt.getTime() <= now.getTime()) throw new AccessError('not_signed_in');
   return { adminId: row.adminId, name: row.name };
+}
+
+/** Turns off two-step sign-in for the shop's owner, who lost both the authenticator and the recovery codes. */
+export async function resetOwnerMfa(db: Db, adminToken: string | undefined, tenantId: string, now: Date): Promise<void> {
+  const { adminId } = await requirePlatformAdmin(db, adminToken, now);
+  await asPlatform(db, async (tx) => {
+    const owners = await tx.select({ id: users.id }).from(users).where(and(eq(users.tenantId, tenantId), eq(users.rolePreset, 'owner')));
+    for (const o of owners) await clearMfaAsPlatform(tx, tenantId, o.id, adminId);
+  });
 }
 
 export async function platformSignOut(db: Db, token: string): Promise<void> {

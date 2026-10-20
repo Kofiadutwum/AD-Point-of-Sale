@@ -6,10 +6,15 @@ import { asPlatform } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
 import { writeAudit } from './audit';
 import { dummySecretHash, verifySecret } from './crypto';
+import { createMfaChallenge } from './mfa';
 import { clearAttempts, countFailedAttempt, tooManyAttempts } from './rate-limit';
 import { createSession, invalidateSession } from './sessions';
 
 export type SignInError = 'try_again_later' | 'access_denied' | 'account_disabled';
+export type SignInResult =
+  | { ok: true; mfaRequired: false; token: string; expiresAt: Date }
+  | { ok: true; mfaRequired: true; challengeToken: string; expiresAt: Date }
+  | { ok: false; error: SignInError };
 
 
 /** An identifier with '@' is an email; anything else is a Ghana phone number. */
@@ -23,13 +28,14 @@ export async function signIn(
   db: Db,
   input: { slug: string; identifier: string; password: string; ip: string },
   now: Date,
-): Promise<{ ok: true; token: string; expiresAt: Date } | { ok: false; error: SignInError }> {
+): Promise<SignInResult> {
   const id = normaliseIdentifier(input.identifier);
   const who = id.email ?? id.phone ?? input.identifier.trim().toLowerCase();
   const rateKey = `signin:${input.slug}:${input.ip}:${who}`;
 
   // one transaction for every check; the session is created after it commits
-  const outcome = await asPlatform(db, async (tx): Promise<{ error: SignInError } | { tenantId: string; userId: string }> => {
+  type Outcome = { error: SignInError } | { challengeToken: string; expiresAt: Date } | { tenantId: string; userId: string };
+  const outcome = await asPlatform(db, async (tx): Promise<Outcome> => {
     if (await tooManyAttempts(tx, rateKey, now)) return { error: 'try_again_later' };
     const [shop] = await tx.select({ id: tenants.id, status: tenants.status }).from(tenants).where(eq(tenants.slug, input.slug));
     if (!shop || shop.status !== 'active') return { error: 'access_denied' };
@@ -46,13 +52,15 @@ export async function signIn(
     }
     if (user.status !== 'active') return { error: 'account_disabled' };
     await clearAttempts(tx, rateKey);
+    if (user.mfaEnabledAt) return createMfaChallenge(tx, shop.id, user.id, now); // no session until the second factor
     await writeAudit(tx, { tenantId: shop.id, actorType: 'user', actorId: user.id, action: 'signed_in' });
     return { tenantId: shop.id, userId: user.id };
   });
 
   if ('error' in outcome) return { ok: false, error: outcome.error };
+  if ('challengeToken' in outcome) return { ok: true, mfaRequired: true, ...outcome };
   const session = await createSession(db, { tenantId: outcome.tenantId, userId: outcome.userId, kind: 'password' }, now);
-  return { ok: true, ...session };
+  return { ok: true, mfaRequired: false, ...session };
 }
 
 export async function signOut(db: Db, token: string): Promise<void> {
