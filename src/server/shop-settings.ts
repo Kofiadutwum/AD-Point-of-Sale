@@ -21,6 +21,21 @@ export async function getSellingSettings(db: Db, ctx: Ctx): Promise<SellingSetti
   return { taxEnabled: t.taxEnabled, scaleLayout: t.scaleBarcode ?? null, modules: t.modules.filter(isModule) };
 }
 
+export async function getOfflineEnabled(db: Db, ctx: Ctx): Promise<boolean> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({ on: tenants.offlineEnabled }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t.on;
+}
+
+/** Spec 4.9: a shop can switch offline selling off; tills then stop receiving PIN hashes. */
+export async function setOfflineEnabled(db: Db, ctx: Ctx, enabled: boolean): Promise<{ ok: true }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set({ offlineEnabled: enabled === true }).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'offline_setting_saved', changes: { offlineEnabled: enabled === true } });
+    return { ok: true } as const;
+  });
+}
+
 export async function saveSellingSettings(
   db: Db, ctx: Ctx, input: SellingSettings,
 ): Promise<{ ok: true } | { ok: false; error: 'invalid_input' } | { ok: false; error: 'barcodes_clash' | 'scale_codes_clash'; codes: string[] }> {

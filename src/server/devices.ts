@@ -2,7 +2,7 @@ import 'server-only';
 import { and, arrayContains, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '@/db/client';
-import { registers, tenants, users } from '@/db/schema';
+import { registers, sessions, tenants, users } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
@@ -31,6 +31,22 @@ export async function registerDevice(
     if (updated.length === 0) return { ok: false, error: 'unknown_register' } as const;
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'device_registered', recordType: 'register', recordId: registerId });
     return { ok: true, deviceToken } as const;
+  });
+}
+
+/** Spec 4.9: a lost device stops working; it wipes its cached PINs when it next connects and gets a 401. */
+export async function deregisterDevice(
+  db: Db, ctx: Ctx, registerId: string,
+): Promise<{ ok: true } | { ok: false; error: 'unknown_register' }> {
+  assertPermission(ctx, 'manage_devices', { allowReadOnly: true });
+  if (!isUuid(registerId)) return { ok: false, error: 'unknown_register' };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const updated = await tx.update(registers).set({ deviceTokenHash: null, deviceRegisteredAt: null })
+      .where(eq(registers.id, registerId)).returning({ id: registers.id });
+    if (updated.length === 0) return { ok: false, error: 'unknown_register' } as const;
+    await tx.delete(sessions).where(eq(sessions.registerId, registerId)); // PIN sessions opened on that till
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'device_deregistered', recordType: 'register', recordId: registerId });
+    return { ok: true } as const;
   });
 }
 
