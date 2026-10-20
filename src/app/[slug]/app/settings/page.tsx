@@ -5,16 +5,16 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getSellingSettings } from '@/server/shop-settings';
+import { getOfflineEnabled, getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveProfileAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, saveProfileAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules] = await Promise.all([
-    getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx),
+  const [p, branchList, selling, rules, offline] = await Promise.all([
+    getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -34,6 +34,12 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
             </select>
           </label>
           <Field label="Business day ends at (HH:MM)" name="businessDayCutoff" defaultValue={p.businessDayCutoff} pattern="([01]\d|2[0-3]):[0-5]\d" />
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Offline selling</h2>
+        <ActionForm action={saveOfflineAction.bind(null, slug)} submitLabel="Save offline setting">
+          <Check name="offlineEnabled" label="Allow tills to sell for cash and manual payments when the internet is down (up to 72 hours)" defaultChecked={offline} />
         </ActionForm>
       </section>
       <section className="max-w-md">

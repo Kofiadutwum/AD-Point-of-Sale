@@ -6,9 +6,16 @@ import { addBranch, addRegister } from '@/server/branches';
 import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parsePercent } from '@/lib/tax';
-import { saveSellingSettings } from '@/server/shop-settings';
+import { saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
+
+export async function saveOfflineAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  await setOfflineEnabled(getDb(), ctx, formData.get('offlineEnabled') === 'on');
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved. Tills pick this up within a minute.' };
+}
 
 export async function saveProfileAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const ctx = await pageCtx(slug, 'manage_shop_settings');

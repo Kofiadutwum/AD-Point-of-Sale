@@ -2,7 +2,7 @@ import { ActionForm } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listBranches } from '@/server/branches';
 import { pageCtx } from '../page-ctx';
-import { registerDeviceAction } from './actions';
+import { deregisterDeviceAction, registerDeviceAction } from './actions';
 
 export default async function DevicesPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -20,6 +20,9 @@ export default async function DevicesPage({ params }: { params: Promise<{ slug: 
             <div key={r.id} className="rounded border p-3">
               <p className="text-sm">{r.name} ({r.registerCode}) · {r.deviceRegisteredAt ? `registered ${r.deviceRegisteredAt.toISOString().slice(0, 10)}` : 'no device yet'}</p>
               <ActionForm action={registerDeviceAction.bind(null, slug, r.id)} submitLabel={`Use this device as ${r.name}`}><span /></ActionForm>
+              {r.deviceRegisteredAt && (
+                <ActionForm action={deregisterDeviceAction.bind(null, slug, r.id)} submitLabel="Remove device (lost or stolen)"><span /></ActionForm>
+              )}
             </div>
           ))}
         </section>
