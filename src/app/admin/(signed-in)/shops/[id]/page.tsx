@@ -3,7 +3,7 @@ import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listShops } from '@/server/platform-admin';
 import { adminCtx, adminToken } from '../../../admin-ctx';
-import { issueLinkAction, recordPaymentAction, suspendAction } from './actions';
+import { issueLinkAction, recordPaymentAction, resetMfaAction, suspendAction } from './actions';
 
 export default async function AdminShopPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -43,6 +43,7 @@ export default async function AdminShopPage({ params }: { params: Promise<{ id: 
       <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Owner access</h2>
         <ActionForm action={issueLinkAction.bind(null, shop.tenantId)} submitLabel="Issue new activation link"><span /></ActionForm>
+        <ActionForm action={resetMfaAction.bind(null, shop.tenantId)} submitLabel="Reset owner two-step sign-in"><span /></ActionForm>
       </section>
       <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">{suspended ? 'Unsuspend shop' : 'Suspend shop'}</h2>

@@ -3,7 +3,7 @@ import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
-import { cookieOptions, SESSION_COOKIE } from '@/lib/cookies';
+import { cookieOptions, MFA_COOKIE, SESSION_COOKIE } from '@/lib/cookies';
 import { type SignInError, signIn } from '@/server/auth';
 
 const MESSAGES: Record<SignInError, string> = {
@@ -24,6 +24,10 @@ export async function signInAction(slug: string, _prev: FormState, formData: For
     ip: await clientIp(),
   }, new Date());
   if (!result.ok) return { error: MESSAGES[result.error] };
+  if (result.mfaRequired) {
+    (await cookies()).set(MFA_COOKIE, result.challengeToken, cookieOptions(result.expiresAt));
+    redirect(`/${slug}/login/mfa`);
+  }
   (await cookies()).set(SESSION_COOKIE, result.token, cookieOptions(result.expiresAt));
   redirect(`/${slug}/app`);
 }

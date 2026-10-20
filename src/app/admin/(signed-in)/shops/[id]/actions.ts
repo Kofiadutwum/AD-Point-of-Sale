@@ -5,7 +5,8 @@ import { getDb } from '@/db/client';
 import { formatCedis, parseCedis } from '@/lib/money';
 import { issueOwnerActivationLink } from '@/server/onboarding';
 import { type ManualPayment, recordManualPayment, setShopSuspended } from '@/server/subscriptions';
-import { adminCtx } from '../../../admin-ctx';
+import { resetOwnerMfa } from '@/server/platform-admin';
+import { adminCtx, adminToken } from '../../../admin-ctx';
 
 export async function recordPaymentAction(tenantId: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const { adminId } = await adminCtx();
@@ -24,6 +25,12 @@ export async function recordPaymentAction(tenantId: string, _prev: FormState, fo
   }
   revalidatePath(`/admin/shops/${tenantId}`);
   return { error: null, message: `Recorded ${formatCedis(amountPesewas)}. Paid until ${result.endDate}.` };
+}
+
+export async function resetMfaAction(tenantId: string, _prev: FormState, _formData: FormData): Promise<FormState> {
+  await adminCtx();
+  await resetOwnerMfa(getDb(), await adminToken(), tenantId, new Date());
+  return { error: null, message: 'Two-step sign-in is off for the owner. They can turn it on again after signing in.' };
 }
 
 export async function suspendAction(tenantId: string, suspended: boolean, _prev: FormState, formData: FormData): Promise<FormState> {
