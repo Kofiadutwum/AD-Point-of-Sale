@@ -43,6 +43,20 @@
       "when": 1792480695963,
       "tag": "0005_catalogue_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792535595669,
+      "tag": "0006_worthless_jane_foster",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792535601891,
+      "tag": "0007_offline_rls",
+      "breakpoints": true
     }
   ]
 }

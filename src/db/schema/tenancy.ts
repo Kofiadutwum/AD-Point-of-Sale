@@ -22,6 +22,7 @@ export const tenants = pgTable('tenants', {
   managerPhone: text('manager_phone'),
   taxEnabled: boolean('tax_enabled').notNull().default(false),
   scaleBarcode: jsonb('scale_barcode').$type<ScaleLayout>(), // null = no scale labels
+  offlineEnabled: boolean('offline_enabled').notNull().default(true), // spec 4.9: a shop can switch offline selling off
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),

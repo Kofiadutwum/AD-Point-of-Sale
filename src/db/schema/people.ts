@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, check, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import type { RolePreset } from '@/lib/permissions';
 import { createdAt, id, timestamptz } from './columns';
 import { registers, tenants } from './tenancy';
@@ -19,6 +19,9 @@ export const users = pgTable('users', {
   pinHash: text('pin_hash'),
   failedPinCount: integer('failed_pin_count').notNull().default(0),
   pinLockedUntil: timestamptz('pin_locked_until'),
+  mfaSecret: text('mfa_secret'), // sealed TOTP secret; set while enrolling, kept once mfa_enabled_at is set
+  mfaEnabledAt: timestamptz('mfa_enabled_at'),
+  mfaLastStep: bigint('mfa_last_step', { mode: 'number' }), // last accepted TOTP step, so a code works once
   status: text('status').$type<UserStatus>().notNull(),
   createdAt: createdAt(),
 }, (t) => [
