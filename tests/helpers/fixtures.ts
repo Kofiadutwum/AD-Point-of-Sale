@@ -100,3 +100,9 @@ export async function productFor(
 export async function expectAccess(p: Promise<unknown>, code: AccessCode): Promise<void> {
   await expect(p).rejects.toSatisfy((e: unknown) => e instanceof AccessError && e.code === code);
 }
+
+/** A PIN session on the shop's till, as a cashier gets after switching in (spec 6.1). */
+export async function tillCtxFor(db: Db, shop: SeededShop, userKey: string, now: Date): Promise<Ctx> {
+  const { token } = await createSession(db, { tenantId: shop.tenantId, userId: shop.users[userKey].id, kind: 'pin', registerId: shop.registerId }, now);
+  return requireContext(db, { slug: shop.slug, sessionToken: token, permission: null }, now);
+}
