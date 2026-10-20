@@ -45,6 +45,6 @@ it('rejects HEIC, other types, oversize files, and image bombs', async () => {
 });
 
 it('fails with could_not_compress for an image too detailed to fit', async () => {
-  // unblurred strong noise stays over 30 KB even at 480 px and quality 0.40
-  expect(await processUpload(await photo(2000, 2000, 120, 0.3).png().toBuffer())).toEqual({ ok: false, error: 'could_not_compress' });
+  // unblurred strong noise stays over 30 KB even at 480 px and quality 0.40; kept small so the 24 encodes stay fast under load
+  expect(await processUpload(await photo(600, 600, 120, 0.3).png().toBuffer())).toEqual({ ok: false, error: 'could_not_compress' });
 });
