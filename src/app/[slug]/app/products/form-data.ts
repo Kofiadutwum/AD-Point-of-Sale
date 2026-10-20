@@ -1,6 +1,7 @@
 import type { Tracking, VariantKind } from '@/db/schema';
 import { parseCedis } from '@/lib/money';
 import type { ProductFields } from '@/server/products';
+import type { UnitFields, VariantFields } from '@/server/variants';
 
 export const value = (fd: FormData, key: string) => String(fd.get(key) ?? '');
 export const ticked = (fd: FormData, key: string) => fd.get(key) === 'on';
@@ -41,8 +42,35 @@ const MESSAGES: Record<string, (detail?: string) => string> = {
   unknown_tax_rule: () => 'Choose a tax rule.',
   duplicate_name: () => 'That name is already used.',
   not_found: () => 'This item no longer exists.',
+  last_variant: () => 'Archive the product instead.',
+  base_unit: () => 'The base unit cannot be removed.',
+  contains_itself: () => 'A bundle cannot contain itself.',
+  unknown_component: () => 'No item has that SKU or barcode.',
+  invalid_quantity: () => 'Enter a quantity above zero; whole numbers for items sold whole.',
+  not_a_bundle: () => 'Only bundles and recipes have parts.',
+  duplicate_component: () => 'That item is already a part.',
 };
 
 export function catalogueMessage(error: string, detail?: string): string {
   return MESSAGES[error]?.(detail) ?? 'Check the details.';
 }
+
+/** Cost is sent only when the field changed, so an edit never rounds a fractional average cost (null = keep). */
+export function readVariantFields(fd: FormData): VariantFields {
+  const costChanged = value(fd, 'cost') !== value(fd, 'costShown');
+  return {
+    name: value(fd, 'name'), sku: value(fd, 'sku') || null, basePricePesewas: cedis(fd, 'price'),
+    costPesewas: costChanged ? cedis(fd, 'cost') : null, reorderLevel: value(fd, 'reorderLevel') || null,
+    scaleItemCode: optionalNumber(fd, 'scaleItemCode') ?? null, sellable: ticked(fd, 'sellable'), allowsFractions: ticked(fd, 'allowsFractions'),
+  };
+}
+
+export function readUnitFields(fd: FormData): UnitFields {
+  return {
+    name: value(fd, 'name'), factor: value(fd, 'factor'), pricePesewas: value(fd, 'price').trim() ? cedis(fd, 'price') : null,
+    sellable: ticked(fd, 'sellable'), purchasable: ticked(fd, 'purchasable'),
+  };
+}
+
+/** "12.50" for a whole-pesewa amount, for form defaults. */
+export const cediText = (pesewas: number) => (pesewas / 100).toFixed(2);
