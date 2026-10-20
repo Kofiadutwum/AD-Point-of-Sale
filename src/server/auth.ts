@@ -5,15 +5,12 @@ import { tenants, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
 import { writeAudit } from './audit';
-import { hashSecret, newToken, verifySecret } from './crypto';
+import { dummySecretHash, verifySecret } from './crypto';
 import { clearAttempts, countFailedAttempt, tooManyAttempts } from './rate-limit';
 import { createSession, invalidateSession } from './sessions';
 
 export type SignInError = 'try_again_later' | 'access_denied' | 'account_disabled';
 
-// verified against when the user does not exist, so a missing user and a wrong password take the same time
-let dummyHash: Promise<string> | undefined;
-const getDummyHash = () => (dummyHash ??= hashSecret(newToken()));
 
 /** An identifier with '@' is an email; anything else is a Ghana phone number. */
 export function normaliseIdentifier(identifier: string): { email: string | null; phone: string | null } {
@@ -41,7 +38,7 @@ export async function signIn(
     const [user] = contact ? await tx.select().from(users).where(and(eq(users.tenantId, shop.id), contact)) : [];
     const passwordOk = user?.passwordHash
       ? await verifySecret(user.passwordHash, input.password)
-      : (await verifySecret(await getDummyHash(), input.password)) && false;
+      : (await verifySecret(await dummySecretHash(), input.password)) && false;
     if (!user || !passwordOk) {
       await countFailedAttempt(tx, rateKey, now);
       await writeAudit(tx, { tenantId: shop.id, actorType: 'anonymous', actorId: null, action: 'failed_sign_in', changes: { identifier: who, ip: input.ip } });

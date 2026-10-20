@@ -24,3 +24,10 @@ export function newToken(): string {
 export function tokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
+
+// verified against when an account does not exist, so a missing account and a wrong password take the same time
+let dummyHash: Promise<string> | undefined;
+export function dummySecretHash(): Promise<string> {
+  dummyHash ??= hashSecret(newToken());
+  return dummyHash;
+}
