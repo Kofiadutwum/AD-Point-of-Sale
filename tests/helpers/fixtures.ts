@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Db } from '@/db/client';
 import { auditLog, branches, registers, subscriptions, tenants, type UserStatus, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
@@ -9,6 +10,7 @@ import { expect } from 'vitest';
 import { type AccessCode, AccessError, type Ctx, requireContext } from '@/server/context';
 import { hashSecret } from '@/server/crypto';
 import { createProduct, type NewProductInput } from '@/server/products';
+import type { SaleInput } from '@/server/sales';
 import { createSession } from '@/server/sessions';
 import { type ReceiveLine, receiveStock } from '@/server/stock';
 
@@ -112,4 +114,14 @@ export async function tillCtxFor(db: Db, shop: SeededShop, userKey: string, now:
 export async function stockFor(db: Db, ctx: Ctx, branchId: string, line: ReceiveLine, now: Date): Promise<void> {
   const r = await receiveStock(db, ctx, { branchId, kind: 'received', lines: [line] }, now);
   if (!r.ok) throw new Error(`stockFor: ${r.error} ${r.detail ?? ''}`);
+}
+
+let receiptCounter = 0;
+
+/** A sale on till B1-T1 with a fresh id and receipt number, paid with GHS 1,000 cash unless tenders are given. */
+export function saleInput(overrides: Partial<SaleInput> & Pick<SaleInput, 'lines'>): SaleInput {
+  return {
+    saleId: randomUUID(), receiptNumber: `B1-T1-${String(++receiptCounter).padStart(6, '0')}`,
+    tenders: [{ id: randomUUID(), method: 'cash', amountPesewas: 100000 }], deviceCreatedAt: '2026-10-20T10:00:00.000Z', ...overrides,
+  };
 }
