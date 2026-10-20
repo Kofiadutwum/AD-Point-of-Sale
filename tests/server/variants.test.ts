@@ -8,7 +8,8 @@ import { getProduct } from '@/server/products';
 import {
   addBarcode, addComponent, addUnit, addVariant, costOf, removeUnit, setVariantStatus, updateUnit, updateVariant,
 } from '@/server/variants';
-import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
+import { saveSellingSettings } from '@/server/shop-settings';
+import { ctxFor, productFor, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
 const t0 = new Date('2026-10-20T10:00:00Z');
@@ -125,6 +126,14 @@ it('records price changes in the audit log', async () => {
   expect(row.changes).toEqual({ basePricePesewas: [4500, 5000] });
   const other = await productFor(db, owner, { variants: [{ sku: 'M2', basePricePesewas: 1, costPesewas: 1 }] });
   expect(await updateVariant(db, owner, other.variantId, { ...fields, sku: 'm1' })).toEqual({ ok: false, error: 'duplicate_sku', detail: 'M1' });
+});
+
+it('keeps the scale code when an edit leaves it out', async () => {
+  await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: WEIGHT_LAYOUT, modules: [] });
+  const p = await productFor(db, owner, { baseUnit: 'kg', allowsFractions: true, variants: [{ sku: 'BEEF', scaleItemCode: 123, basePricePesewas: 9000, costPesewas: 7000 }] });
+  const fields = { name: '', sku: 'BEEF', basePricePesewas: 9500, costPesewas: null, reorderLevel: null, sellable: true, allowsFractions: true };
+  expect(await updateVariant(db, owner, p.variantId, fields)).toEqual({ ok: true });
+  expect((await getProduct(db, owner, p.productId))!.variants[0]).toMatchObject({ basePricePesewas: 9500, scaleItemCode: 123 });
 });
 
 it('keeps a fractional average cost when an edit leaves the cost out', async () => {

@@ -144,6 +144,17 @@ it('updates product fields, keeping tracking rules, and records what changed', a
   expect(await updateProduct(db, owner, '33333333-3333-4333-8333-333333333333', { name: 'X', tracking: 'none' })).toEqual({ ok: false, error: 'not_found' });
 });
 
+it('keeps fields an edit leaves out, such as pharmacy fields hidden with the module off', async () => {
+  const { categoryId } = await addCategory(db, owner, 'Medicines') as { categoryId: string };
+  const p = await productFor(db, owner, {
+    name: 'Amoxicillin', categoryId, showOnStorefront: true, pharmacy: { genericName: 'amoxicillin', strength: '500 mg', prescriptionOnly: true },
+  });
+  expect(await updateProduct(db, owner, p.productId, { name: 'Amoxil 500', tracking: 'none' })).toEqual({ ok: true });
+  expect(await getProduct(db, owner, p.productId)).toMatchObject({
+    name: 'Amoxil 500', categoryId, showOnStorefront: true, genericName: 'amoxicillin', strength: '500 mg', prescriptionOnly: true,
+  });
+});
+
 it('cashiers and read-only shops cannot change products', async () => {
   await expectAccess(createProduct(db, await ctxFor(db, shop, 'kofi', t0), input()), 'forbidden');
   const lapsed = await seedShop(db, { subscription: { status: 'active', endDate: '2026-09-01' } });

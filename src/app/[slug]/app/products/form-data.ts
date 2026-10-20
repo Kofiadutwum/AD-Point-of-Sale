@@ -16,10 +16,11 @@ export function readProductFields(fd: FormData): ProductFields {
     categoryId: value(fd, 'categoryId') || null, taxRuleId: value(fd, 'taxRuleId') || null,
     tracking: (['batch', 'serial'].includes(tracking) ? tracking : 'none') as Tracking,
     showOnStorefront: ticked(fd, 'showOnStorefront'), featured: ticked(fd, 'featured'),
-    pharmacy: {
+    // the pharmacy fields are shown only with the prescriptions module; when hidden, leave them out so the save keeps them
+    pharmacy: fd.has('genericName') ? {
       genericName: value(fd, 'genericName'), strength: value(fd, 'strength'), dosageForm: value(fd, 'dosageForm'),
       registrationNumber: value(fd, 'registrationNumber'), prescriptionOnly: ticked(fd, 'prescriptionOnly'),
-    },
+    } : undefined,
   };
 }
 
@@ -61,7 +62,9 @@ export function readVariantFields(fd: FormData): VariantFields {
   return {
     name: value(fd, 'name'), sku: value(fd, 'sku') || null, basePricePesewas: cedis(fd, 'price'),
     costPesewas: costChanged ? cedis(fd, 'cost') : null, reorderLevel: value(fd, 'reorderLevel') || null,
-    scaleItemCode: optionalNumber(fd, 'scaleItemCode') ?? null, sellable: ticked(fd, 'sellable'), allowsFractions: ticked(fd, 'allowsFractions'),
+    // shown only while scale labels are on; when hidden, leave it out so the save keeps the code
+    scaleItemCode: fd.has('scaleItemCode') ? optionalNumber(fd, 'scaleItemCode') ?? null : undefined,
+    sellable: ticked(fd, 'sellable'), allowsFractions: ticked(fd, 'allowsFractions'),
   };
 }
 

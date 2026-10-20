@@ -16,7 +16,7 @@ import {
 
 export type VariantFields = {
   name: string; sku: string | null; basePricePesewas: number; costPesewas: number | null; reorderLevel: string | null; // cost null = keep the current average cost
-  scaleItemCode: number | null; sellable: boolean; allowsFractions: boolean;
+  scaleItemCode?: number | null; sellable: boolean; allowsFractions: boolean; // scaleItemCode left out = keep the saved code
 };
 export type UnitFields = { name: string; factor: string; pricePesewas: number | null; sellable: boolean; purchasable: boolean };
 
@@ -69,7 +69,7 @@ const variantFieldsSchema = z.object({
   basePricePesewas: pesewas,
   costPesewas: pesewas.nullable(),
   reorderLevel: z.string().nullable(),
-  scaleItemCode: z.number().int().nullable(),
+  scaleItemCode: z.number().int().nullable().optional(),
   sellable: z.boolean(),
   allowsFractions: z.boolean(),
 });
@@ -90,18 +90,21 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
     const row = await loadVariant(tx, variantId);
     if (!row) return fail('not_found');
     const old = row.variant;
-    if (!trackingAllowed(row.tracking, old.kind, f.allowsFractions, f.scaleItemCode !== null)) return fail('invalid_input');
+    const scaleItemCode = f.scaleItemCode === undefined ? old.scaleItemCode : f.scaleItemCode; // left out = keep (field hidden while labels are off)
+    if (!trackingAllowed(row.tracking, old.kind, f.allowsFractions, scaleItemCode !== null)) return fail('invalid_input');
     const layout = await scaleLayoutOf(tx, ctx.tenantId);
-    const problem = f.scaleItemCode === null ? null : scaleCodeProblem(f.scaleItemCode, layout, {
+    // a kept code is inert while scale labels are off; it is checked again when a layout is saved
+    const checkScale = scaleItemCode !== null && (layout !== null || f.scaleItemCode !== undefined);
+    const problem = checkScale ? scaleCodeProblem(scaleItemCode, layout, {
       kind: old.kind, tracking: row.tracking, allowsFractions: f.allowsFractions, baseUnit: row.baseUnit, basePricePesewas: f.basePricePesewas,
-    });
+    }) : null;
     if (problem) return fail(problem);
     const clash = await checkCodes(tx, ctx.tenantId, layout,
-      { skus: sku ? [sku] : [], barcodes: [], scaleCodes: f.scaleItemCode === null ? [] : [f.scaleItemCode] }, variantId);
+      { skus: sku ? [sku] : [], barcodes: [], scaleCodes: scaleItemCode === null ? [] : [scaleItemCode] }, variantId);
     if (clash) return clash;
     await tx.update(variants).set({
       name: f.name, sku, basePricePesewas: f.basePricePesewas, ...(f.costPesewas === null ? {} : { averageCost: String(f.costPesewas) }), reorderLevel,
-      scaleItemCode: f.scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions,
+      scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions,
     }).where(eq(variants.id, variantId));
     // price and cost changes are sensitive (spec 6.0 AUDIT): record old and new values
     const changes: Record<string, [number, number]> = {};

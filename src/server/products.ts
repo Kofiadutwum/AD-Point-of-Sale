@@ -251,6 +251,15 @@ export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: 
     const ref = await refProblem(tx, f.data);
     if (ref) return fail(ref);
     const next = productColumns(f.data);
+    // a field the caller leaves out keeps its saved value: pages hide fields when a module is off, and hiding must never erase
+    const keep = <K extends keyof typeof next>(...keys: K[]) => { for (const k of keys) next[k] = old[k] as (typeof next)[K]; };
+    if (input.description === undefined) keep('description');
+    if (input.categoryId === undefined) keep('categoryId');
+    if (input.brand === undefined) keep('brand');
+    if (input.taxRuleId === undefined) keep('taxRuleId');
+    if (input.showOnStorefront === undefined) keep('showOnStorefront');
+    if (input.featured === undefined) keep('featured');
+    if (input.pharmacy === undefined) keep('genericName', 'strength', 'dosageForm', 'registrationNumber', 'prescriptionOnly');
     const changed = (Object.keys(next) as Array<keyof typeof next>).filter((k) => next[k] !== old[k]);
     if (changed.length) {
       await tx.update(products).set(next).where(eq(products.id, productId));
