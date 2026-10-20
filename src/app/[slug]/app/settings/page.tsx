@@ -5,16 +5,16 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getSellingSettings } from '@/server/shop-settings';
+import { getSalesSettings, getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveProfileAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveProfileAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules] = await Promise.all([
-    getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx),
+  const [p, branchList, selling, rules, salesSettings] = await Promise.all([
+    getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getSalesSettings(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -61,6 +61,14 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               <Check key={m} name="modules" value={m} label={MODULE_LABELS[m]} defaultChecked={selling.modules.includes(m)} />
             ))}
           </fieldset>
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Sales and receipts</h2>
+        <ActionForm action={saveSalesAction.bind(null, slug)} submitLabel="Save sales settings">
+          <Check name="allowNegativeStock" label="Allow selling when recorded stock is zero (the manager is alerted)" defaultChecked={salesSettings.allowNegativeStock} />
+          <Field label="TIN or VAT number on receipts" name="taxNumber" required={false} maxLength={30} defaultValue={salesSettings.taxNumber ?? ''} />
+          <Field label="Receipt footer (return policy)" name="receiptFooter" required={false} maxLength={300} defaultValue={salesSettings.receiptFooter ?? ''} />
         </ActionForm>
       </section>
       <section className="flex max-w-md flex-col gap-4">
