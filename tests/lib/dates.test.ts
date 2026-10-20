@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { addDays, addMonths, maxDate, todayIn } from '@/lib/dates';
+import { addDays, addMonths, businessDate, maxDate, todayIn } from '@/lib/dates';
 import { type SubscriptionStatus, subscriptionState } from '@/lib/subscription';
 
 it('computes dates in the shop timezone', () => {
@@ -19,4 +19,10 @@ it('derives the subscription state with a 14-day grace period for paid plans onl
   expect(s('active', '2026-10-06')).toBe('grace');
   expect(s('active', '2026-10-05')).toBe('read_only');
   expect(s('cancelled', '2026-12-31')).toBe('active');
+});
+
+it('works out the business date with a cutoff', () => {
+  expect(businessDate('Africa/Accra', '00:00', new Date('2026-10-20T23:30:00Z'))).toBe('2026-10-20');
+  expect(businessDate('Africa/Accra', '04:00', new Date('2026-10-21T02:00:00Z'))).toBe('2026-10-20');
+  expect(businessDate('Africa/Accra', '04:00', new Date('2026-10-21T04:00:00Z'))).toBe('2026-10-21');
 });

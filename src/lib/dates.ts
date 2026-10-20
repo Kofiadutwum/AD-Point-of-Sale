@@ -33,3 +33,10 @@ export function daysBetween(from: string, to: string): number {
   const [y2, m2, d2] = parts(to);
   return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
 }
+
+/** The shop's business day for a moment: a local time before the cutoff ('HH:MM') belongs to the previous day (spec 4.7). */
+export function businessDate(timeZone: string, cutoff: string, at: Date): string {
+  const time = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at);
+  const today = todayIn(timeZone, at);
+  return time < cutoff ? addDays(today, -1) : today;
+}
