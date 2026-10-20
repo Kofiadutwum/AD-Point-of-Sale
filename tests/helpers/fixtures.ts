@@ -2,9 +2,12 @@ import type { Db } from '@/db/client';
 import { auditLog, branches, registers, subscriptions, tenants, type UserStatus, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
-import { DEFAULT_MODULES, ROLE_PRESETS, type RolePreset, type ShopType } from '@/lib/permissions';
+import { DEFAULT_MODULES, type Permission, ROLE_PRESETS, type RolePreset, type ShopType } from '@/lib/permissions';
 import type { SubscriptionStatus } from '@/lib/subscription';
+import { expect } from 'vitest';
+import { type AccessCode, AccessError, type Ctx, requireContext } from '@/server/context';
 import { hashSecret } from '@/server/crypto';
+import { createSession } from '@/server/sessions';
 
 export type SeedUser = {
   key: string; name?: string; email?: string; phone?: string; rolePreset?: RolePreset;
@@ -63,4 +66,15 @@ export async function seedShop(db: Db, opts: SeedShopOptions = {}): Promise<Seed
     await tx.insert(auditLog).values({ tenantId: tenant.id, actorType: 'system', actorId: null, action: 'seeded' });
     return { tenantId: tenant.id, slug, branchId: branch.id, registerId: register.id, users: seeded };
   });
+}
+
+/** Signs in `userKey` of `shop` and resolves the request context for `permission`. */
+export async function ctxFor(db: Db, shop: SeededShop, userKey: string, now: Date, permission: Permission | null = null): Promise<Ctx> {
+  const { token } = await createSession(db, { tenantId: shop.tenantId, userId: shop.users[userKey].id, kind: 'password' }, now);
+  return requireContext(db, { slug: shop.slug, sessionToken: token, permission }, now);
+}
+
+/** Asserts that `p` rejects with an AccessError of `code`. */
+export async function expectAccess(p: Promise<unknown>, code: AccessCode): Promise<void> {
+  await expect(p).rejects.toSatisfy((e: unknown) => e instanceof AccessError && e.code === code);
 }

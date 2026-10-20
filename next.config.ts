@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  // cacheComponents is off: almost every page reads the session cookie; the storefront (Phase 2) can opt in
   turbopack: {
     rules: {
       "*.css": {
