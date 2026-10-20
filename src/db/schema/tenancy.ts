@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, date, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import type { ScaleLayout } from '@/lib/barcode';
 import type { ShopType } from '@/lib/permissions';
 import type { SubscriptionStatus } from '@/lib/subscription';
 import { createdAt, id, timestamptz } from './columns';
@@ -19,6 +20,8 @@ export const tenants = pgTable('tenants', {
   address: text('address'),
   phone: text('phone'),
   managerPhone: text('manager_phone'),
+  taxEnabled: boolean('tax_enabled').notNull().default(false),
+  scaleBarcode: jsonb('scale_barcode').$type<ScaleLayout>(), // null = no scale labels
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),
@@ -61,7 +64,10 @@ export const branches = pgTable('branches', {
   address: text('address'),
   phone: text('phone'),
   createdAt: createdAt(),
-}, (t) => [unique('branches_code').on(t.tenantId, t.branchCode)]);
+}, (t) => [
+  unique('branches_code').on(t.tenantId, t.branchCode),
+  unique('branches_tenant_id').on(t.tenantId, t.id), // target of composite foreign keys
+]);
 
 export const registers = pgTable('registers', {
   id: id(),
