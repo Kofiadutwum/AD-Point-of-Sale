@@ -3,6 +3,7 @@ import { revalidatePath } from 'next/cache';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { formatCedis, parseCedis } from '@/lib/money';
+import { issueOwnerActivationLink } from '@/server/onboarding';
 import { type ManualPayment, recordManualPayment, setShopSuspended } from '@/server/subscriptions';
 import { adminCtx } from '../../../admin-ctx';
 
@@ -32,4 +33,10 @@ export async function suspendAction(tenantId: string, suspended: boolean, _prev:
   await setShopSuspended(getDb(), adminId, tenantId, suspended, reason);
   revalidatePath(`/admin/shops/${tenantId}`);
   return { error: null, message: suspended ? 'Shop suspended.' : 'Shop active again.' };
+}
+
+export async function issueLinkAction(tenantId: string, _prev: FormState, _formData: FormData): Promise<FormState> {
+  const { adminId } = await adminCtx();
+  const { activationUrl } = await issueOwnerActivationLink(getDb(), adminId, tenantId, new Date());
+  return { error: null, message: 'New activation link for the owner (earlier links no longer work):', copy: activationUrl };
 }
