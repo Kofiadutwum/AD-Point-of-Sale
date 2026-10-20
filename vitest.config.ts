@@ -11,6 +11,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    testTimeout: 20000, // PGlite start-up plus argon2 hashing
+    // PGlite start-up plus argon2 hashing; the first beforeEach of each file also migrates the template database
+    testTimeout: 30000,
+    hookTimeout: 60000,
   },
 });
