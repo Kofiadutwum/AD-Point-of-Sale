@@ -15,8 +15,9 @@ type PaymentResult = { ok: true; endDate: string } | { ok: false; error: Payment
 
 const paymentSchema = z.object({
   method: z.enum(['momo', 'bank_transfer', 'cash', 'card_terminal']),
-  reference: z.string().trim().min(1).max(100),
-  amountPesewas: z.number().int().positive(),
+  // one payment however it is typed: "momo 123" and "MOMO123" are the same reference
+  reference: z.string().trim().min(1).max(100).transform((s) => s.replace(/\s+/g, '').toUpperCase()),
+  amountPesewas: z.number().int().positive().max(2_147_483_647), // int4 column
   periodMonths: z.number().int().min(1).max(36),
   planId: z.string().min(1),
 });

@@ -25,8 +25,9 @@ export async function signIn(
   now: Date,
 ): Promise<{ ok: true; token: string; expiresAt: Date } | { ok: false; error: SignInError }> {
   const id = normaliseIdentifier(input.identifier);
-  const who = id.email ?? id.phone ?? input.identifier.trim().toLowerCase();
-  const rateKey = `signin:${input.slug}:${input.ip}:${who}`;
+  // text that is neither may be a password typed into the wrong box, so it is never stored
+  const who = id.email ?? id.phone;
+  const rateKey = `signin:${input.slug}:${input.ip}:${who ?? 'unrecognised'}`;
 
   // one transaction for every check; the session is created after it commits
   const outcome = await asPlatform(db, async (tx): Promise<{ error: SignInError } | { tenantId: string; userId: string }> => {

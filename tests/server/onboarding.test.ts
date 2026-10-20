@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Db } from '@/db/client';
 import { auditLog, branches, registers, subscriptions, tenants, users } from '@/db/schema';
@@ -66,6 +66,27 @@ it('refuses reserved and taken slugs', async () => {
 it('requires an owner email or phone', async () => {
   expect(await onboardShop(db, adminId, { ...base, owner: { name: 'Ama' } }, t0)).toEqual({ ok: false, error: 'owner_contact_required' });
   expect(await onboardShop(db, adminId, { ...base, owner: { name: 'Ama', phone: '12345' } }, t0)).toEqual({ ok: false, error: 'owner_contact_required' });
+});
+
+it('refuses a malformed owner email even when the phone is valid', async () => {
+  expect(await onboardShop(db, adminId, { ...base, owner: { name: 'Ama', email: 'ama@pharm', phone: '024 123 4567' } }, t0))
+    .toEqual({ ok: false, error: 'owner_contact_required' });
+});
+
+it('requires the shop and owner names', async () => {
+  expect(await onboardShop(db, adminId, { ...base, name: '  ' }, t0)).toEqual({ ok: false, error: 'name_required' });
+  expect(await onboardShop(db, adminId, { ...base, owner: { ...base.owner, name: ' ' } }, t0)).toEqual({ ok: false, error: 'name_required' });
+});
+
+it('reports a taken slug, not a crash, when another create wins the race', async () => {
+  // PGlite runs one transaction at a time, so a trigger plays the rival create landing between our check and our insert
+  await asPlatform(db, async (tx) => {
+    await tx.execute(sql`create function rival_shop() returns trigger language plpgsql as $$
+      begin insert into tenants (slug, name, shop_type) values (new.slug, 'Rival', new.shop_type); return new; end $$`);
+    await tx.execute(sql`create trigger rival_shop before insert on tenants
+      for each row when (pg_trigger_depth() = 0) execute function rival_shop()`);
+  });
+  expect(await onboardShop(db, adminId, base, t0)).toEqual({ ok: false, error: 'choose_another_slug', reason: 'taken' });
 });
 
 it('starts a paid shop from the payment', async () => {

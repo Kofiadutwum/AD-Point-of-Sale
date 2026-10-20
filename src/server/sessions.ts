@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
 import { sessions, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
+import { PASSWORD_SESSION_DAYS } from '@/lib/cookies';
 import { type Permission, type RolePreset, TILL_PERMISSIONS } from '@/lib/permissions';
 import { newToken, tokenHash } from './crypto';
 
@@ -12,7 +13,6 @@ export type SessionUser = {
   name: string; rolePreset: RolePreset; permissions: Permission[]; expiresAt: Date;
 };
 
-export const PASSWORD_SESSION_DAYS = 30; // extended to now + 30 days when under 15 days remain
 export const PIN_SESSION_HOURS = 12; // never extended
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
