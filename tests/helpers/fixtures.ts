@@ -1,6 +1,7 @@
 import type { Db } from '@/db/client';
 import { auditLog, branches, registers, subscriptions, tenants, type UserStatus, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
+import type { ScaleLayout } from '@/lib/barcode';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
 import { DEFAULT_MODULES, type Permission, ROLE_PRESETS, type RolePreset, type ShopType } from '@/lib/permissions';
 import type { SubscriptionStatus } from '@/lib/subscription';
@@ -18,6 +19,10 @@ export type SeedShopOptions = {
   slug?: string; shopType?: ShopType; status?: 'active' | 'suspended';
   subscription?: { status: SubscriptionStatus; endDate: string; planId?: string }; users?: SeedUser[];
 };
+
+/** Common scale label layouts: "21"/"22" + 5-digit item code + 5-digit value + check digit. */
+export const WEIGHT_LAYOUT: ScaleLayout = { prefix: '21', itemStart: 2, itemLength: 5, valueStart: 7, valueLength: 5, carries: 'weight' };
+export const PRICE_LAYOUT: ScaleLayout = { prefix: '22', itemStart: 2, itemLength: 5, valueStart: 7, valueLength: 5, carries: 'price' };
 
 let counter = 0;
 

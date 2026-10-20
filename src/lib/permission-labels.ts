@@ -1,4 +1,17 @@
-import type { Permission } from './permissions';
+import type { Module, Permission } from './permissions';
+
+export const MODULE_LABELS: Record<Module, string> = {
+  batches: 'Batch and expiry tracking',
+  serials: 'Serial and IMEI numbers',
+  price_lists: 'Price lists',
+  scale_barcodes: 'Scale labels',
+  units: 'Pharmacy units (pack, strip, tablet)',
+  recipes: 'Recipes',
+  prescriptions: 'Prescriptions',
+  addons: 'Add-ons',
+  tickets: 'Open tickets',
+  kitchen: 'Kitchen printing',
+};
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
   manage_shop_settings: 'Change shop settings, branches, and tills',

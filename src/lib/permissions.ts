@@ -20,7 +20,12 @@ export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_disco
 export type ShopType = 'retail' | 'pharmacy' | 'food';
 export const SHOP_TYPES: readonly ShopType[] = ['retail', 'pharmacy', 'food'];
 
-export const DEFAULT_MODULES: Record<ShopType, readonly string[]> = {
+export const MODULES = [
+  'batches', 'serials', 'price_lists', 'scale_barcodes', 'units', 'recipes', 'prescriptions', 'addons', 'tickets', 'kitchen',
+] as const;
+export type Module = (typeof MODULES)[number];
+
+export const DEFAULT_MODULES: Record<ShopType, readonly Module[]> = {
   retail: ['serials', 'price_lists', 'scale_barcodes'],
   pharmacy: ['batches', 'prescriptions', 'units'],
   food: ['addons', 'tickets', 'kitchen', 'recipes'],
