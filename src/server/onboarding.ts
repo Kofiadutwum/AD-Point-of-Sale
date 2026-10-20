@@ -2,7 +2,7 @@ import 'server-only';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { branches, registers, subscriptions, tenants, userTokens, users } from '@/db/schema';
+import { branches, registers, sessions, subscriptions, tenants, userTokens, users } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
 import { addDays, todayIn } from '@/lib/dates';
@@ -144,6 +144,8 @@ export async function activateAccount(
     await tx.update(users)
       .set({ passwordHash, status: 'active', ...(pinHash ? { pinHash, failedPinCount: 0, pinLockedUntil: null } : {}) })
       .where(and(eq(users.id, row.token.userId), eq(users.tenantId, row.token.tenantId)));
+    // a new password must end every earlier session, e.g. one opened by whoever had the old password
+    await tx.delete(sessions).where(eq(sessions.userId, row.token.userId));
     await writeAudit(tx, { tenantId: row.token.tenantId, actorType: 'user', actorId: row.token.userId, action: 'account_activated' });
     return { ok: true, slug: row.slug } as const;
   });

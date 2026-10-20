@@ -1,8 +1,8 @@
 import 'server-only';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '@/db/client';
-import { branches, registers } from '@/db/schema';
+import { branches, registers, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { normaliseGhanaPhone } from '@/lib/contact';
 import { writeAudit } from './audit';
@@ -43,6 +43,9 @@ export async function addBranch(
     const [branch] = await tx.insert(branches)
       .values({ tenantId: ctx.tenantId, name, branchCode, address: input.address?.trim() || null, phone })
       .returning({ id: branches.id });
+    // owners work in every branch, so they can sell on the new branch's tills
+    await tx.update(users).set({ branchIds: sql`array_append(${users.branchIds}, ${branch.id}::uuid)` })
+      .where(and(eq(users.tenantId, ctx.tenantId), eq(users.rolePreset, 'owner')));
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'branch_added', recordType: 'branch', recordId: branch.id });
     return { ok: true, branchId: branch.id } as const;
   });

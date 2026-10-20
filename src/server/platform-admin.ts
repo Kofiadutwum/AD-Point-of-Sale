@@ -69,8 +69,9 @@ export type ShopSummary = {
   planId: string; subscriptionStatus: string; endDate: string; state: SubscriptionState;
 };
 
-/** Shops with their subscription, newest first (or just one shop); for the platform admin only. */
-export async function listShops(db: Db, now: Date, tenantId?: string): Promise<ShopSummary[]> {
+/** Shops with their subscription, newest first (or just one shop). Checks the admin session itself, so a page cannot forget to. */
+export async function listShops(db: Db, adminToken: string | undefined, now: Date, tenantId?: string): Promise<ShopSummary[]> {
+  await requirePlatformAdmin(db, adminToken, now);
   const found = await asPlatform(db, (tx) => tx.select({ t: tenants, s: subscriptions }).from(tenants)
     .innerJoin(subscriptions, eq(subscriptions.tenantId, tenants.id))
     .where(tenantId ? eq(tenants.id, tenantId) : undefined).orderBy(desc(tenants.createdAt)));

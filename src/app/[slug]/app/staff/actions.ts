@@ -2,7 +2,7 @@
 import { revalidatePath } from 'next/cache';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
-import { addStaff, deactivateStaff, resetStaffAccess, setStaffPermissions } from '@/server/staff';
+import { addStaff, deactivateStaff, resetStaffAccess, setStaffBranches, setStaffPermissions } from '@/server/staff';
 import { pageCtx } from '../page-ctx';
 
 const MESSAGES: Record<string, string> = {
@@ -16,6 +16,7 @@ const MESSAGES: Record<string, string> = {
   cannot_change_self: 'You cannot change your own access.',
   invalid_permission: 'Choose permissions from the list.',
   cannot_grant: 'You can only give permissions you have yourself.',
+  cannot_change: 'This person has permissions you do not have. Ask the owner.',
 };
 const SEND_NOTE = 'Send this link by WhatsApp or SMS:';
 const value = (f: FormData, k: string) => String(f.get(k) ?? '').trim();
@@ -33,7 +34,7 @@ export async function addStaffAction(slug: string, _prev: FormState, formData: F
 }
 
 export async function resetAccessAction(slug: string, staffId: string, _prev: FormState, _formData: FormData): Promise<FormState> {
-  const ctx = await pageCtx(slug, 'manage_staff');
+  const ctx = await pageCtx(slug, 'manage_staff', { allowReadOnly: true });
   const r = await resetStaffAccess(getDb(), ctx, staffId, new Date());
   if (!r.ok) return { error: MESSAGES[r.error] };
   revalidatePath(`/${slug}/app/staff`);
@@ -41,7 +42,7 @@ export async function resetAccessAction(slug: string, staffId: string, _prev: Fo
 }
 
 export async function deactivateAction(slug: string, staffId: string, _prev: FormState, formData: FormData): Promise<FormState> {
-  const ctx = await pageCtx(slug, 'manage_staff');
+  const ctx = await pageCtx(slug, 'manage_staff', { allowReadOnly: true });
   const reason = value(formData, 'reason');
   if (!reason) return { error: 'Give a reason.' };
   const r = await deactivateStaff(getDb(), ctx, staffId, reason);
@@ -56,4 +57,12 @@ export async function permissionsAction(slug: string, staffId: string, _prev: Fo
   if (!r.ok) return { error: MESSAGES[r.error] };
   revalidatePath(`/${slug}/app/staff`);
   return { error: null, message: 'Permissions saved.' };
+}
+
+export async function branchesAction(slug: string, staffId: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_staff');
+  const r = await setStaffBranches(getDb(), ctx, staffId, formData.getAll('branchIds').map(String));
+  if (!r.ok) return { error: MESSAGES[r.error] };
+  revalidatePath(`/${slug}/app/staff`);
+  return { error: null, message: 'Branches saved.' };
 }

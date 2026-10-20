@@ -5,11 +5,11 @@ import { PERMISSIONS } from '@/lib/permissions';
 import { listBranches } from '@/server/branches';
 import { listStaff } from '@/server/staff';
 import { pageCtx } from '../page-ctx';
-import { addStaffAction, deactivateAction, permissionsAction, resetAccessAction } from './actions';
+import { addStaffAction, branchesAction, deactivateAction, permissionsAction, resetAccessAction } from './actions';
 
 export default async function StaffPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const ctx = await pageCtx(slug, 'manage_staff');
+  const ctx = await pageCtx(slug, 'manage_staff', { allowReadOnly: true });
   const [staff, branchList] = await Promise.all([listStaff(getDb(), ctx), listBranches(getDb(), ctx)]);
   const branchName = new Map(branchList.map((b) => [b.id, b.name]));
   return (
@@ -22,16 +22,23 @@ export default async function StaffPage({ params }: { params: Promise<{ slug: st
             <li key={s.id} className="rounded border p-3">
               <p className="font-medium">{s.name} <span className="text-sm text-gray-600">· {s.rolePreset} · {s.status}</span></p>
               <p className="text-sm text-gray-700">{[s.email, s.phone].filter(Boolean).join(' · ')} · {s.branchIds.map((id) => branchName.get(id)).join(', ')}</p>
-              {s.rolePreset !== 'owner' && s.id !== ctx.userId && (
+              {s.rolePreset !== 'owner' && s.id !== ctx.userId && s.permissions.every((p) => (ctx.permissions as string[]).includes(p)) && (
                 <details className="mt-2 text-sm">
                   <summary className="cursor-pointer text-blue-800">Manage</summary>
                   <div className="mt-3 flex flex-col gap-4">
-                    <ActionForm action={resetAccessAction.bind(null, slug, s.id)} submitLabel="Reset access (new invite link)"><span /></ActionForm>
+                    <ActionForm action={resetAccessAction.bind(null, slug, s.id)} submitLabel={s.status === 'inactive' ? 'Reactivate (new invite link)' : 'Reset access (new invite link)'}><span /></ActionForm>
                     {s.status !== 'inactive' && (
                       <ActionForm action={deactivateAction.bind(null, slug, s.id)} submitLabel="Deactivate">
                         <Field label="Reason" name="reason" />
                       </ActionForm>
                     )}
+                    <ActionForm action={branchesAction.bind(null, slug, s.id)} submitLabel="Save branches">
+                      {branchList.map((b) => (
+                        <label key={b.id} className="flex gap-2">
+                          <input type="checkbox" name="branchIds" value={b.id} defaultChecked={s.branchIds.includes(b.id)} /> {b.name}
+                        </label>
+                      ))}
+                    </ActionForm>
                     <ActionForm action={permissionsAction.bind(null, slug, s.id)} submitLabel="Save permissions">
                       {PERMISSIONS.filter((p) => ctx.permissions.includes(p)).map((p) => (
                         <label key={p} className="flex gap-2">

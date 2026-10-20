@@ -69,9 +69,11 @@ export async function seedShop(db: Db, opts: SeedShopOptions = {}): Promise<Seed
 }
 
 /** Signs in `userKey` of `shop` and resolves the request context for `permission`. */
-export async function ctxFor(db: Db, shop: SeededShop, userKey: string, now: Date, permission: Permission | null = null): Promise<Ctx> {
+export async function ctxFor(
+  db: Db, shop: SeededShop, userKey: string, now: Date, permission: Permission | null = null, opts: { allowReadOnly?: boolean } = {},
+): Promise<Ctx> {
   const { token } = await createSession(db, { tenantId: shop.tenantId, userId: shop.users[userKey].id, kind: 'password' }, now);
-  return requireContext(db, { slug: shop.slug, sessionToken: token, permission }, now);
+  return requireContext(db, { slug: shop.slug, sessionToken: token, permission, allowReadOnly: opts.allowReadOnly }, now);
 }
 
 /** Asserts that `p` rejects with an AccessError of `code`. */

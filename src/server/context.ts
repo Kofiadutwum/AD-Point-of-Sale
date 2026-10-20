@@ -25,7 +25,7 @@ export type Ctx = {
 /** The signed-in user's context for the shop in the URL. The tenant always comes from the session. */
 export async function requireContext(
   db: Db,
-  input: { slug: string; sessionToken: string | undefined; permission: Permission | null },
+  input: { slug: string; sessionToken: string | undefined; permission: Permission | null; allowReadOnly?: boolean },
   now: Date,
 ): Promise<Ctx> {
   const session = input.sessionToken ? await validateSession(db, input.sessionToken, now) : null;
@@ -43,12 +43,15 @@ export async function requireContext(
     rolePreset: session.rolePreset, permissions: session.permissions, registerId: session.registerId,
     subscription: subscriptionState(shop.sub, todayIn(shop.timezone, now)),
   };
-  if (input.permission !== null) assertPermission(ctx, input.permission);
+  if (input.permission !== null) assertPermission(ctx, input.permission, { allowReadOnly: input.allowReadOnly });
   return ctx;
 }
 
-/** Re-checked by every service that changes shop data, so a context obtained for one action cannot be reused for another. */
-export function assertPermission(ctx: Ctx, permission: Permission): void {
-  if (ctx.subscription === 'read_only' && !READ_ONLY_PERMISSIONS.includes(permission)) throw new AccessError('read_only');
+/**
+ * Re-checked by every service that changes shop data, so a context obtained for one action cannot be reused for another.
+ * allowReadOnly is for removing access (deactivating staff), which an unpaid shop must still be able to do.
+ */
+export function assertPermission(ctx: Ctx, permission: Permission, opts: { allowReadOnly?: boolean } = {}): void {
+  if (ctx.subscription === 'read_only' && !opts.allowReadOnly && !READ_ONLY_PERMISSIONS.includes(permission)) throw new AccessError('read_only');
   if (!ctx.permissions.includes(permission)) throw new AccessError('forbidden');
 }

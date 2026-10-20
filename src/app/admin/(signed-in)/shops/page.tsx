@@ -1,10 +1,12 @@
 import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listShops } from '@/server/platform-admin';
+import { adminCtx, adminToken } from '../../admin-ctx';
 import { createShopAction } from './actions';
 
 export default async function AdminShopsPage() {
-  const shops = await listShops(getDb(), new Date());
+  await adminCtx(); // redirects to sign-in; layouts are not a security boundary
+  const shops = await listShops(getDb(), await adminToken(), new Date());
   return (
     <main className="flex flex-col gap-8">
       <section>

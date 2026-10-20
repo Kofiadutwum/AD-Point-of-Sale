@@ -4,6 +4,8 @@ import type { Db } from '@/db/client';
 import { auditLog, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { findDeviceRegister, listTillStaff, registerDevice, switchCashierWithPin } from '@/server/devices';
+import { requireContext } from '@/server/context';
+import { hashSecret } from '@/server/crypto';
 import { validateSession } from '@/server/sessions';
 import { ctxFor, expectAccess, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
@@ -81,4 +83,14 @@ it('requires manage_devices and a till of this shop to register', async () => {
   const owner = await ctxFor(db, shop, 'owner', t0, 'manage_devices');
   expect(await registerDevice(db, owner, other.registerId, t0)).toEqual({ ok: false, error: 'unknown_register' });
   await expectAccess(registerDevice(db, await ctxFor(db, shop, 'kofi', t0), shop.registerId, t0), 'forbidden');
+});
+
+it('a PIN session only carries till permissions, even for the owner', async () => {
+  await asPlatform(db, async (tx) => {
+    await tx.update(users).set({ pinHash: (await hashSecret('1234')) }).where(eq(users.id, shop.users.owner.id));
+  });
+  const r = await pin(shop.users.owner.id, '1234') as { token: string };
+  const session = await validateSession(db, r.token, t0);
+  expect(session!.permissions.sort()).toEqual(['approve_actions', 'give_discount', 'make_sale']);
+  await expectAccess(requireContext(db, { slug: 'shop-a', sessionToken: r.token, permission: 'manage_staff' }, t0), 'forbidden');
 });

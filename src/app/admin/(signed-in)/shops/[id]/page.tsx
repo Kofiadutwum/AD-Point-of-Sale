@@ -2,11 +2,14 @@ import { notFound } from 'next/navigation';
 import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listShops } from '@/server/platform-admin';
+import { adminCtx, adminToken } from '../../../admin-ctx';
 import { issueLinkAction, recordPaymentAction, suspendAction } from './actions';
 
 export default async function AdminShopPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const [shop] = await listShops(getDb(), new Date(), id).catch(() => []);
+  await adminCtx(); // redirects to sign-in; layouts are not a security boundary
+  const token = await adminToken();
+  const [shop] = await listShops(getDb(), token, new Date(), id).catch(() => []);
   if (!shop) notFound();
   const suspended = shop.status === 'suspended';
   return (

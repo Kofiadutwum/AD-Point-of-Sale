@@ -14,6 +14,9 @@ export const ROLE_PRESETS: Record<RolePreset, readonly Permission[]> = {
 /** What a shop whose subscription is past its grace period may still do. */
 export const READ_ONLY_PERMISSIONS: readonly Permission[] = ['view_dashboard', 'view_reports', 'export_data'];
 
+/** A PIN unlocks only selling: a 4-6 digit PIN must never carry staff, settings, or device control. */
+export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_discount', 'approve_actions'];
+
 export type ShopType = 'retail' | 'pharmacy' | 'food';
 export const SHOP_TYPES: readonly ShopType[] = ['retail', 'pharmacy', 'food'];
 

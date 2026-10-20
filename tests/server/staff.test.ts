@@ -1,11 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Db } from '@/db/client';
-import { users } from '@/db/schema';
+import { branches, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { activateAccount } from '@/server/onboarding';
 import { createSession, validateSession } from '@/server/sessions';
-import { addStaff, deactivateStaff, listStaff, resetStaffAccess, setStaffPermissions } from '@/server/staff';
+import { addStaff, deactivateStaff, listStaff, resetStaffAccess, setStaffBranches, setStaffPermissions } from '@/server/staff';
 import { ctxFor, expectAccess, seedShop } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -109,6 +109,61 @@ it('stops a manager from raising permissions above their own or changing their o
   expect(await setStaffPermissions(db, ctx, shop.users.kofi.id, ['make_sale', 'manage_shop_settings'])).toEqual({ ok: false, error: 'cannot_grant' });
   expect(await setStaffPermissions(db, ctx, shop.users.manager.id, ['make_sale'])).toEqual({ ok: false, error: 'cannot_change_self' });
   expect(await setStaffPermissions(db, ctx, shop.users.kofi.id, ['make_sale', 'view_reports'])).toEqual({ ok: true });
+});
+
+it('refuses to add staff whose role carries permissions the actor lacks', async () => {
+  const shop = await seedShop(db, { users: [{ key: 'owner', email: 'o@x.test' }, { key: 'lead', email: 'l@x.test', rolePreset: 'cashier' }] });
+  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'manage_staff'] }).where(eq(users.id, shop.users.lead.id)));
+  const ctx = await ctxFor(db, shop, 'lead', t0, 'manage_staff');
+  expect(await addStaff(db, ctx, { name: 'M', email: 'm2@x.test', rolePreset: 'manager', branchIds: [shop.branchId] }, t0))
+    .toEqual({ ok: false, error: 'cannot_grant' });
+  expect(await addStaff(db, ctx, cashier(1, shop.branchId), t0)).toMatchObject({ ok: true });
+});
+
+it('refuses to reset, deactivate, or edit a member who holds more permissions', async () => {
+  const shop = await seedShop(db, { users: [
+    { key: 'owner', email: 'o@x.test' }, { key: 'm1', email: 'm1@x.test', rolePreset: 'manager' }, { key: 'm2', email: 'm2@x.test', rolePreset: 'manager' },
+  ] });
+  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'manage_staff', 'manage_shop_settings'] }).where(eq(users.id, shop.users.m2.id)));
+  const ctx = await ctxFor(db, shop, 'm1', t0, 'manage_staff');
+  expect(await resetStaffAccess(db, ctx, shop.users.m2.id, t0)).toEqual({ ok: false, error: 'cannot_change' });
+  expect(await deactivateStaff(db, ctx, shop.users.m2.id, 'x')).toEqual({ ok: false, error: 'cannot_change' });
+  expect(await setStaffPermissions(db, ctx, shop.users.m2.id, ['make_sale'])).toEqual({ ok: false, error: 'cannot_change' });
+  expect(await setStaffBranches(db, ctx, shop.users.m2.id, [shop.branchId])).toEqual({ ok: false, error: 'cannot_change' });
+});
+
+it('reactivating a former member counts against the plan staff limit', async () => {
+  const shop = await seedShop(db, { subscription: trial });
+  const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_staff');
+  const ids: string[] = [];
+  for (let i = 1; i <= 4; i++) ids.push((await addStaff(db, ctx, cashier(i, shop.branchId), t0) as { userId: string }).userId);
+  await deactivateStaff(db, ctx, ids[0], 'left');
+  const fifth = await addStaff(db, ctx, cashier(5, shop.branchId), t0) as { userId: string };
+  expect(await resetStaffAccess(db, ctx, ids[0], t0)).toEqual({ ok: false, error: 'limit_reached' });
+  await deactivateStaff(db, ctx, fifth.userId, 'left');
+  expect(await resetStaffAccess(db, ctx, ids[0], t0)).toMatchObject({ ok: true });
+  expect(await userRow(ids[0])).toMatchObject({ status: 'invited' });
+});
+
+it('lets the owner remove staff while the shop is read-only, but not add any', async () => {
+  const shop = await seedShop(db, { subscription: { status: 'active', endDate: '2026-09-01' }, users: [
+    { key: 'owner', email: 'o@x.test' }, { key: 'kofi', phone: '0201234567', rolePreset: 'cashier' },
+  ] });
+  const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_staff', { allowReadOnly: true });
+  expect(await deactivateStaff(db, ctx, shop.users.kofi.id, 'left the job')).toEqual({ ok: true });
+  await expectAccess(addStaff(db, ctx, cashier(1, shop.branchId), t0), 'read_only');
+  await expectAccess(ctxFor(db, shop, 'owner', t0, 'manage_staff'), 'read_only');
+});
+
+it('changes a member’s branches within the shop', async () => {
+  const shop = await seedShop(db, { users: [{ key: 'owner', email: 'o@x.test' }, { key: 'kofi', phone: '0201234567', rolePreset: 'cashier' }] });
+  const other = await seedShop(db);
+  const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_staff');
+  const [b2] = await asPlatform(db, (tx) => tx.insert(branches).values({ tenantId: shop.tenantId, name: 'Kumasi', branchCode: 'B2' }).returning());
+  expect(await setStaffBranches(db, ctx, shop.users.kofi.id, [b2.id])).toEqual({ ok: true });
+  expect(await userRow(shop.users.kofi.id)).toMatchObject({ branchIds: [b2.id] });
+  expect(await setStaffBranches(db, ctx, shop.users.kofi.id, [other.branchId])).toEqual({ ok: false, error: 'unknown_branch' });
+  expect(await setStaffBranches(db, ctx, shop.users.kofi.id, [])).toEqual({ ok: false, error: 'unknown_branch' });
 });
 
 it('sets known permissions and rejects unknown ones', async () => {

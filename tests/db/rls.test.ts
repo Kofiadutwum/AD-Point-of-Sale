@@ -63,3 +63,15 @@ it('seeds the trial and standard plans', async () => {
   expect(p.map((x) => x.id).sort()).toEqual(['standard', 'trial']);
   expect(p.find((x) => x.id === 'trial')!.limits).toEqual({ branches: 1, registers: 2, staff: 5, products: 500, sms_per_month: 50 });
 });
+
+it('every table in the public schema has RLS enabled', async () => {
+  const found = rows<{ relname: string; relrowsecurity: boolean }>(await asPlatform(db, (tx) => tx.execute(sql`
+    select c.relname, c.relrowsecurity from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public' where c.relkind = 'r'`)));
+  expect(found.length).toBeGreaterThanOrEqual(13);
+  expect(found.filter((r) => !r.relrowsecurity).map((r) => r.relname)).toEqual([]);
+});
+
+it('pos_app can still read plans', async () => {
+  expect(await withTenant(db, a.tenantId, (tx) => tx.select().from(plans))).toHaveLength(2);
+});

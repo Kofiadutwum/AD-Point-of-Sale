@@ -13,14 +13,21 @@ import { activationUrl, appName, issueToken, TOKEN_HOURS } from './onboarding';
 import { checkPlanLimit, lockTenant } from './plan-limits';
 
 type Member = typeof users.$inferSelect;
-type MemberError = 'not_found' | 'cannot_change_owner';
+type MemberError = 'not_found' | 'cannot_change_owner' | 'cannot_change';
 
-/** A non-owner member of the context's shop. Row-level security hides other shops' users. */
-async function findMember(tx: Tx, staffId: string): Promise<Member | MemberError> {
+/** Nobody may hand out, or take over, more than they hold themselves. */
+const within = (permissions: readonly string[], ctx: Ctx) => permissions.every((p) => ctx.permissions.includes(p as Permission));
+
+/**
+ * A member the actor may manage: in this shop (row-level security hides other shops' users),
+ * not the owner, and holding no permission the actor lacks.
+ */
+async function findMember(tx: Tx, ctx: Ctx, staffId: string): Promise<Member | MemberError> {
   if (!z.uuid().safeParse(staffId).success) return 'not_found';
   const [member] = await tx.select().from(users).where(eq(users.id, staffId));
   if (!member) return 'not_found';
-  return member.rolePreset === 'owner' ? 'cannot_change_owner' : member;
+  if (member.rolePreset === 'owner') return 'cannot_change_owner';
+  return within(member.permissions, ctx) ? member : 'cannot_change';
 }
 
 async function emailInvite(email: string | null, url: string): Promise<void> {
@@ -42,10 +49,21 @@ function contact(input: string | undefined, normalise: (s: string) => string | n
   return normalise(input) ?? 'invalid';
 }
 
+/** Every id must be a branch of this shop; row-level security hides other shops' branches. */
+async function knownBranches(tx: Tx, branchIds: string[]): Promise<boolean> {
+  const found = await tx.select({ id: branches.id }).from(branches).where(inArray(branches.id, branchIds));
+  return found.length === branchIds.length;
+}
+
+function cleanBranchIds(input: string[]): string[] | null {
+  const ids = [...new Set(input)];
+  return ids.length > 0 && ids.every((id) => z.uuid().safeParse(id).success) ? ids : null;
+}
+
 export type StaffMember = Pick<Member, 'id' | 'name' | 'email' | 'phone' | 'rolePreset' | 'status' | 'branchIds' | 'permissions'>;
 
 export async function listStaff(db: Db, ctx: Ctx): Promise<StaffMember[]> {
-  assertPermission(ctx, 'manage_staff');
+  assertPermission(ctx, 'manage_staff', { allowReadOnly: true });
   return withTenant(db, ctx.tenantId, (tx) => tx.select({
     id: users.id, name: users.name, email: users.email, phone: users.phone, rolePreset: users.rolePreset,
     status: users.status, branchIds: users.branchIds, permissions: users.permissions,
@@ -57,20 +75,20 @@ export async function addStaff(
   input: { name: string; email?: string; phone?: string; rolePreset: 'manager' | 'cashier'; branchIds: string[] },
   now: Date,
 ): Promise<{ ok: true; userId: string; inviteUrl: string }
-  | { ok: false; error: 'limit_reached' | 'contact_required' | 'duplicate_contact' | 'unknown_branch' | 'invalid_input' }> {
+  | { ok: false; error: 'limit_reached' | 'contact_required' | 'duplicate_contact' | 'unknown_branch' | 'invalid_input' | 'cannot_grant' }> {
   assertPermission(ctx, 'manage_staff');
   const name = input.name.trim();
   if (!name || !['manager', 'cashier'].includes(input.rolePreset)) return { ok: false, error: 'invalid_input' };
+  if (!within(ROLE_PRESETS[input.rolePreset], ctx)) return { ok: false, error: 'cannot_grant' };
   const email = contact(input.email, normaliseEmail);
   const phone = contact(input.phone, normaliseGhanaPhone);
   if (email === 'invalid' || phone === 'invalid' || (!email && !phone)) return { ok: false, error: 'contact_required' };
-  const branchIds = [...new Set(input.branchIds)];
-  if (branchIds.length === 0 || !branchIds.every((id) => z.uuid().safeParse(id).success)) return { ok: false, error: 'unknown_branch' };
+  const branchIds = cleanBranchIds(input.branchIds);
+  if (!branchIds) return { ok: false, error: 'unknown_branch' };
 
   const result = await withTenant(db, ctx.tenantId, async (tx) => {
     await lockTenant(tx, ctx.tenantId);
-    const found = await tx.select({ id: branches.id }).from(branches).where(inArray(branches.id, branchIds));
-    if (found.length !== branchIds.length) return { ok: false, error: 'unknown_branch' } as const;
+    if (!(await knownBranches(tx, branchIds))) return { ok: false, error: 'unknown_branch' } as const;
     if ((await checkPlanLimit(tx, ctx.tenantId, 'staff')) === 'limit_reached') return { ok: false, error: 'limit_reached' } as const;
     const same = [email ? eq(users.email, email) : null, phone ? eq(users.phone, phone) : null].filter((c): c is SQL => c !== null);
     const [dup] = await tx.select({ id: users.id }).from(users).where(or(...same));
@@ -89,19 +107,31 @@ export async function addStaff(
   return { ok: true, userId: result.userId, inviteUrl };
 }
 
-/** Clears the password and PIN, signs the member out everywhere, and issues a fresh invite. */
+/**
+ * Clears the password and PIN, signs the member out everywhere, and issues a fresh invite.
+ * For a deactivated member this is reactivation (rehiring), so it counts against the plan's staff limit
+ * and is not allowed while the shop is read-only.
+ */
 export async function resetStaffAccess(
   db: Db, ctx: Ctx, staffId: string, now: Date,
-): Promise<{ ok: true; inviteUrl: string } | { ok: false; error: MemberError }> {
-  assertPermission(ctx, 'manage_staff');
+): Promise<{ ok: true; inviteUrl: string } | { ok: false; error: MemberError | 'limit_reached' }> {
+  assertPermission(ctx, 'manage_staff', { allowReadOnly: true });
   const result = await withTenant(db, ctx.tenantId, async (tx) => {
-    const member = await findMember(tx, staffId);
+    await lockTenant(tx, ctx.tenantId);
+    const member = await findMember(tx, ctx, staffId);
     if (typeof member === 'string') return { ok: false, error: member } as const;
+    if (member.status === 'inactive') {
+      assertPermission(ctx, 'manage_staff');
+      if ((await checkPlanLimit(tx, ctx.tenantId, 'staff')) === 'limit_reached') return { ok: false, error: 'limit_reached' } as const;
+    }
     await tx.update(users).set({ passwordHash: null, pinHash: null, failedPinCount: 0, pinLockedUntil: null, status: 'invited' })
       .where(eq(users.id, member.id));
     await tx.delete(sessions).where(eq(sessions.userId, member.id));
     const token = await issueToken(tx, ctx.tenantId, member.id, 'invite', now);
-    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'staff_access_reset', recordType: 'user', recordId: member.id });
+    await writeAudit(tx, {
+      tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId,
+      action: member.status === 'inactive' ? 'staff_reactivated' : 'staff_access_reset', recordType: 'user', recordId: member.id,
+    });
     return { ok: true, token, email: member.email } as const;
   });
   if (!result.ok) return result;
@@ -110,12 +140,13 @@ export async function resetStaffAccess(
   return { ok: true, inviteUrl };
 }
 
+/** Allowed while the shop is read-only: an unpaid owner must still be able to cut off a former employee. */
 export async function deactivateStaff(
   db: Db, ctx: Ctx, staffId: string, reason: string,
 ): Promise<{ ok: true } | { ok: false; error: MemberError | 'cannot_change_self' }> {
-  assertPermission(ctx, 'manage_staff');
+  assertPermission(ctx, 'manage_staff', { allowReadOnly: true });
   return withTenant(db, ctx.tenantId, async (tx) => {
-    const member = await findMember(tx, staffId);
+    const member = await findMember(tx, ctx, staffId);
     if (typeof member === 'string') return { ok: false, error: member } as const;
     if (member.id === ctx.userId) return { ok: false, error: 'cannot_change_self' } as const;
     await tx.update(users).set({ status: 'inactive' }).where(eq(users.id, member.id));
@@ -133,15 +164,35 @@ export async function setStaffPermissions(
   assertPermission(ctx, 'manage_staff');
   if (!permissions.every(isPermission)) return { ok: false, error: 'invalid_permission' };
   const wanted = [...new Set(permissions)] as Permission[];
-  if (!wanted.every((p) => ctx.permissions.includes(p))) return { ok: false, error: 'cannot_grant' };
+  if (!within(wanted, ctx)) return { ok: false, error: 'cannot_grant' };
   return withTenant(db, ctx.tenantId, async (tx) => {
-    const member = await findMember(tx, staffId);
+    const member = await findMember(tx, ctx, staffId);
     if (typeof member === 'string') return { ok: false, error: member } as const;
     if (member.id === ctx.userId) return { ok: false, error: 'cannot_change_self' } as const;
     await tx.update(users).set({ permissions: wanted }).where(eq(users.id, member.id));
     await writeAudit(tx, {
       tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'staff_permissions_changed',
       recordType: 'user', recordId: member.id, changes: { permissions: wanted },
+    });
+    return { ok: true } as const;
+  });
+}
+
+/** Spec 4.6: assigns a member to branches; tills only list staff assigned to their branch. */
+export async function setStaffBranches(
+  db: Db, ctx: Ctx, staffId: string, branchIdsInput: string[],
+): Promise<{ ok: true } | { ok: false; error: MemberError | 'unknown_branch' }> {
+  assertPermission(ctx, 'manage_staff');
+  const branchIds = cleanBranchIds(branchIdsInput);
+  if (!branchIds) return { ok: false, error: 'unknown_branch' };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const member = await findMember(tx, ctx, staffId);
+    if (typeof member === 'string') return { ok: false, error: member } as const;
+    if (!(await knownBranches(tx, branchIds))) return { ok: false, error: 'unknown_branch' } as const;
+    await tx.update(users).set({ branchIds }).where(eq(users.id, member.id));
+    await writeAudit(tx, {
+      tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'staff_branches_changed',
+      recordType: 'user', recordId: member.id, changes: { branchIds },
     });
     return { ok: true } as const;
   });

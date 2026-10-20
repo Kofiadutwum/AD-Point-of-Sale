@@ -9,6 +9,7 @@ import {
   activateAccount, getShopProfile, issueActivationLink, issueOwnerActivationLink, type OnboardInput, onboardShop, updateShopProfile,
 } from '@/server/onboarding';
 import { createPlatformAdmin } from '@/server/platform-admin';
+import { createSession, validateSession } from '@/server/sessions';
 import type { ManualPayment } from '@/server/subscriptions';
 import { ctxFor, expectAccess, seedShop } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
@@ -120,4 +121,14 @@ it('issues a new link for the shop owner', async () => {
   const fresh = await issueOwnerActivationLink(db, adminId, r.tenantId, t0);
   expect(fresh.activationUrl).not.toBe(r.activationUrl);
   expect(await activateAccount(db, { token: tokenOf(fresh.activationUrl), password: 'long-enough-1' }, t0)).toEqual({ ok: true, slug: 'ama-pharmacy' });
+});
+
+it('setting a password from a new activation link ends the user’s old sessions', async () => {
+  const r = await onboardShop(db, adminId, base, t0) as { tenantId: string; activationUrl: string };
+  await activateAccount(db, { token: tokenOf(r.activationUrl), password: 'long-enough-1' }, t0);
+  const [owner] = await asPlatform(db, (tx) => tx.select().from(users));
+  const { token: stolen } = await createSession(db, { tenantId: r.tenantId, userId: owner.id, kind: 'password' }, t0);
+  const fresh = await issueOwnerActivationLink(db, adminId, r.tenantId, t0);
+  await activateAccount(db, { token: tokenOf(fresh.activationUrl), password: 'brand-new-pass-1' }, t0);
+  expect(await validateSession(db, stolen, t0)).toBeNull();
 });

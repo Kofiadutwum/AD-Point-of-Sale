@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
 import { sessions, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
-import type { Permission, RolePreset } from '@/lib/permissions';
+import { type Permission, type RolePreset, TILL_PERMISSIONS } from '@/lib/permissions';
 import { newToken, tokenHash } from './crypto';
 
 export type SessionKind = 'password' | 'pin';
@@ -53,7 +53,8 @@ export async function validateSession(db: Db, token: string, now: Date): Promise
     }
     return {
       sessionId: id, kind: row.s.kind, tenantId: row.s.tenantId, userId: row.u.id, registerId: row.s.registerId,
-      name: row.u.name, rolePreset: row.u.rolePreset, permissions: row.u.permissions as Permission[], expiresAt,
+      name: row.u.name, rolePreset: row.u.rolePreset, expiresAt,
+      permissions: (row.u.permissions as Permission[]).filter((p) => row.s.kind === 'password' || TILL_PERMISSIONS.includes(p)),
     };
   });
 }

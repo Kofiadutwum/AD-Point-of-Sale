@@ -15,3 +15,8 @@ export async function adminCtx(): Promise<{ adminId: string; name: string }> {
     throw e;
   }
 }
+
+/** The admin session cookie, for services that check the admin session themselves. */
+export async function adminToken(): Promise<string | undefined> {
+  return (await cookies()).get(ADMIN_COOKIE)?.value;
+}

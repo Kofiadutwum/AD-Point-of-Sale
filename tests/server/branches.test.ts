@@ -1,6 +1,7 @@
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { registers } from '@/db/schema';
+import { registers, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { addBranch, addRegister, listBranches } from '@/server/branches';
 import { ctxFor, expectAccess, seedShop } from '../helpers/fixtures';
@@ -57,4 +58,12 @@ it('lists branches with their tills', async () => {
   expect(list).toHaveLength(1);
   expect(list[0]).toMatchObject({ name: 'Main', branchCode: 'B1' });
   expect(list[0].registers.map((r) => r.registerCode)).toEqual(['T1', 'T2']);
+});
+
+it('adds the owner to every new branch so they can sell there', async () => {
+  const shop = await seedShop(db);
+  const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_shop_settings');
+  const added = await addBranch(db, ctx, { name: 'Kumasi', branchCode: 'B2' }) as { branchId: string };
+  const [owner] = await asPlatform(db, (tx) => tx.select().from(users).where(eq(users.id, shop.users.owner.id)));
+  expect(owner.branchIds).toEqual([shop.branchId, added.branchId]);
 });
