@@ -63,9 +63,13 @@ export async function saveSellingAction(slug: string, _prev: FormState, formData
     taxEnabled: formData.get('taxEnabled') === 'on', scaleLayout, modules: formData.getAll('modules').map(String) as Module[],
   });
   if (!r.ok) {
-    return { error: r.error === 'barcodes_clash'
-      ? `These barcodes would be read as scale labels: ${r.codes.join(', ')}. Change them or use another prefix.`
-      : 'Check the details.' };
+    if (r.error === 'barcodes_clash') {
+      return { error: `These barcodes would be read as scale labels: ${r.codes.join(', ')}. Change them or use another prefix.` };
+    }
+    if (r.error === 'scale_codes_clash') {
+      return { error: `These scale item codes would be misread with this layout: ${r.codes.join(', ')}. Change those items first.` };
+    }
+    return { error: 'Check the details.' };
   }
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Saved.' };

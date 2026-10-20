@@ -5,7 +5,7 @@ import { asPlatform } from '@/db/tenant';
 import type { Module } from '@/lib/permissions';
 import type { Ctx } from '@/server/context';
 import { getSellingSettings, saveSellingSettings } from '@/server/shop-settings';
-import { ctxFor, expectAccess, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
+import { ctxFor, expectAccess, PRICE_LAYOUT, productFor, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
 const t0 = new Date('2026-10-20T10:00:00Z');
@@ -50,6 +50,17 @@ it('refuses a scale layout that clashes with saved barcodes', async () => {
   expect(await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: WEIGHT_LAYOUT, modules: [] }))
     .toEqual({ ok: false, error: 'barcodes_clash', codes: ['2100123012503'] });
   expect((await getSellingSettings(db, owner)).scaleLayout).toBeNull();
+});
+
+it('refuses a layout that would misread saved scale items', async () => {
+  await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: PRICE_LAYOUT, modules: [] });
+  await productFor(db, owner, { baseUnit: 'bag', allowsFractions: true, variants: [{ scaleItemCode: 456, basePricePesewas: 900, costPesewas: 1 }] });
+  const clash = { ok: false, error: 'scale_codes_clash', codes: ['456'] };
+  expect(await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: WEIGHT_LAYOUT, modules: [] })).toEqual(clash); // grams of a bag
+  expect(await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: { ...PRICE_LAYOUT, itemLength: 2, valueStart: 4 }, modules: [] }))
+    .toEqual(clash); // 456 no longer fits two digits
+  expect((await getSellingSettings(db, owner)).scaleLayout).toEqual(PRICE_LAYOUT);
+  expect(await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: null, modules: [] })).toEqual({ ok: true });
 });
 
 it('needs manage_shop_settings', async () => {

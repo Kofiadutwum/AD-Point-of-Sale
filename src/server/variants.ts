@@ -190,6 +190,11 @@ export async function updateUnit(
     if (!old) return fail('not_found');
     // the base unit is the stock unit: its factor stays 1 and its price is the variant's base price
     if (old.isBase ? u.factor !== '1.000' || u.pricePesewas !== null : !validFactor(u.factor)) return fail('invalid_input');
+    if (old.isBase && u.name.toLowerCase() !== 'kg') {
+      // weight labels give grams of a kg item; renaming its base unit would make the till misread them
+      const [v] = await tx.select({ code: variants.scaleItemCode }).from(variants).where(eq(variants.id, old.variantId));
+      if (v.code !== null && (await scaleLayoutOf(tx, ctx.tenantId))?.carries === 'weight') return fail('invalid_input');
+    }
     if (await nameTaken(tx, old.variantId, u.name, unitId)) return fail('duplicate_name');
     await tx.update(variantUnits).set(u).where(eq(variantUnits.id, unitId));
     await audit(tx, ctx, 'unit_updated', 'unit', unitId, {

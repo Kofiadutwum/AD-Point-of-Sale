@@ -1,12 +1,13 @@
 import 'server-only';
-import { and, asc, eq, like, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, like, sql } from 'drizzle-orm';
 import type { Db } from '@/db/client';
-import { barcodes, tenants } from '@/db/schema';
+import { barcodes, products, tenants, variants, variantUnits } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { type ScaleLayout, validScaleLayout } from '@/lib/barcode';
 import { type Module, MODULES } from '@/lib/permissions';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
+import { scaleCodeProblem } from './products';
 
 export type SellingSettings = { taxEnabled: boolean; scaleLayout: ScaleLayout | null; modules: Module[] };
 
@@ -22,7 +23,7 @@ export async function getSellingSettings(db: Db, ctx: Ctx): Promise<SellingSetti
 
 export async function saveSellingSettings(
   db: Db, ctx: Ctx, input: SellingSettings,
-): Promise<{ ok: true } | { ok: false; error: 'invalid_input' } | { ok: false; error: 'barcodes_clash'; codes: string[] }> {
+): Promise<{ ok: true } | { ok: false; error: 'invalid_input' } | { ok: false; error: 'barcodes_clash' | 'scale_codes_clash'; codes: string[] }> {
   assertPermission(ctx, 'manage_shop_settings');
   const modules = [...new Set(input.modules)];
   const l = input.scaleLayout;
@@ -38,6 +39,16 @@ export async function saveSellingSettings(
         eq(barcodes.tenantId, ctx.tenantId), sql`${barcodes.code} ~ '^[0-9]{13}$'`, like(barcodes.code, `${layout.prefix}%`),
       )).orderBy(asc(barcodes.code)).limit(5);
       if (clash.length) return { ok: false, error: 'barcodes_clash', codes: clash.map((c) => c.code) } as const;
+      // saved scale items must still read correctly: a weight layout needs kg items, and every code must fit the item digits
+      const weighed = await tx.select({
+        code: variants.scaleItemCode, kind: variants.kind, allowsFractions: variants.allowsFractions, basePricePesewas: variants.basePricePesewas,
+        tracking: products.tracking, baseUnit: variantUnits.name,
+      }).from(variants)
+        .innerJoin(products, eq(products.id, variants.productId))
+        .innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
+        .where(isNotNull(variants.scaleItemCode)).orderBy(asc(variants.scaleItemCode));
+      const misread = weighed.filter((v) => scaleCodeProblem(v.code!, layout, v) !== null).slice(0, 5);
+      if (misread.length) return { ok: false, error: 'scale_codes_clash', codes: misread.map((v) => String(v.code)) } as const;
     }
     await tx.update(tenants).set({ taxEnabled: input.taxEnabled, scaleBarcode: layout, modules }).where(eq(tenants.id, ctx.tenantId));
     await writeAudit(tx, {

@@ -128,6 +128,13 @@ it('records price changes in the audit log', async () => {
   expect(await updateVariant(db, owner, other.variantId, { ...fields, sku: 'm1' })).toEqual({ ok: false, error: 'duplicate_sku', detail: 'M1' });
 });
 
+it("will not rename a weighed item's base unit away from kg", async () => {
+  await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: WEIGHT_LAYOUT, modules: [] });
+  const p = await productFor(db, owner, { baseUnit: 'kg', allowsFractions: true, variants: [{ scaleItemCode: 123, basePricePesewas: 9000, costPesewas: 7000 }] });
+  expect(await updateUnit(db, owner, p.baseUnitId, unit('piece', '1'))).toEqual({ ok: false, error: 'invalid_input' });
+  expect(await updateUnit(db, owner, p.baseUnitId, unit('KG', '1'))).toEqual({ ok: true });
+});
+
 it('keeps the scale code when an edit leaves it out', async () => {
   await saveSellingSettings(db, owner, { taxEnabled: false, scaleLayout: WEIGHT_LAYOUT, modules: [] });
   const p = await productFor(db, owner, { baseUnit: 'kg', allowsFractions: true, variants: [{ sku: 'BEEF', scaleItemCode: 123, basePricePesewas: 9000, costPesewas: 7000 }] });
