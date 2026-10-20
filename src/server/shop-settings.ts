@@ -58,3 +58,28 @@ export async function saveSellingSettings(
     return { ok: true } as const;
   });
 }
+
+export type SalesSettings = { allowNegativeStock: boolean; taxNumber: string | null; receiptFooter: string | null };
+
+/** Readable by any signed-in member: receipts and the till need them. */
+export async function getSalesSettings(db: Db, ctx: Ctx): Promise<SalesSettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx
+    .select({ allowNegativeStock: tenants.allowNegativeStock, taxNumber: tenants.taxNumber, receiptFooter: tenants.receiptFooter })
+    .from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+export async function saveSalesSettings(db: Db, ctx: Ctx, input: SalesSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const clean = (v: string | null, max: number) => (typeof v === 'string' && v.trim() ? v.trim() : null) ?? (v === null || typeof v === 'string' ? null : undefined);
+  const taxNumber = clean(input.taxNumber, 30);
+  const receiptFooter = clean(input.receiptFooter, 300);
+  if (typeof input.allowNegativeStock !== 'boolean' || taxNumber === undefined || receiptFooter === undefined
+    || (taxNumber?.length ?? 0) > 30 || (receiptFooter?.length ?? 0) > 300) return { ok: false, error: 'invalid_input' };
+  const next = { allowNegativeStock: input.allowNegativeStock, taxNumber, receiptFooter };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'sales_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}
