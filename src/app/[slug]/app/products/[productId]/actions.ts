@@ -7,6 +7,8 @@ import {
   addBarcode, addComponent, addUnit, addVariant, removeBarcode, removeComponent, removeUnit, setVariantStatus, updateUnit, updateVariant,
 } from '@/server/variants';
 import { removePriceListItem, setPriceListItem } from '@/server/price-lists';
+import { getImageStore } from '@/server/image-store';
+import { makeMainImage, removeProductImage, uploadProductImage } from '@/server/product-images';
 import { pageCtx } from '../../page-ctx';
 import { catalogueMessage, cedis, optionalNumber, readProductFields, readUnitFields, readVariantFields, value } from '../form-data';
 
@@ -95,4 +97,29 @@ export async function setListPriceAction(slug: string, productId: string, unitId
 
 export async function removeListPriceAction(slug: string, productId: string, itemId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
   return run(slug, productId, 'List price removed.', (ctx) => removePriceListItem(getDb(), ctx, itemId));
+}
+
+const PHOTO_MESSAGES: Record<string, string> = {
+  image_limit_reached: 'A product can have up to 5 photos.',
+  too_large: 'Photo is too large. Choose one under 10 MB.',
+  unsupported_type: 'Choose a JPEG, PNG, or WebP photo.',
+  heic_not_supported: 'iPhone HEIC photos are not supported. Choose the photo again from Photos, or set Settings › Camera › Formats to Most Compatible.',
+  could_not_read: 'This file could not be read as a photo.',
+  could_not_compress: 'Photo too detailed. Try a closer or plainer photo.',
+};
+
+/** Called by PhotoUpload with the photo the device already compressed; the server re-compresses it regardless. */
+export async function uploadPhotoAction(slug: string, productId: string, fd: FormData): Promise<FormState> {
+  const photo = fd.get('photo');
+  if (!(photo instanceof Blob)) return { error: 'Choose a photo' };
+  const bytes = new Uint8Array(await photo.arrayBuffer());
+  return run(slug, productId, 'Photo added.', (ctx) => uploadProductImage(getDb(), getImageStore(), ctx, productId, bytes), PHOTO_MESSAGES);
+}
+
+export async function makeMainPhotoAction(slug: string, productId: string, imageId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'Main photo set.', (ctx) => makeMainImage(getDb(), ctx, imageId));
+}
+
+export async function removePhotoAction(slug: string, productId: string, imageId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'Photo removed.', (ctx) => removeProductImage(getDb(), getImageStore(), ctx, imageId));
 }

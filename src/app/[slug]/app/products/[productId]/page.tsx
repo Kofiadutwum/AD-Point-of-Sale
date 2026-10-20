@@ -8,7 +8,10 @@ import { listTaxRules } from '@/server/tax-rules';
 import { variantCost } from '@/server/variants';
 import { pageCtx } from '../../page-ctx';
 import { ProductFieldsInputs } from '../product-fields';
-import { addVariantAction, setProductStatusAction, updateProductAction } from './actions';
+import { PhotoUpload } from '@/components/photo-upload';
+import {
+  addVariantAction, makeMainPhotoAction, removePhotoAction, setProductStatusAction, updateProductAction, uploadPhotoAction,
+} from './actions';
 import { VariantSection } from './variant-section';
 
 export default async function ProductPage({ params }: { params: Promise<{ slug: string; productId: string }> }) {
@@ -36,6 +39,23 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         <ActionForm action={updateProductAction.bind(null, slug, productId)} submitLabel="Save">
           <ProductFieldsInputs product={product} categories={cats} taxRules={rules} modules={selling.modules} />
         </ActionForm>
+      </section>
+      <section className="flex max-w-2xl flex-col gap-3">
+        <h2 className="text-lg font-semibold">Photos</h2>
+        <p className="text-sm text-gray-700">Up to 5 photos. The first is the main photo. Photos are stored at 20–30 KB with location data removed.</p>
+        <ul className="flex flex-wrap gap-3">
+          {product.images.map((img, i) => (
+            <li key={img.id} className="flex w-32 flex-col gap-1 text-sm">
+              <img src={`/${slug}/app/images/${img.id}`} alt={`${product.name} photo ${i + 1}`} width={128} height={128}
+                loading="lazy" className="h-32 w-32 rounded border object-cover" />
+              {i === 0
+                ? <span className="font-medium">Main photo</span>
+                : <ActionForm action={makeMainPhotoAction.bind(null, slug, productId, img.id)} submitLabel="Make main"><span /></ActionForm>}
+              <ActionForm action={removePhotoAction.bind(null, slug, productId, img.id)} submitLabel="Remove"><span /></ActionForm>
+            </li>
+          ))}
+        </ul>
+        {product.images.length < 5 && <PhotoUpload upload={uploadPhotoAction.bind(null, slug, productId)} />}
       </section>
       <section className="flex max-w-2xl flex-col gap-4">
         <h2 className="text-lg font-semibold">Variants</h2>
