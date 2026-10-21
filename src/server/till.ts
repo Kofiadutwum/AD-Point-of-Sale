@@ -81,3 +81,9 @@ export async function registerById(db: Db, tenantId: string, registerId: string)
   const { status: _status, ...till } = r;
   return till;
 }
+
+/** Whether shelf prices include tax; the till shows totals the same way the server works them out. */
+export async function tillTaxMode(db: Db, ctx: Ctx): Promise<'inclusive' | 'exclusive'> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({ taxMode: tenants.taxMode }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t.taxMode;
+}
