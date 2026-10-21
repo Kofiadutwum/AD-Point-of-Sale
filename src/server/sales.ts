@@ -95,6 +95,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         .where(inArray(users.id, [ctx.userId, ...(s.cashierId ? [s.cashierId] : [])]));
       const me = people.find((u) => u.id === ctx.userId);
       if (!me || !me.branchIds.includes(reg.branchId)) return refuse('not_assigned');
+      const reasons = new Set<string>();
       let cashierId = ctx.userId;
       let cashierPermissions: readonly string[] = ctx.permissions;
       if (s.cashierId && s.cashierId !== ctx.userId) {
@@ -102,6 +103,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         const c = people.find((u) => u.id === s.cashierId);
         if (!outbox || !c || c.status !== 'active' || !c.permissions.includes('make_sale') || !c.branchIds.includes(reg.branchId)) return refuse('cashier_not_allowed');
         cashierId = c.id;
+        reasons.add('cashier_override'); // the sale is recorded under someone other than the signed-in user
         cashierPermissions = c.permissions as Permission[];
       }
 
@@ -120,7 +122,6 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       const today = todayIn(shop.timezone, now);
       const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
       const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
-      const reasons = new Set<string>();
       const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
 
       const priced = [];
@@ -146,7 +147,8 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         const currentPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
         if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
         const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
-        if (l.discountPesewas > 0 && !cashierPermissions.includes('give_discount')) return refuse('discount_not_allowed');
+        // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
+        if (l.discountPesewas > 0 && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
         if (l.discountPesewas > gross) return refuse('discount_too_large');
         const baseQty = multiplyQty(quantity, item.factor);
         const lineSerials = l.serials ?? [];
@@ -187,10 +189,11 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
           refuse('insufficient_store_credit');
         }
-        await tx.insert(payments).values({
+        const [paidRow] = await tx.insert(payments).values({
           id: t.id, tenantId: ctx.tenantId, saleId: s.saleId, method: t.method, amountPesewas: t.amountPesewas, reference: t.reference || null,
           status: 'confirmed', confirmedBy: t.method === 'cash' ? null : ctx.userId, // manual payments: the cashier confirms the money arrived (4.3)
-        });
+        }).onConflictDoNothing({ target: payments.id }).returning({ id: payments.id });
+        if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
       }
       await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
 

@@ -217,3 +217,24 @@ it('needs a till and a shop that may sell', async () => {
   const roCtx = await ctxFor(db, ro, 'owner', t0);
   await expectAccess(completeSale(db, roCtx, saleInput({ lines: [line(p, '1', 500)] }), t0), 'read_only');
 });
+
+it("a cashier cannot borrow another user's discount permission through the outbox, and a cashier override is flagged", async () => {
+  const manager = shop.users.owner.id;
+  expect(await completeSale(db, cashier, saleInput({ cashierId: manager, fromOfflineOutbox: true, lines: [line(p, '1', 500, { discountPesewas: 50 })], tenders: [cash(450)] }), t0))
+    .toEqual(fail('discount_not_allowed'));
+  expect(await completeSale(db, cashier, saleInput({ cashierId: shop.users.cashier2.id, fromOfflineOutbox: true, lines: [line(p, '1', 500)] }), t0)).toMatchObject({ ok: true });
+  expect((await allSales())[0]).toMatchObject({ needsReview: true, reviewReasons: ['cashier_override'] });
+});
+
+it("a tender id used by another shop is a 409-style refusal, not a crash", async () => {
+  const b = await seedShop(db, { slug: 'shop-b', users: [
+    { key: 'owner', email: 'o@b.test', password: 'correct-horse-1', rolePreset: 'owner' },
+    { key: 'cashier', phone: '0200000009', pin: '1234', rolePreset: 'cashier' },
+  ] });
+  const ownerB = await ctxFor(db, b, 'owner', t0);
+  const pb = await productFor(db, ownerB);
+  const tender = cash(500);
+  expect(await completeSale(db, await tillCtxFor(db, b, 'cashier', t0), saleInput({ lines: [line(pb, '1', 500)], tenders: [tender] }), t0)).toMatchObject({ ok: true });
+  expect(await completeSale(db, cashier, saleInput({ lines: [line(p, '1', 500)], tenders: [tender] }), t0)).toEqual(fail('duplicate_tender_id'));
+  expect(await onHand()).toBe('10.000');
+});
