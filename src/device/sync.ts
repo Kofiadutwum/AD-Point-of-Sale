@@ -114,6 +114,7 @@ export async function sendSaleNow(deps: SyncDeps, saleId: string): Promise<
   }
   if (r.outcome === 'review') {
     await deps.store.deleteOutbox(saleId);
+    if (r.error === 'duplicate_receipt_number') await restoreCounter(deps);
     return { result: 'rejected', error: r.error ?? 'refused' };
   }
   // from here on it is an outbox sale: the server may accept the price the customer paid (spec 6.10)

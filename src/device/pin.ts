@@ -40,18 +40,23 @@ export async function verifyPinOffline(store: DeviceStore, cache: DeviceCache, s
 export async function switchCashier(
   deps: { store: DeviceStore; fetch: typeof fetch; slug: string; now: () => number }, staffId: string, pin: string,
 ): Promise<{ ok: true; cashier: ActiveCashier } | { ok: false; error: string }> {
-  let reply: { ok?: boolean; error?: string } | null = null;
+  let reply: { ok?: boolean; error?: string } | null;
   try {
     const res = await deps.fetch(`/api/${deps.slug}/device/pin`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ staffId, pin }),
     });
-    reply = res.status < 500 ? await res.json().catch(() => null) : null;
+    // only a network failure may use the cached hash; an error page from the server or a proxy is not one
+    reply = res.ok ? await res.json().catch(() => ({ ok: false })) : { ok: false };
   } catch {
     reply = null; // network failure: fall through to the cached hash
   }
   const cache = await deps.store.getCache();
   if (reply) {
-    if (!reply.ok) return { ok: false, error: MESSAGES[reply.error ?? ''] ?? 'Could not switch cashier.' };
+    if (reply.error === 'device_not_registered') { // spec 4.9: a removed device wipes its saved PINs
+      await deps.store.wipeCache();
+      await deps.store.patchMeta({ deregistered: true });
+    }
+    if (!reply.ok) return { ok: false, error: MESSAGES[reply.error ?? ''] ?? 'Could not switch cashier. Try again.' };
     const name = cache?.staff.find((s) => s.id === staffId)?.name ?? 'Cashier';
     return { ok: true, cashier: { staffId, name, serverSession: true } };
   }

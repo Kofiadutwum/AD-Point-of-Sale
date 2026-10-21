@@ -97,3 +97,21 @@ it('uses the cached hash only when the server cannot be reached', async () => {
   expect(await switchCashier(deps(down), 'kofi', '5678')).toEqual({ ok: true, cashier: { staffId: 'kofi', name: 'Kofi', serverSession: false } });
   expect(await switchCashier(deps(down), 'kofi', '1111')).toEqual({ ok: false, error: 'Wrong PIN.' });
 }, 60_000);
+
+it('never checks the cached hash when the server answers with an error page', async () => {
+  const s = store();
+  await s.setCache(await cacheWith('5678'));
+  const deps = { store: s, fetch: (async () => new Response('<html>', { status: 503 })) as typeof fetch, slug: 'shop-a', now: () => now };
+  expect(await switchCashier(deps, 'kofi', '5678')).toEqual({ ok: false, error: 'Could not switch cashier. Try again.' });
+  const proxy = { ...deps, fetch: (async () => new Response('<html>', { status: 404 })) as typeof fetch };
+  expect((await switchCashier(proxy, 'kofi', '5678')).ok).toBe(false);
+}, 60_000);
+
+it('wipes saved PINs when the server says the device was removed', async () => {
+  const s = store();
+  await s.setCache(await cacheWith('5678'));
+  const deps = { store: s, fetch: (async () => Response.json({ ok: false, error: 'device_not_registered' })) as typeof fetch, slug: 'shop-a', now: () => now };
+  expect((await switchCashier(deps, 'kofi', '5678')).ok).toBe(false);
+  expect(await s.getCache()).toBeNull();
+  expect((await s.getMeta()).deregistered).toBe(true);
+}, 60_000);

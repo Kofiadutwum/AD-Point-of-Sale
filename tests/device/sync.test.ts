@@ -158,3 +158,12 @@ it('drops held sales a manager resolved', async () => {
   await refreshCache({ ...deps(store, device(3, 0, ['a']).fetch), force: true });
   expect((await store.listOutbox()).map((e) => e.saleId)).toEqual(['b']);
 });
+
+it('raises the counter when the first online send hits a duplicate receipt number', async () => {
+  const store = await setup(['a']);
+  const f = fakeFetch((url) => url.endsWith('/register/counter')
+    ? Response.json({ registerCode: 'T1', lastCounter: 70 })
+    : Response.json({ ok: false, error: 'duplicate_receipt_number' }, { status: 409 }));
+  expect(await sendSaleNow(deps(store, f.fetch), 'a')).toEqual({ result: 'rejected', error: 'duplicate_receipt_number' });
+  expect((await store.getMeta()).counter).toBe(70);
+});
