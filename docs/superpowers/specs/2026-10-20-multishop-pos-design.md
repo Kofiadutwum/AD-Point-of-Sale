@@ -2221,7 +2221,7 @@ Version 3 compared this specification with Loyverse, Square, Shopify POS, Lights
 - GRA E-VAT integration is a later phase, not a launch requirement (section 4.11).
 - Pharmacies launch with basic rules: batch and expiry tracking and a prescription-only flag, with no regulator reporting (section 4.23).
 - Monthly plan prices start at GHS 150 / 300 / 600 for Starter / Standard / Pro (section 4.27).
-- The production database is PostgreSQL on Neon instead of Supabase (section 11). Product photo storage and the live-screen channel need a non-Supabase choice.
+- The production database is PostgreSQL on Neon instead of Supabase (section 11). Product photos are stored in a private Cloudflare R2 bucket. The live-screen channel still needs a non-Supabase choice.
 
 ### 10.2 Still Open
 
@@ -2230,7 +2230,7 @@ Version 3 compared this specification with Loyverse, Square, Shopify POS, Lights
 - Commission rates for Bolt Food and Chowdeck are entered by each shop from its own contract; published rates were not verified.
 - Free trial length and SMS cap (proposed: 14 days, 50 SMS), and when self sign-up opens.
 - Which modules each plan includes, and staff, product and SMS limits per plan (prices and branch/till limits are decided, section 4.27).
-- Where product photos are stored now that Supabase Storage is not used (for example Cloudflare R2 or Vercel Blob), and which real-time channel drives live screens.
+- Which real-time channel drives live screens now that Supabase Realtime is not used.
 - Loyalty earn and spend rates, points expiry, gift card expiry under consumer law, and store credit expiry.
 - No-receipt return limit (proposed: 2 per customer per month), layaway minimum deposit (proposed: 20%), and cancellation fee.
 - Data retention period after account closure.
@@ -2259,7 +2259,7 @@ These were considered for food businesses and deliberately left out of this spec
 Recommended stack (a builder may adjust it with reason):
 
 - **Application:** Next.js with TypeScript for the POS, back office, and server-rendered storefront.
-- **Database:** PostgreSQL on Neon (pooled connection, no prepared statements) with Row-Level Security. Authentication is the app's own (section 6.1). Product photo storage is still to choose (section 10.2).
+- **Database:** PostgreSQL on Neon (pooled connection, no prepared statements) with Row-Level Security. Authentication is the app's own (section 6.1). Product photos are kept in a private Cloudflare R2 bucket through its S3 API and served only through the app.
 - **Offline:** PWA with a service worker and IndexedDB for the cached catalogue and the sale outbox.
 - **Hosting and jobs:** Vercel for the application; scheduled jobs trigger report and renewal work; a queue table in PostgreSQL feeds the notification and payment workers.
 - **Images:** browser canvas compression on the device; the sharp library on the server.

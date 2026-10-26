@@ -1,8 +1,9 @@
 import 'server-only';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { AwsClient } from 'aws4fetch';
 
-/** Where product photos live: local disk in development, a private Supabase Storage bucket in production. */
+/** Where product photos live: local disk in development, a private Cloudflare R2 bucket in production. */
 export type ImageStore = {
   put(key: string, data: Uint8Array): Promise<void>;
   get(key: string): Promise<Uint8Array | null>;
@@ -39,42 +40,42 @@ export function diskImageStore(dir: string): ImageStore {
   };
 }
 
-/** Supabase Storage REST API with the service key (server only). */
-export function supabaseImageStore(opts: { url: string; key: string; bucket: string; fetchFn?: typeof fetch }): ImageStore {
-  const base = `${opts.url.replace(/\/+$/, '')}/storage/v1/object`;
+/** Cloudflare R2 through its S3 API, signed with an R2 API token's keys (server only). */
+export function r2ImageStore(opts: {
+  accountId: string; accessKeyId: string; secretAccessKey: string; bucket: string; fetchFn?: typeof fetch;
+}): ImageStore {
+  const client = new AwsClient({ accessKeyId: opts.accessKeyId, secretAccessKey: opts.secretAccessKey, service: 's3', region: 'auto' });
   const fetchFn = opts.fetchFn ?? fetch;
-  const auth = { apikey: opts.key, Authorization: `Bearer ${opts.key}` };
-  const refuse = (res: Response, what: string) => new Error(`Supabase Storage ${what} failed: ${res.status}`);
+  const url = (key: string) => `https://${opts.accountId}.r2.cloudflarestorage.com/${opts.bucket}/${checkKey(key)}`;
+  const send = async (key: string, init: RequestInit) => fetchFn(await client.sign(url(key), init));
+  const refuse = (res: Response, what: string) => new Error(`R2 ${what} failed: ${res.status}`);
   return {
     async put(key, data) {
-      const res = await fetchFn(`${base}/${opts.bucket}/${checkKey(key)}`, {
-        method: 'POST', headers: { ...auth, 'Content-Type': 'image/webp' }, body: new Blob([new Uint8Array(data)], { type: 'image/webp' }),
-      });
+      const res = await send(key, { method: 'PUT', headers: { 'Content-Type': 'image/webp' }, body: new Uint8Array(data) });
       if (!res.ok) throw refuse(res, 'upload');
     },
     async get(key) {
-      const res = await fetchFn(`${base}/authenticated/${opts.bucket}/${checkKey(key)}`, { method: 'GET', headers: auth });
-      if (res.status === 400 || res.status === 404) return null; // Storage answers 400 for a missing object
+      const res = await send(key, { method: 'GET' });
+      if (res.status === 404) return null;
       if (!res.ok) throw refuse(res, 'download');
       return new Uint8Array(await res.arrayBuffer());
     },
     async remove(key) {
-      const res = await fetchFn(`${base}/${opts.bucket}`, {
-        method: 'DELETE', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ prefixes: [checkKey(key)] }),
-      });
-      if (!res.ok) throw refuse(res, 'delete');
+      const res = await send(key, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw refuse(res, 'delete');
     },
   };
 }
 
 let store: ImageStore | undefined;
 
-/** SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY set → private bucket 'product-images'; otherwise .data/images on disk. */
+/** R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY set → private R2 bucket (R2_BUCKET, default 'product-images'); otherwise .data/images on disk. */
 export function getImageStore(): ImageStore {
   if (!store) {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    store = url && key ? supabaseImageStore({ url, key, bucket: 'product-images' }) : diskImageStore(path.join(process.cwd(), '.data', 'images'));
+    const { R2_ACCOUNT_ID: accountId, R2_ACCESS_KEY_ID: accessKeyId, R2_SECRET_ACCESS_KEY: secretAccessKey } = process.env;
+    store = accountId && accessKeyId && secretAccessKey
+      ? r2ImageStore({ accountId, accessKeyId, secretAccessKey, bucket: process.env.R2_BUCKET || 'product-images' })
+      : diskImageStore(path.join(process.cwd(), '.data', 'images'));
   }
   return store;
 }
