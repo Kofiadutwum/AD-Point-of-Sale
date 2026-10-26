@@ -1,11 +1,11 @@
 'use server';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { cookieOptions, MFA_COOKIE, SESSION_COOKIE } from '@/lib/cookies';
 import { verifyMfaSignIn } from '@/server/mfa';
-import { clientIp } from '../actions';
+import { clientIp } from '@/server/rate-limit';
 
 const MESSAGES = {
   expired: 'Sign in again.',
@@ -16,7 +16,7 @@ const MESSAGES = {
 export async function mfaAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const jar = await cookies();
   const r = await verifyMfaSignIn(getDb(), {
-    slug, challengeToken: jar.get(MFA_COOKIE)?.value ?? '', code: String(formData.get('code') ?? ''), ip: await clientIp(),
+    slug, challengeToken: jar.get(MFA_COOKIE)?.value ?? '', code: String(formData.get('code') ?? ''), ip: clientIp(await headers()),
   }, new Date());
   if (!r.ok) return { error: MESSAGES[r.error] };
   jar.delete(MFA_COOKIE);
