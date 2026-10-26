@@ -6,7 +6,7 @@ import { addBranch, addRegister } from '@/server/branches';
 import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parsePercent } from '@/lib/tax';
-import { saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
@@ -105,4 +105,14 @@ export async function saveTaxRuleAction(slug: string, _prev: FormState, formData
   if (!r.ok) return { error: TAX_ERRORS[r.error] };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Tax rule saved.' };
+}
+
+export async function saveSalesAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const r = await saveSalesSettings(getDb(), ctx, {
+    allowNegativeStock: fd.get('allowNegativeStock') === 'on', taxNumber: String(fd.get('taxNumber') ?? ''), receiptFooter: String(fd.get('receiptFooter') ?? ''),
+  });
+  if (!r.ok) return { error: 'Check the details.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
 }

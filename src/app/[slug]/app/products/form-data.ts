@@ -45,6 +45,7 @@ const MESSAGES: Record<string, (detail?: string) => string> = {
   not_found: () => 'This item no longer exists.',
   last_variant: () => 'Archive the product instead.',
   base_unit: () => 'The base unit cannot be removed.',
+  in_use: () => 'This item already has stock or sales, so its tracking, fractions, and unit sizes cannot change.',
   contains_itself: () => 'A bundle cannot contain itself.',
   unknown_component: () => 'No item has that SKU or barcode.',
   invalid_quantity: () => 'Enter a quantity above zero; whole numbers for items sold whole.',

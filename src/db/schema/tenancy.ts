@@ -23,6 +23,9 @@ export const tenants = pgTable('tenants', {
   taxEnabled: boolean('tax_enabled').notNull().default(false),
   scaleBarcode: jsonb('scale_barcode').$type<ScaleLayout>(), // null = no scale labels
   offlineEnabled: boolean('offline_enabled').notNull().default(true), // spec 4.9: a shop can switch offline selling off
+  allowNegativeStock: boolean('allow_negative_stock').notNull().default(true), // spec 4.1: sell past zero and alert, unless the shop blocks it
+  taxNumber: text('tax_number'), // TIN or VAT number printed on receipts
+  receiptFooter: text('receipt_footer'), // return policy text
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),
@@ -83,5 +86,6 @@ export const registers = pgTable('registers', {
   createdAt: createdAt(),
 }, (t) => [
   unique('registers_code').on(t.tenantId, t.registerCode),
+  unique('registers_tenant_id').on(t.tenantId, t.id), // target of composite foreign keys
   check('registers_status', sql`${t.status} in ('active', 'retired')`),
 ]);

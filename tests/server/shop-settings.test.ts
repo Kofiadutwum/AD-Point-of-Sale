@@ -4,7 +4,7 @@ import { barcodes, products, variants, variantUnits } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import type { Module } from '@/lib/permissions';
 import type { Ctx } from '@/server/context';
-import { getSellingSettings, saveSellingSettings } from '@/server/shop-settings';
+import { getSalesSettings, getSellingSettings, saveSalesSettings, saveSellingSettings } from '@/server/shop-settings';
 import { ctxFor, expectAccess, PRICE_LAYOUT, productFor, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -65,4 +65,10 @@ it('refuses a layout that would misread saved scale items', async () => {
 
 it('needs manage_shop_settings', async () => {
   await expectAccess(saveSellingSettings(db, await ctxFor(db, shop, 'manager', t0), { taxEnabled: true, scaleLayout: null, modules: [] }), 'forbidden');
+});
+
+it('saves the sales settings and audits them', async () => {
+  expect(await saveSalesSettings(db, owner, { allowNegativeStock: false, taxNumber: ' C0001234567 ', receiptFooter: 'No returns after 7 days.' })).toEqual({ ok: true });
+  expect(await getSalesSettings(db, owner)).toEqual({ allowNegativeStock: false, taxNumber: 'C0001234567', receiptFooter: 'No returns after 7 days.' });
+  expect(await saveSalesSettings(db, owner, { allowNegativeStock: true, taxNumber: '  ', receiptFooter: 'x'.repeat(301) })).toEqual({ ok: false, error: 'invalid_input' });
 });

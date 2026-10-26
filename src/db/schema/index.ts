@@ -4,4 +4,6 @@ export * from './offline';
 export * from './people';
 export * from './platform';
 export * from './security';
+export * from './selling';
+export * from './stock';
 export * from './tenancy';

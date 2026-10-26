@@ -15,24 +15,22 @@ export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export type Driver = 'pglite' | 'postgres';
 
 const MIGRATIONS_FOLDER = './drizzle';
-// on globalThis: `next start` loads this module once per bundle (pages, actions, route handlers), and two PGlite
-// instances on one folder never see each other's writes
+// one instance per process: Next can load this module separately for route handlers and pages, and two PGlite
+// instances on one folder lose each other's writes
 const shared = globalThis as typeof globalThis & { __posDb?: Db };
 
 /** DATABASE_URL → postgres.js (Supabase pooler, so no prepared statements); empty → local PGlite. */
 export function getDb(): Db {
-  let instance = shared.__posDb;
-  if (!instance) {
+  if (!shared.__posDb) {
     const url = process.env.DATABASE_URL;
     if (url) {
-      instance = drizzlePostgres(postgres(url, { prepare: false }), { schema }) as unknown as Db;
+      shared.__posDb = drizzlePostgres(postgres(url, { prepare: false }), { schema }) as unknown as Db;
     } else {
       mkdirSync('.data', { recursive: true });
-      instance = drizzlePglite(new PGlite('.data/pglite'), { schema }) as unknown as Db;
+      shared.__posDb = drizzlePglite(new PGlite('.data/pglite'), { schema }) as unknown as Db;
     }
-    shared.__posDb = instance;
   }
-  return instance;
+  return shared.__posDb;
 }
 
 export async function runMigrations(db: Db, driver: Driver): Promise<void> {
