@@ -65,11 +65,14 @@ export const branches = pgTable('branches', {
   tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
   name: text('name').notNull(),
   branchCode: text('branch_code').notNull(),
+  serviceModes: text('service_modes').array().notNull().default(sql`'{}'`), // food: 'counter' | 'table' | 'quick' (spec 4.24)
+  boardTokenHash: text('board_token_hash').unique(), // sha256 of the Ready board link token
   address: text('address'),
   phone: text('phone'),
   createdAt: createdAt(),
 }, (t) => [
   unique('branches_code').on(t.tenantId, t.branchCode),
+  check('branches_service_modes', sql`${t.serviceModes} <@ array['counter', 'table', 'quick']::text[]`),
   unique('branches_tenant_id').on(t.tenantId, t.id), // target of composite foreign keys
 ]);
 

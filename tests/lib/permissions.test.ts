@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { DEFAULT_MODULES, MODULES, PERMISSIONS, ROLE_PRESETS } from '@/lib/permissions';
+import { DEFAULT_MODULES, MODULES, PERMISSIONS, ROLE_PRESETS, TILL_PERMISSIONS } from '@/lib/permissions';
 
 it('gives owners every permission and managers all but shop settings', () => {
   expect([...ROLE_PRESETS.owner].sort()).toEqual([...PERMISSIONS].sort());
@@ -7,8 +7,15 @@ it('gives owners every permission and managers all but shop settings', () => {
   expect(ROLE_PRESETS.manager).toHaveLength(PERMISSIONS.length - 1);
 });
 
-it('lets cashiers only sell', () => {
-  expect(ROLE_PRESETS.cashier).toEqual(['make_sale']);
+it('lets cashiers only sell, mark items sold out, and run the kitchen', () => {
+  expect(ROLE_PRESETS.cashier).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen']);
+});
+
+it('a cashier PIN can mark sold out and run the kitchen', () => {
+  for (const p of ['mark_sold_out', 'run_kitchen'] as const) {
+    expect(ROLE_PRESETS.cashier).toContain(p);
+    expect(TILL_PERMISSIONS).toContain(p);
+  }
 });
 
 it('switches on the right modules per shop type', () => {

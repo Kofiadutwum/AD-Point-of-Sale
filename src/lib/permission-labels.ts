@@ -25,4 +25,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   view_dashboard: 'See the dashboard',
   view_reports: 'See reports',
   export_data: 'Export data',
+  mark_sold_out: 'Mark items sold out',
+  run_kitchen: 'Run the kitchen screen and packing check',
 };

@@ -72,10 +72,15 @@ export const sales = pgTable('sales', {
   completedAt: timestamptz('completed_at'),
   businessDate: date('business_date', { mode: 'string' }).notNull(),
   shareCode: text('share_code').notNull().unique(),
+  serviceMode: text('service_mode').$type<'counter' | 'quick'>(), // food sales only
+  diningOption: text('dining_option').$type<'eat_in' | 'takeaway' | 'delivery'>(),
+  orderNumber: text('order_number'),
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
   index('sales_business_date').on(t.tenantId, t.businessDate),
+  check('sales_service_mode', sql`${t.serviceMode} in ('counter', 'quick')`),
+  check('sales_dining_option', sql`${t.diningOption} in ('eat_in', 'takeaway', 'delivery')`),
   foreignKey({ name: 'sales_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
   foreignKey({ name: 'sales_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),
   foreignKey({ name: 'sales_cashier_fk', columns: [t.tenantId, t.cashierId], foreignColumns: [users.tenantId, users.id] }),

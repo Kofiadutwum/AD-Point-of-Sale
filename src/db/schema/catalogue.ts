@@ -83,6 +83,7 @@ export const variants = pgTable('variants', {
   reorderLevel: quantity('reorder_level'),
   scaleItemCode: integer('scale_item_code'),
   sellable: boolean('sellable').notNull().default(true),
+  needsPack: boolean('needs_pack').notNull().default(false), // food: takeaway needs a pack for each unit (spec 6.56)
   status: text('status').$type<CatalogueStatus>().notNull().default('active'),
   createdAt: createdAt(),
 }, (t) => [
