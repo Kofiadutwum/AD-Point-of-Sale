@@ -46,3 +46,7 @@ next-env.d.ts
 
 # plan execution scratch
 .superpowers/
+
+# landing page source pictures; only the compressed copies in public/landing/web are committed
+/public/landing/*
+!/public/landing/web/
