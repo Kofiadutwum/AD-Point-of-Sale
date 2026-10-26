@@ -56,6 +56,13 @@ it('applies a payment reference only once, even concurrently', async () => {
   expect((await subscriptionOf(s.tenantId)).endDate).toBe('2027-10-20');
 });
 
+it('treats references differing only in case or spaces as the same payment', async () => {
+  const s = await seedShop(db);
+  expect(await recordManualPayment(db, adminId, s.tenantId, pay(' MOMO-1 23 '), t0)).toMatchObject({ ok: true });
+  for (const again of ['momo-123', 'Momo-1 2 3'])
+    expect(await recordManualPayment(db, adminId, s.tenantId, pay(again), t0)).toEqual({ ok: false, error: 'duplicate_reference' });
+});
+
 it('rejects invalid payments', async () => {
   const s = await seedShop(db);
   const bad: ManualPayment[] = [
@@ -64,6 +71,7 @@ it('rejects invalid payments', async () => {
     { ...pay('X3'), periodMonths: 37 },
     { ...pay('   '), periodMonths: 1 },
     { ...pay('X4'), planId: 'gold' },
+    { ...pay('X5'), amountPesewas: 2_147_483_648 }, // above the int4 column
   ];
   for (const p of bad) expect(await recordManualPayment(db, adminId, s.tenantId, p, t0)).toEqual({ ok: false, error: 'invalid_payment' });
 });

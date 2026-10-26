@@ -19,7 +19,8 @@ const SLUG_HINTS: Record<string, string> = {
 function onboardMessage(e: OnboardError): string {
   switch (e.error) {
     case 'choose_another_slug': return `That shop address is not available. ${SLUG_HINTS[e.reason]}`;
-    case 'owner_contact_required': return 'Enter the owner’s email or a valid Ghana phone number.';
+    case 'owner_contact_required': return 'Enter a valid email, a valid Ghana phone number, or both for the owner.';
+    case 'name_required': return 'Enter the shop name and the owner’s name.';
     case 'duplicate_reference': return 'This payment reference was already recorded.';
     case 'invalid_payment': return 'Check the payment details.';
   }

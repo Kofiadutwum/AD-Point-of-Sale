@@ -30,8 +30,9 @@ export async function signIn(
   now: Date,
 ): Promise<SignInResult> {
   const id = normaliseIdentifier(input.identifier);
-  const who = id.email ?? id.phone ?? input.identifier.trim().toLowerCase();
-  const rateKey = `signin:${input.slug}:${input.ip}:${who}`;
+  // text that is neither may be a password typed into the wrong box, so it is never stored
+  const who = id.email ?? id.phone;
+  const rateKey = `signin:${input.slug}:${input.ip}:${who ?? 'unrecognised'}`;
 
   // one transaction for every check; the session is created after it commits
   type Outcome = { error: SignInError } | { challengeToken: string; expiresAt: Date } | { tenantId: string; userId: string };

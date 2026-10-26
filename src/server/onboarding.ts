@@ -39,6 +39,7 @@ export type OnboardInput = {
 export type OnboardError =
   | { error: 'choose_another_slug'; reason: SlugProblem | 'taken' }
   | { error: 'owner_contact_required' }
+  | { error: 'name_required' }
   | { error: PaymentError };
 
 class Rollback extends Error {
@@ -49,21 +50,25 @@ class Rollback extends Error {
 export async function onboardShop(
   db: Db, adminId: string, input: OnboardInput, now: Date,
 ): Promise<{ ok: true; tenantId: string; slug: string; activationUrl: string } | ({ ok: false } & OnboardError)> {
+  const shopName = input.name.trim();
+  const ownerName = input.owner.name.trim();
+  if (!shopName || !ownerName) return { ok: false, error: 'name_required' };
   const slug = normaliseSlug(input.requestedSlug);
   const problem = validateSlug(slug);
   if (problem !== 'ok') return { ok: false, error: 'choose_another_slug', reason: problem };
-  const email = input.owner.email ? normaliseEmail(input.owner.email) : null;
-  const phone = input.owner.phone ? normaliseGhanaPhone(input.owner.phone) : null;
-  if (!email && !phone) return { ok: false, error: 'owner_contact_required' };
+  const email = input.owner.email?.trim() ? (normaliseEmail(input.owner.email) ?? 'invalid') : null;
+  const phone = optionalPhone(input.owner.phone ?? '');
+  // a mistyped contact is refused, never dropped while the other one is kept
+  if (email === 'invalid' || phone === 'invalid' || (!email && !phone)) return { ok: false, error: 'owner_contact_required' };
 
   let created: { token: string; tenantId: string };
   try {
     created = await asPlatform(db, async (tx) => {
-      const [taken] = await tx.select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, slug));
-      if (taken) throw new Rollback({ error: 'choose_another_slug', reason: 'taken' });
+      // a concurrent create of the same slug waits for ours to commit, then inserts nothing
       const [tenant] = await tx.insert(tenants).values({
-        slug, name: input.name.trim(), shopType: input.shopType, modules: [...DEFAULT_MODULES[input.shopType]],
-      }).returning();
+        slug, name: shopName, shopType: input.shopType, modules: [...DEFAULT_MODULES[input.shopType]],
+      }).onConflictDoNothing({ target: tenants.slug }).returning();
+      if (!tenant) throw new Rollback({ error: 'choose_another_slug', reason: 'taken' });
       const today = todayIn(tenant.timezone, now);
       if (input.start.kind === 'trial') {
         await tx.insert(subscriptions).values({ tenantId: tenant.id, planId: 'trial', status: 'trial', endDate: addDays(today, TRIAL_DAYS) });
@@ -76,7 +81,7 @@ export async function onboardShop(
       const [branch] = await tx.insert(branches).values({ tenantId: tenant.id, name: 'Main', branchCode: 'B1' }).returning();
       await tx.insert(registers).values({ tenantId: tenant.id, branchId: branch.id, name: 'Till 1', registerCode: 'T1' });
       const [owner] = await tx.insert(users).values({
-        tenantId: tenant.id, name: input.owner.name.trim(), email, phone, rolePreset: 'owner',
+        tenantId: tenant.id, name: ownerName, email, phone, rolePreset: 'owner',
         permissions: [...ROLE_PRESETS.owner], branchIds: [branch.id], status: 'pending_activation',
       }).returning();
       const token = await issueToken(tx, tenant.id, owner.id, 'activation', now);

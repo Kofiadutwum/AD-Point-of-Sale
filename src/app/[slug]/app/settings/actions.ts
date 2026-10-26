@@ -29,18 +29,18 @@ export async function saveProfileAction(slug: string, _prev: FormState, formData
   return { error: null, message: 'Saved.' };
 }
 
-const LIMITS: Record<string, string> = {
-  limit_reached: 'Your plan allows no more of these. Upgrade to add more.',
+const failure = (things: 'branches' | 'tills'): Record<string, string> => ({
+  limit_reached: `Your plan allows no more ${things}. Upgrade to add more.`,
   duplicate_code: 'That code is already used in this shop.',
   unknown_branch: 'Choose a branch.',
   invalid_input: 'Enter a name and a code of up to 6 letters or numbers.',
-};
+});
 
 export async function addBranchAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const ctx = await pageCtx(slug, 'manage_shop_settings');
   const value = (k: string) => String(formData.get(k) ?? '');
   const r = await addBranch(getDb(), ctx, { name: value('name'), branchCode: value('code'), address: value('address'), phone: value('phone') });
-  if (!r.ok) return { error: LIMITS[r.error] };
+  if (!r.ok) return { error: failure('branches')[r.error] };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Branch added.' };
 }
@@ -49,7 +49,7 @@ export async function addRegisterAction(slug: string, _prev: FormState, formData
   const ctx = await pageCtx(slug, 'manage_shop_settings');
   const value = (k: string) => String(formData.get(k) ?? '');
   const r = await addRegister(getDb(), ctx, { branchId: value('branchId'), name: value('name'), registerCode: value('code') });
-  if (!r.ok) return { error: LIMITS[r.error] };
+  if (!r.ok) return { error: failure('tills')[r.error] };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Till added.' };
 }

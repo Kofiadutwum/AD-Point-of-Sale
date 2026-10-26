@@ -1,7 +1,7 @@
 import 'server-only';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db } from '@/db/client';
-import { auditLog, subscriptions, tenants } from '@/db/schema';
+import { auditLog, subscriptions, tenants, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { addDays, daysBetween, todayIn } from '@/lib/dates';
 import type { RolePreset } from '@/lib/permissions';
@@ -43,7 +43,8 @@ export async function getHomeSummary(db: Db, ctx: Ctx, now: Date): Promise<HomeS
     const [shop] = await tx.select({ name: tenants.name, sub: subscriptions }).from(tenants)
       .innerJoin(subscriptions, eq(subscriptions.tenantId, tenants.id)).where(eq(tenants.id, ctx.tenantId));
     const events = ctx.permissions.includes('view_dashboard')
-      ? await tx.select().from(auditLog)
+      ? await tx.select({ e: auditLog, staffName: users.name }).from(auditLog)
+        .leftJoin(users, and(eq(auditLog.recordType, 'user'), eq(auditLog.recordId, sql`${users.id}::text`)))
         .where(and(eq(auditLog.tenantId, ctx.tenantId), inArray(auditLog.action, SECURITY_ACTIONS)))
         .orderBy(desc(auditLog.createdAt), desc(auditLog.id)).limit(10)
       : [];
@@ -52,10 +53,12 @@ export async function getHomeSummary(db: Db, ctx: Ctx, now: Date): Promise<HomeS
       userName: ctx.name,
       rolePreset: ctx.rolePreset,
       banner: bannerFor(ctx.subscription, shop.sub, todayIn(ctx.timezone, now)),
-      securityEvents: events.map((e) => ({
+      securityEvents: events.map(({ e, staffName }) => ({
         action: e.action,
         at: e.createdAt,
-        detail: e.action === 'failed_sign_in' ? String(e.changes?.identifier ?? '') : (e.reason ?? e.recordId ?? ''),
+        detail: e.action === 'failed_sign_in'
+          ? String(e.changes?.identifier ?? 'not an email or phone number')
+          : (e.reason ?? staffName ?? e.recordId ?? ''),
       })),
     };
   });

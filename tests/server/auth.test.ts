@@ -36,6 +36,12 @@ it('gives the same error for unknown user and wrong password, and audits both', 
   expect(failed).toHaveLength(2);
 });
 
+it('never audits an identifier that is neither email nor phone, which may be a mistyped password', async () => {
+  expect(await go('correct-horse-1', 'correct-horse-1')).toEqual({ ok: false, error: 'access_denied' });
+  const [failed] = await withTenant(db, a.tenantId, (tx) => tx.select().from(auditLog).where(eq(auditLog.action, 'failed_sign_in')));
+  expect(failed.changes).toEqual({ identifier: null, ip: '1.1.1.1' });
+});
+
 it('denies unknown and suspended shops with access_denied', async () => {
   expect(await go('ama@shop-a.test', 'correct-horse-1', 'no-such-shop')).toEqual({ ok: false, error: 'access_denied' });
   await asPlatform(db, (tx) => tx.update(tenants).set({ status: 'suspended' }).where(eq(tenants.id, a.tenantId)));

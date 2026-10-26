@@ -4,7 +4,7 @@ import type { Db } from '@/db/client';
 import { auditLog } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { writeAudit } from '@/server/audit';
-import { clearAttempts, countFailedAttempt, tooManyAttempts } from '@/server/rate-limit';
+import { clearAttempts, clientIp, countFailedAttempt, tooManyAttempts } from '@/server/rate-limit';
 import { type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -47,4 +47,10 @@ it('starts a new window once the old one has passed', async () => {
     await countFailedAttempt(tx, 'k', later); // first failure of a fresh window
     expect(await tooManyAttempts(tx, 'k', later)).toBe(false);
   });
+});
+
+it('rate-limits by the address the proxy appended, not one the client put first', () => {
+  expect(clientIp(new Headers({ 'x-forwarded-for': '6.6.6.6, 41.66.1.2' }))).toBe('41.66.1.2');
+  expect(clientIp(new Headers({ 'x-forwarded-for': '41.66.1.2' }))).toBe('41.66.1.2');
+  expect(clientIp(new Headers())).toBe('unknown');
 });

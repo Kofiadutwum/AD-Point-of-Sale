@@ -16,3 +16,8 @@ it('trims and lowercases emails and rejects malformed ones', () => {
   expect(normaliseEmail('ama')).toBeNull();
   expect(normaliseEmail('ama@shop')).toBeNull();
 });
+
+it('accepts international prefixes written with 00 or a bracketed trunk 0', () => {
+  for (const input of ['00233 24 123 4567', '+233 (0)24 123 4567', '00233 (0) 24 123 4567'])
+    expect(normaliseGhanaPhone(input)).toBe('233241234567');
+});

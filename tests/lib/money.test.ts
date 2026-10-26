@@ -18,3 +18,8 @@ it('prices a quantity in whole pesewas, rounding half up', () => {
   expect(pesewasTimesQty(1999, '0.250')).toBe(500); // 499.75
   expect(pesewasTimesQty(1, '0.500')).toBe(1);
 });
+
+it('rejects amounts too large to count exactly in pesewas', () => {
+  expect(parseCedis('99999999999999999999')).toBeNull();
+  expect(parseCedis('90071992547409.92')).toBeNull();
+});

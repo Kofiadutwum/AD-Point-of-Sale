@@ -5,6 +5,7 @@ import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { cookieOptions, MFA_COOKIE, SESSION_COOKIE } from '@/lib/cookies';
 import { type SignInError, signIn } from '@/server/auth';
+import { clientIp } from '@/server/rate-limit';
 
 const MESSAGES: Record<SignInError, string> = {
   access_denied: 'Wrong email, phone, or password.',
@@ -12,16 +13,12 @@ const MESSAGES: Record<SignInError, string> = {
   account_disabled: 'This account is disabled. Ask your shop owner.',
 };
 
-export async function clientIp(): Promise<string> {
-  return (await headers()).get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
-}
-
 export async function signInAction(slug: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const result = await signIn(getDb(), {
     slug,
     identifier: String(formData.get('identifier') ?? ''),
     password: String(formData.get('password') ?? ''),
-    ip: await clientIp(),
+    ip: clientIp(await headers()),
   }, new Date());
   if (!result.ok) return { error: MESSAGES[result.error] };
   if (result.mfaRequired) {

@@ -7,6 +7,11 @@ export const MAX_ATTEMPTS = 10;
 export const WINDOW_MINUTES = 15;
 const WINDOW_MS = WINDOW_MINUTES * 60_000;
 
+/** Clients can send their own x-forwarded-for; the host's proxy (Vercel) appends the address it saw last. */
+export function clientIp(h: Pick<Headers, 'get'>): string {
+  return h.get('x-forwarded-for')?.split(',').at(-1)?.trim() || 'unknown';
+}
+
 export async function tooManyAttempts(tx: Tx, key: string, now: Date): Promise<boolean> {
   const [row] = await tx.select().from(authAttempts).where(eq(authAttempts.key, key));
   return !!row && row.windowStart.getTime() > now.getTime() - WINDOW_MS && row.count >= MAX_ATTEMPTS;
