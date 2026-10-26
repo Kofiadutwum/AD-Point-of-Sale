@@ -215,7 +215,7 @@ Roles are presets of individual permission flags, so an owner can change one per
 - **Shop setting:** prices are tax-inclusive (the shelf price already includes tax, default) or tax-exclusive (tax is added at the till).
 - Tax rules are configurable per shop and per product: name, rate, and whether levies stack. Rates are never hard-coded. Ghana’s VAT and levy structure has changed recently, so current GRA rules must be confirmed before launch.
 - Shops that are not VAT-registered can switch tax off.
-- **To confirm:** whether VAT-registered shops must issue invoices through GRA’s E-VAT system. If they must, E-VAT integration becomes a Phase 1 requirement for those shops.
+- **GRA E-VAT (decided 2026-10-26):** not built for launch. VAT-registered shops keep their own GRA process until E-VAT integration is built in a later phase, after GRA API access and certification.
 
 ### 4.12 Shop Storefront (Mini Landing Page)
 
@@ -329,7 +329,8 @@ Roles are presets of individual permission flags, so an owner can change one per
 - Prescription-only medicines are flagged. Selling one needs a user with the pharmacist permission (or their approval) and a prescription record: patient name, prescriber, facility, prescription date, and an optional photo of the prescription, kept in private storage.
 - A licensed chemical seller can be limited to over-the-counter medicines by a shop setting.
 - Reports: near-expiry stock, expired stock value, and a log of prescription-only sales.
-- **To confirm:** Pharmacy Council and FDA Ghana record-keeping rules, including what must be recorded, how long it must be kept, and any extra controls on certain medicines. Prescription fields can be switched on or made required to match.
+- **Launch scope (decided 2026-10-26):** basic pharmacy rules only: batch and expiry tracking, and a prescription-only flag on products. No reporting to regulators at launch.
+- **To confirm (later phase):** Pharmacy Council and FDA Ghana record-keeping rules, including what must be recorded, how long it must be kept, and any extra controls on certain medicines. Prescription fields can be switched on or made required to match.
 
 ### 4.24 Food Module
 
@@ -379,6 +380,7 @@ Roles are presets of individual permission flags, so an owner can change one per
 ### 4.27 Plans, Limits, and Free Trial
 
 - Each plan sets limits: branches, registers, staff, products, SMS per month, modules (pharmacy, food, online orders, API), and storage.
+- **Monthly prices (decided 2026-10-26, starting point):** Starter GHS 150 (1 branch, 2 tills), Standard GHS 300 (2 branches, 5 tills), Pro GHS 600 (5 branches, 15 tills). Staff, product, SMS and module limits per plan are still open.
 - Limits are checked on the server before a record is created. Reaching a limit shows an upgrade notice and never deletes data. After a downgrade, existing records stay but no new ones can be added above the limit.
 - **Free trial (proposed: 14 days, no card needed):** full features with a trial banner, a small SMS allowance (proposed: 50), and no online payments. Trial shops are created by the platform administrator in Phase 1 and by self sign-up with phone and email verification from Phase 3.
 
@@ -2214,13 +2216,21 @@ Version 3 compared this specification with Loyverse, Square, Shopify POS, Lights
 - Delivery-app orders are entered by hand at the POS at launch, with the platform’s order ID and commission rate.
 - A thermal kitchen printer through the print helper is the default kitchen setup.
 
+### 10.1a Decided on 2026-10-26
+
+- GRA E-VAT integration is a later phase, not a launch requirement (section 4.11).
+- Pharmacies launch with basic rules: batch and expiry tracking and a prescription-only flag, with no regulator reporting (section 4.23).
+- Monthly plan prices start at GHS 150 / 300 / 600 for Starter / Standard / Pro (section 4.27).
+- The production database is PostgreSQL on Neon instead of Supabase (section 11). Product photo storage and the live-screen channel need a non-Supabase choice.
+
 ### 10.2 Still Open
 
 - Pharmacy Council and FDA Ghana rules for prescription records, retention, and controlled medicines; whether prescription-only medicines may appear on the storefront at all.
 - Food businesses: check sell by amount and pot tracking with 3–5 local eateries before building; confirm the pot variance limit (proposed: 10%) and whether service charge and tips are needed.
 - Commission rates for Bolt Food and Chowdeck are entered by each shop from its own contract; published rates were not verified.
 - Free trial length and SMS cap (proposed: 14 days, 50 SMS), and when self sign-up opens.
-- Which modules each plan includes, and plan limits per resource.
+- Which modules each plan includes, and staff, product and SMS limits per plan (prices and branch/till limits are decided, section 4.27).
+- Where product photos are stored now that Supabase Storage is not used (for example Cloudflare R2 or Vercel Blob), and which real-time channel drives live screens.
 - Loyalty earn and spend rates, points expiry, gift card expiry under consumer law, and store credit expiry.
 - No-receipt return limit (proposed: 2 per customer per month), layaway minimum deposit (proposed: 20%), and cancellation fee.
 - Data retention period after account closure.
@@ -2229,7 +2239,6 @@ Version 3 compared this specification with Loyverse, Square, Shopify POS, Lights
 - Whether Paystack recurring card charges are enabled for the merchant account and market. Automatic recurring mobile money must not be promised unless the channel supports it.
 - SMS allowance per plan, charges for extra SMS, recipient verification, retry policy, message language, and report delivery times.
 - Offline limit (proposed: 72 hours since last sync).
-- Whether VAT-registered shops need GRA E-VAT integration, and in which phase.
 - The onboarding (KYC) and settlement model for integrated payments at the till: each shop’s own Paystack account or platform subaccounts.
 - When the storefront gains online orders, and whether the platform also offers a public directory of all shops.
 - Give the shop owner advance notice of the exact renewal amount and date, a clear way to cancel future automatic renewal, and a receipt for each successful charge.
@@ -2250,13 +2259,13 @@ These were considered for food businesses and deliberately left out of this spec
 Recommended stack (a builder may adjust it with reason):
 
 - **Application:** Next.js with TypeScript for the POS, back office, and server-rendered storefront.
-- **Database and storage:** PostgreSQL on Supabase for authentication, Row-Level Security, and image storage.
+- **Database:** PostgreSQL on Neon (pooled connection, no prepared statements) with Row-Level Security. Authentication is the app's own (section 6.1). Product photo storage is still to choose (section 10.2).
 - **Offline:** PWA with a service worker and IndexedDB for the cached catalogue and the sale outbox.
 - **Hosting and jobs:** Vercel for the application; scheduled jobs trigger report and renewal work; a queue table in PostgreSQL feeds the notification and payment workers.
 - **Images:** browser canvas compression on the device; the sharp library on the server.
 - **Camera scanning:** the browser’s built-in BarcodeDetector where available, with the ZXing library as fallback (for example on iPhones).
 - **SMS and email:** a Ghanaian SMS provider (such as Hubtel, Arkesel, or mNotify) chosen on price and sender-ID approval time, plus a transactional email service.
-- **Live screens:** a real-time channel (for example Supabase Realtime) for kitchen displays, customer displays, and open tickets shared between devices.
+- **Live screens:** a real-time channel (to choose; for example server-sent events or a hosted pub/sub service) for kitchen displays, customer displays, and open tickets shared between devices.
 - **Local print helper:** a small app on the shop’s computer or Android device that prints to receipt, kitchen, and label printers over USB, Bluetooth, or the network using ESC/POS, and opens the cash drawer, without print dialogs.
 
 ## 12. Implementation Phases

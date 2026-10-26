@@ -19,7 +19,7 @@ const MIGRATIONS_FOLDER = './drizzle';
 // instances on one folder lose each other's writes
 const shared = globalThis as typeof globalThis & { __posDb?: Db };
 
-/** DATABASE_URL → postgres.js (Supabase pooler, so no prepared statements); empty → local PGlite. */
+/** DATABASE_URL → postgres.js (Neon pooled connection, so no prepared statements); empty → local PGlite. */
 export function getDb(): Db {
   if (!shared.__posDb) {
     const url = process.env.DATABASE_URL;
