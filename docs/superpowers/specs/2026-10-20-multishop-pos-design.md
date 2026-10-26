@@ -2280,7 +2280,7 @@ Retail, pharmacy, and food launch together, so the first release is split into P
 - **Phase 5: Customer growth.** Automatic promotions and coupons, loyalty points, gift cards, layaway and special orders, staff commissions, and the customer-facing display.
 - **Phase 6: Larger retailers, online orders, and integrations.** Many registers per branch, integrated Paystack payments at the till, storefront online orders, accounting exports, API and outgoing webhooks, and subdomains or custom domains.
 
-GRA E-VAT integration moves into Phase 1b if VAT-registered shops are among the first customers (section 4.11).
+GRA E-VAT integration is not part of launch; it is built in a later phase (decided 2026-10-26, section 4.11).
 
 Testing and launch readiness run in every phase, not only at the end: tenant-isolation tests, payment-webhook tests, duplicate-event tests, stock concurrency tests, offline sync tests, backup restoration, security review, SMS delivery tests, and usability tests on phones, tablets, scanners, and printers.
 
