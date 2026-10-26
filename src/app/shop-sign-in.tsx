@@ -15,15 +15,15 @@ export function ShopSignIn({ host }: { host: string }) {
     >
       <label className="flex flex-1 flex-col gap-1 text-sm">
         Your shop address
-        <span className="flex items-center rounded-md border border-[#2B0838]/30 bg-white focus-within:border-[#0773B5] focus-within:ring-2 focus-within:ring-[#0773B5]/30">
-          <span className="pl-3 text-[#2B0838]/55">{host}/</span>
+        <span className="flex items-center rounded-md border border-[#17141A]/30 bg-white focus-within:border-[#C9430D] focus-within:ring-2 focus-within:ring-[#C9430D]/30">
+          <span className="pl-3 text-[#17141A]/55">{host}/</span>
           <input
             value={value} onChange={(e) => setValue(e.target.value)} required autoComplete="off"
             placeholder="your-shop" className="min-w-0 flex-1 bg-transparent py-2.5 pr-3 outline-none"
           />
         </span>
       </label>
-      <button type="submit" className="rounded-md border-2 border-[#2B0838] px-5 py-2.5 font-semibold hover:bg-[#2B0838] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0773B5]">
+      <button type="submit" className="rounded-full border-2 border-[#17141A] px-5 py-2.5 font-semibold hover:bg-[#17141A] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#F26A21]">
         Sign in
       </button>
     </form>
