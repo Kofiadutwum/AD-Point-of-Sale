@@ -6,7 +6,7 @@
 
 **Architecture:** One new schema file `src/db/schema/food.ts` holds food settings, per-day order counters, sold-out flags, kitchen orders, and packing ticks. `SaleInput` gains an optional `food` block. `completeSale` checks sold-out items and the pack line, then creates the kitchen order and its number in the same transaction as the sale, so a sale and its order are saved together or not at all. Pure rules (order number format, pack count, whether an order needs packing) live in `src/lib/food.ts` and are shared with the device. The till stays local-first: online it shows the number the server gives; offline (or when the outcome of an online send is unknown) it gives a register-prefixed number such as `T2-047` from a local per-day counter, and that printed number is what the server keeps. The kitchen screen and the Ready board are online pages, as the spec allows (4.24 "Offline").
 
-**Tech Stack:** As Phase 1a (Next.js 16 App Router, TypeScript, Drizzle + drizzle-kit, PGlite in tests and local dev, postgres.js on Supabase, zod 4, Vitest, `idb` on the device).
+**Tech Stack:** As Phase 1a (Next.js 16 App Router, TypeScript, Drizzle + drizzle-kit, PGlite in tests and local dev, postgres.js on Neon, zod 4, Vitest, `idb` on the device).
 
 **Spec:** `docs/superpowers/specs/2026-10-20-multishop-pos-design.md` (v4). Sections 4.24, 4.14, 10.1, 10.3; pseudocode 6.51, 6.55, 6.56, 6.58 and the parts of 6.37 that 6.51 calls; records in section 7 (Branch, Variant, Kitchen Order, Packing Record, Sold Out, Sale); acceptance tests in section 13 (order numbers, sold out, pack fee, packing check).
 
