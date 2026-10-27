@@ -7,9 +7,9 @@ import { asPlatform } from '@/db/tenant';
 import type { Ctx } from '@/server/context';
 import { setServiceModes } from '@/server/food-settings';
 import { getReceipt } from '@/server/receipts';
-import type { SaleResult } from '@/server/sales';
+import { completeSale, type SaleResult } from '@/server/sales';
 import { saveServiceCharge, saveTable } from '@/server/tables';
-import { addTicketLine, openTicket, payTicket, printBill, sendToKitchen, voidSentLine } from '@/server/tickets';
+import { addTicketLine, openTicket, payTicket, printBill, quoteTicket, sendToKitchen, voidSentLine } from '@/server/tickets';
 import { ctxFor, foodShop, productFor, type SeededShop, tillCtxFor } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -49,6 +49,21 @@ it('adds the service charge to the bill', async () => {
   // GHS 90 of jollof + 10% service charge
   expect(await saleOf(r)).toMatchObject({ totalPesewas: 9900, serviceChargePesewas: 900, serviceMode: 'table', diningOption: 'eat_in' });
   expect(await payTicket(db, till, { ticketId, tenders: cash(9000) }, t)).toEqual({ ok: false, error: 'ticket_not_open' });
+});
+
+it('the bill preview matches what is paid', async () => {
+  await addTicketLine(db, till, ticketId, { variantId: coke.variantId, unitId: coke.baseUnitId, quantity: '1' }, t);
+  const q = await quoteTicket(db, till, ticketId, t);
+  // 2 × GHS 45 + GHS 5 = GHS 95, + 10%
+  expect(q).toMatchObject({ subtotalPesewas: 9500, serviceChargePesewas: 950, totalPesewas: 10450, lines: [{ name: 'Jollof', totalPesewas: 9000 }, { name: 'Coke', totalPesewas: 500 }] });
+  expect(await saleOf(await payTicket(db, till, { ticketId, tenders: cash(q!.totalPesewas) }, t))).toMatchObject({ totalPesewas: q!.totalPesewas });
+});
+
+it('table mode needs a ticket and never comes from the outbox', async () => {
+  const base = { saleId: randomUUID(), receiptNumber: 'B1-T1-000900', deviceCreatedAt: t.toISOString(), tenders: cash(9900),
+    lines: [{ variantId: jollof.variantId, unitId: jollof.baseUnitId, quantity: '2', unitPricePesewas: 4500, discountPesewas: 0 }] };
+  expect(await completeSale(db, till, { ...base, food: { serviceMode: 'table', diningOption: 'eat_in' } }, t)).toEqual({ ok: false, error: 'invalid_input' });
+  expect(await completeSale(db, till, { ...base, fromOfflineOutbox: true, food: { serviceMode: 'table', diningOption: 'eat_in', ticketId } }, t)).toEqual({ ok: false, error: 'invalid_input' });
 });
 
 it("pays exactly the ticket's lines at today's prices", async () => {

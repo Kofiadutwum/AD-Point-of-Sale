@@ -33,6 +33,7 @@ export function ReceiptBody({ r }: { r: ReceiptView }) {
       <p className="flex justify-between"><span>Subtotal</span><span>{formatCedis(r.subtotalPesewas)}</span></p>
       {r.discountPesewas > 0 && <p className="flex justify-between"><span>Discounts</span><span>−{formatCedis(r.discountPesewas)}</span></p>}
       {r.taxPesewas > 0 && <p className="flex justify-between"><span>{r.taxMode === 'inclusive' ? 'Tax included' : 'Tax'}</span><span>{formatCedis(r.taxPesewas)}</span></p>}
+      {r.serviceChargePesewas > 0 && <p className="flex justify-between"><span>Service charge</span><span>{formatCedis(r.serviceChargePesewas)}</span></p>}
       <p className="flex justify-between text-sm font-bold"><span>TOTAL</span><span>{formatCedis(r.totalPesewas)}</span></p>
       {r.taxMode === 'inclusive' && r.taxPesewas > 0 && <p>Prices include tax</p>}
       <hr className="my-1 border-dashed border-black" />

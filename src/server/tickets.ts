@@ -4,20 +4,24 @@ import { and, asc, count, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  addOnOptions, branches, diningTables, foodSettings, type KitchenStation, products, registers, tenants, ticketLines, tickets, type TicketLineStatus, type TicketStatus, users,
+  addOnOptions, branches, diningTables, foodSettings, taxRules, type KitchenStation, products, registers, tenants, ticketLines, tickets, type TicketLineStatus, type TicketStatus, users,
   variants, variantUnits, wastageEntries,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
-import { businessDate } from '@/lib/dates';
+import { calculateCartTotals } from '@/lib/cart-totals';
+import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty } from '@/lib/decimal';
 import { formatReceiptNumber } from '@/device/sale';
-import { DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS, packCount } from '@/lib/food';
+import { addOnTotal, DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS, packCount, serviceChargePesewas } from '@/lib/food';
+import { choosePriceList, resolvePrice } from '@/lib/pricing';
+import { chooseTaxRule, effectiveRateBp } from '@/lib/tax';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid, itemLabel } from './products';
 import { verifyStaffPin } from './devices';
 import { costFor } from './pots';
-import { checkOrderLine, completeSale, isUniqueViolation, type OrderLineError, type SaleInput, type SaleResult } from './sales';
+import { loadPriceRules } from './price-lists';
+import { checkOrderLine, completeSale, isUniqueViolation, loadAddOnGroups, type OrderLineError, type SaleInput, type SaleResult } from './sales';
 import { deductRecipe } from './stock';
 import { costOf } from './variants';
 
@@ -25,6 +29,8 @@ export type TicketView = {
   id: string; label: string; tableId: string | null; status: TicketStatus; diningOption: DiningOption; waiterName: string; openedAt: Date;
   lines: Array<{ id: string; lineNo: number; name: string; quantity: string; addOns: string[]; note: string | null; station: KitchenStation; kitchenStatus: TicketLineStatus }>;
 };
+
+const myBranches = async (tx: Tx, ctx: Ctx) => (await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId)))[0]?.branchIds ?? [];
 
 /** The till's branch, or the user's only branch when not at a till. */
 export async function ticketBranch(tx: Tx, ctx: Ctx): Promise<string | null> {
@@ -79,7 +85,7 @@ export async function getTicket(db: Db, ctx: Ctx, ticketId: string): Promise<Tic
   if (!isUuid(ticketId)) return null;
   return withTenant(db, ctx.tenantId, async (tx) => {
     const [t] = await tx.select({ ticket: tickets, waiterName: users.name }).from(tickets).innerJoin(users, eq(users.id, tickets.waiterId)).where(eq(tickets.id, ticketId));
-    if (!t) return null;
+    if (!t || !(await myBranches(tx, ctx)).includes(t.ticket.branchId)) return null;
     const lines = await tx.select({ line: ticketLines, productName: products.name, variantName: variants.name }).from(ticketLines)
       .innerJoin(variants, eq(variants.id, ticketLines.variantId)).innerJoin(products, eq(products.id, variants.productId))
       .where(eq(ticketLines.ticketId, ticketId)).orderBy(asc(ticketLines.lineNo));
@@ -100,6 +106,7 @@ export async function listOpenTickets(db: Db, ctx: Ctx, branchId: string): Promi
   assertPermission(ctx, 'take_orders');
   if (!isUuid(branchId)) return [];
   return withTenant(db, ctx.tenantId, async (tx) => {
+    if (!(await myBranches(tx, ctx)).includes(branchId)) return [];
     const rows = await tx.select({ ticket: tickets, waiterName: users.name }).from(tickets).innerJoin(users, eq(users.id, tickets.waiterId))
       .where(and(eq(tickets.branchId, branchId), eq(tickets.status, 'open'))).orderBy(asc(tickets.openedAt));
     const counts = rows.length ? await tx.select({ ticketId: ticketLines.ticketId, n: count() }).from(ticketLines)
@@ -133,7 +140,7 @@ export async function currentTicketBranch(db: Db, ctx: Ctx): Promise<string | nu
 export async function listApprovers(db: Db, ctx: Ctx, branchId: string): Promise<Array<{ id: string; name: string }>> {
   assertPermission(ctx, 'take_orders');
   if (!isUuid(branchId)) return [];
-  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ id: users.id, name: users.name, permissions: users.permissions, branchIds: users.branchIds, pinHash: users.pinHash })
+  return withTenant(db, ctx.tenantId, async (tx) => !(await myBranches(tx, ctx)).includes(branchId) ? [] : (await tx.select({ id: users.id, name: users.name, permissions: users.permissions, branchIds: users.branchIds, pinHash: users.pinHash })
     .from(users).where(and(eq(users.status, 'active'), ne(users.id, ctx.userId))).orderBy(asc(users.name)))
     .filter((u) => u.pinHash && u.permissions.includes('void_sent_items') && u.branchIds.includes(branchId)).map((u) => ({ id: u.id, name: u.name })));
 }
@@ -191,8 +198,12 @@ export async function removeTicketLine(db: Db, ctx: Ctx, lineId: string): Promis
   assertPermission(ctx, 'take_orders');
   if (!isUuid(lineId)) return fail('not_found');
   return withTenant(db, ctx.tenantId, async (tx): Promise<{ ok: true } | Fail<'not_found' | 'already_sent'>> => {
-    const [line] = await tx.select().from(ticketLines).where(eq(ticketLines.id, lineId));
-    if (!line || typeof (await openTicketRow(tx, ctx, line.ticketId)) === 'string') return fail('not_found');
+    const [first] = await tx.select({ ticketId: ticketLines.ticketId }).from(ticketLines).where(eq(ticketLines.id, lineId));
+    const t = first ? await openTicketRow(tx, ctx, first.ticketId) : 'not_found';
+    if (typeof t === 'string') return fail('not_found');
+    // read the line again under the ticket lock: a send or a move may have changed it meanwhile
+    const [line] = await tx.select().from(ticketLines).where(and(eq(ticketLines.id, lineId), eq(ticketLines.ticketId, t.id))).for('update');
+    if (!line) return fail('not_found');
     if (line.kitchenStatus !== 'new') return fail('already_sent');
     await tx.delete(ticketLines).where(eq(ticketLines.id, line.id));
     return { ok: true };
@@ -224,10 +235,12 @@ export async function voidSentLine(db: Db, ctx: Ctx, input: { lineId: string; re
   const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
   if (reason.length < 1 || reason.length > 200 || !isUuid(input.lineId) || !isUuid(input.approverId) || typeof input.approverPin !== 'string') return fail('invalid_input');
   return withTenant(db, ctx.tenantId, async (tx): Promise<VoidResult> => {
-    const [line] = await tx.select().from(ticketLines).where(eq(ticketLines.id, input.lineId));
-    if (!line) return fail('not_found');
-    const t = await openTicketRow(tx, ctx, line.ticketId);
+    const [first] = await tx.select({ ticketId: ticketLines.ticketId }).from(ticketLines).where(eq(ticketLines.id, input.lineId));
+    const t = first ? await openTicketRow(tx, ctx, first.ticketId) : 'not_found';
     if (typeof t === 'string') return fail('not_found');
+    // read the line again under the ticket lock: a send or a move may have changed it meanwhile
+    const [line] = await tx.select().from(ticketLines).where(and(eq(ticketLines.id, input.lineId), eq(ticketLines.ticketId, t.id))).for('update');
+    if (!line) return fail('not_found');
     if (line.kitchenStatus !== 'sent' && line.kitchenStatus !== 'ready') return fail('not_sent');
     if (input.approverId === ctx.userId) return fail('self_approval');
     const [approver] = await tx.select().from(users).where(eq(users.id, input.approverId)).for('update');
@@ -323,37 +336,20 @@ export async function cancelTicket(db: Db, ctx: Ctx, ticketId: string, reason: s
 /** Spec 6.37: closes a ticket into one sale at today's prices with the shop's service charge; the server numbers the receipt. Online only. */
 export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; tenders: SaleInput['tenders'] }, now: Date): Promise<SaleResult> {
   assertPermission(ctx, 'take_orders');
+  assertPermission(ctx, 'make_sale');
   if (!isUuid(input.ticketId)) return { ok: false, error: 'ticket_not_open' };
   if (!ctx.registerId) return { ok: false, error: 'no_register' };
   const registerId = ctx.registerId;
   const found = await withTenant(db, ctx.tenantId, async (tx) => {
     const [t] = await tx.select().from(tickets).where(eq(tickets.id, input.ticketId));
     if (!t || t.status !== 'open') return null;
-    const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, t.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
-    const [settings] = await tx.select().from(foodSettings);
-    const packId = settings?.packVariantId ?? null;
-    const flags = lines.length ? await tx.select({ id: variants.id, needsPack: variants.needsPack }).from(variants).where(inArray(variants.id, lines.map((l) => l.variantId))) : [];
-    // the same pack rule the sale checks (spec 6.56): takeaway and delivery tickets carry their packs
-    const packs = packCount(lines, {
-      diningOption: t.diningOption, mode: settings?.packFeeMode ?? 'per_order', packVariantId: packId, needsPack: (id) => flags.find((f) => f.id === id)?.needsPack ?? false,
-    });
-    const [packUnit] = packs && packId ? await tx.select({ id: variantUnits.id }).from(variantUnits).where(and(eq(variantUnits.variantId, packId), eq(variantUnits.isBase, true))) : [];
     const [reg] = await tx.select({ counter: registers.receiptCounter, registerCode: registers.registerCode, branchCode: branches.branchCode })
       .from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId));
-    return { t, lines, packs, packId, packUnitId: packUnit?.id ?? null, reg };
+    return { t, lines: await ticketSaleLines(tx, t), reg };
   });
   if (!found) return { ok: false, error: 'ticket_not_open' };
   if (!found.reg) return { ok: false, error: 'no_register' };
-  const { t, reg } = found;
-  const lines: SaleInput['lines'] = [
-    // prices are filled in by completeSale from the catalogue; a by-amount line keeps its amount
-    ...found.lines.map((l) => ({
-      variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.amountPesewas ?? 0, discountPesewas: 0,
-      ...(l.byAmount ? { byAmount: true } : {}), ...(l.choices.length ? { choices: l.choices } : {}), ...(l.addOns.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
-    })),
-    ...(found.packs && found.packId && found.packUnitId
-      ? [{ variantId: found.packId, unitId: found.packUnitId, quantity: String(found.packs), unitPricePesewas: 0, discountPesewas: 0 }] : []),
-  ];
+  const { t, reg, lines } = found;
   if (!lines.length) return { ok: false, error: 'invalid_input' };
   const saleId = randomUUID();
   let counter = Number(reg.counter) + 1;
@@ -365,4 +361,63 @@ export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; ten
     if (r.ok || r.error !== 'duplicate_receipt_number' || attempt === 1) return r;
     counter++; // another sale on this till took the number first
   }
+}
+
+/** The sale lines a ticket becomes: its live lines in order, then the packs a takeaway or delivery ticket owes (spec 6.56); prices are left to the caller. */
+async function ticketSaleLines(tx: Tx, t: typeof tickets.$inferSelect): Promise<SaleInput['lines']> {
+  const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, t.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
+  const [settings] = await tx.select().from(foodSettings);
+  const packId = settings?.packVariantId ?? null;
+  const flags = lines.length ? await tx.select({ id: variants.id, needsPack: variants.needsPack }).from(variants).where(inArray(variants.id, lines.map((l) => l.variantId))) : [];
+  const packs = packCount(lines, {
+    diningOption: t.diningOption, mode: settings?.packFeeMode ?? 'per_order', packVariantId: packId, needsPack: (id) => flags.find((f) => f.id === id)?.needsPack ?? false,
+  });
+  const [packUnit] = packs && packId ? await tx.select({ id: variantUnits.id }).from(variantUnits).where(and(eq(variantUnits.variantId, packId), eq(variantUnits.isBase, true))) : [];
+  return [
+    ...lines.map((l) => ({
+      variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.amountPesewas ?? 0, discountPesewas: 0,
+      ...(l.byAmount ? { byAmount: true } : {}), ...(l.choices.length ? { choices: l.choices } : {}), ...(l.addOns.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
+    })),
+    ...(packs && packId && packUnit ? [{ variantId: packId, unitId: packUnit.id, quantity: String(packs), unitPricePesewas: 0, discountPesewas: 0 }] : []),
+  ];
+}
+
+export type TicketQuote = {
+  lines: Array<{ name: string; quantity: string; totalPesewas: number }>;
+  subtotalPesewas: number; discountPesewas: number; taxPesewas: number; serviceChargePesewas: number; totalPesewas: number;
+};
+
+/** The bill before payment, priced as completeSale prices the ticket: list price plus add-ons, packs, tax, and the service charge. */
+export async function quoteTicket(db: Db, ctx: Ctx, ticketId: string, now: Date): Promise<TicketQuote | null> {
+  assertPermission(ctx, 'take_orders');
+  if (!isUuid(ticketId)) return null;
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const [t] = await tx.select().from(tickets).where(eq(tickets.id, ticketId));
+    if (!t || t.status !== 'open' || !(await myBranches(tx, ctx)).includes(t.branchId)) return null;
+    const [shop] = await tx.select({ taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, timezone: tenants.timezone, bp: tenants.serviceChargeBp })
+      .from(tenants).where(eq(tenants.id, ctx.tenantId));
+    const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: null, branchId: t.branchId, today: todayIn(shop.timezone, now) });
+    const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
+    const priced = [];
+    for (const l of await ticketSaleLines(tx, t)) {
+      const [item] = await tx.select({
+        unitPrice: variantUnits.pricePesewas, factor: variantUnits.factor, basePrice: variants.basePricePesewas, taxRuleId: products.taxRuleId,
+        productName: products.name, variantName: variants.name,
+      }).from(variantUnits).innerJoin(variants, eq(variants.id, variantUnits.variantId)).innerJoin(products, eq(products.id, variants.productId))
+        .where(eq(variantUnits.id, l.unitId));
+      if (!item) continue;
+      const price = l.byAmount ? l.unitPricePesewas
+        : resolvePrice(list, { unitId: l.unitId, quantity: l.quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice })
+          + addOnTotal(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []);
+      const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
+      priced.push({ name: itemLabel(item.productName, item.variantName), quantity: l.quantity, unitPricePesewas: price, discountPesewas: 0, labelPricePesewas: null, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
+    }
+    const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
+    const serviceCharge = serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.bp);
+    return {
+      lines: priced.map((l, i) => ({ name: l.name, quantity: l.quantity, totalPesewas: totals.lines[i].totalPesewas })),
+      subtotalPesewas: totals.subtotalPesewas, discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas,
+      serviceChargePesewas: serviceCharge, totalPesewas: totals.totalPesewas + serviceCharge,
+    };
+  });
 }

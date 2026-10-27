@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { diningTables, products, wastageEntries } from '@/db/schema';
+import { diningTables, products, users, wastageEntries } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import type { Ctx } from '@/server/context';
 import { setServiceModes } from '@/server/food-settings';
@@ -140,6 +140,14 @@ describe('lines', () => {
     const other = (await openTicket(db, till, { label: 'Ama', diningOption: 'eat_in' }, t) as { ticketId: string }).ticketId;
     expect(await cancelTicket(db, till, other, 'Left', t)).toEqual({ ok: true });
   });
+});
+
+it("a waiter at another branch cannot see the branch's tickets", async () => {
+  const { ticketId } = await openTicket(db, till, { tableId: table1, diningOption: 'eat_in' }, t) as { ticketId: string };
+  await asPlatform(db, (tx) => tx.update(users).set({ branchIds: [] }).where(eq(users.id, s.users.cashier.id)));
+  const away = await ctxFor(db, s, 'cashier', t);
+  expect(await getTicket(db, away, ticketId)).toBeNull();
+  expect(await listOpenTickets(db, away, s.branchId)).toEqual([]);
 });
 
 it('refuses when the branch has no table service', async () => {

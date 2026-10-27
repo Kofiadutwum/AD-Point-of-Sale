@@ -4,7 +4,8 @@ import { PrintButton } from '@/components/print-button';
 import { getDb } from '@/db/client';
 import { getItemAddOnGroups, listAddOnGroups } from '@/server/add-ons';
 import { getServiceChargeBp } from '@/server/tables';
-import { currentTicketBranch, getTicket, listApprovers, listOpenTickets, listTicketItems } from '@/server/tickets';
+import { formatCedis } from '@/lib/money';
+import { currentTicketBranch, getTicket, listApprovers, listOpenTickets, listTicketItems, quoteTicket } from '@/server/tickets';
 import { pageCtx } from '../../page-ctx';
 import {
   addLineAction, cancelAction, moveAction, payAction, printBillAction, removeLineAction, sendAction, voidAction,
@@ -25,6 +26,7 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
     open ? listTicketItems(getDb(), ctx) : [], open && branchId ? listOpenTickets(getDb(), ctx, branchId) : [],
     open && branchId ? listApprovers(getDb(), ctx, branchId) : [], getServiceChargeBp(getDb(), ctx),
   ]);
+  const quote = open ? await quoteTicket(getDb(), ctx, ticket.id, new Date()) : null;
   const wanted = (await searchParams).item;
   const picked = items.find((i) => i.variantId === wanted);
   const groupIds = picked ? await getItemAddOnGroups(getDb(), ctx, picked.variantId) : [];
@@ -69,7 +71,15 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
           ))}
         </tbody>
       </table>
-      {bp > 0 && <p className="text-sm">A {bp / 100}% service charge is added when the bill is paid.</p>}
+      {quote && (
+        <section aria-label="Bill" className="flex flex-col gap-1 text-sm">
+          <h2 className="text-lg font-semibold">Bill</h2>
+          {quote.lines.map((l, i) => <p key={i} className="flex justify-between"><span>{Number(l.quantity)} × {l.name}</span><span>{formatCedis(l.totalPesewas)}</span></p>)}
+          {quote.taxPesewas > 0 && <p className="flex justify-between"><span>Tax</span><span>{formatCedis(quote.taxPesewas)}</span></p>}
+          {quote.serviceChargePesewas > 0 && <p className="flex justify-between"><span>Service charge ({bp / 100}%)</span><span>{formatCedis(quote.serviceChargePesewas)}</span></p>}
+          <p className="flex justify-between text-base font-bold"><span>Total</span><span>{formatCedis(quote.totalPesewas)}</span></p>
+        </section>
+      )}
       {open && (
         <div className="flex flex-col gap-6 print:hidden">
           <section className="flex flex-col gap-2">
@@ -117,7 +127,7 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
               </ActionForm>
             </section>
           )}
-          <section>
+          {ctx.permissions.includes('make_sale') && <section>
             <h2 className="text-lg font-semibold">Pay the bill</h2>
             <ActionForm action={payAction.bind(null, slug, ticket.id)} submitLabel="Take payment">
               <label className="flex flex-col gap-1 text-sm">Method
@@ -128,7 +138,7 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
               <Field label="Amount paid (GHS)" name="amount" inputMode="decimal" />
               <Field label="Reference (MoMo, card, bank)" name="reference" required={false} maxLength={100} />
             </ActionForm>
-          </section>
+          </section>}
           {live.every((l) => l.kitchenStatus === 'new') && (
             <details>
               <summary className="cursor-pointer text-sm text-red-700">Cancel this ticket</summary>

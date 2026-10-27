@@ -110,6 +110,8 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
   if (!ctx.registerId) return { ok: false, error: 'no_register' };
   const registerId = ctx.registerId;
   const outbox = s.fromOfflineOutbox === true;
+  // a table sale is a ticket being paid online (payTicket); anything else claiming it is a bad request
+  if (s.food && ((s.food.serviceMode === 'table') !== Boolean(s.food.ticketId) || (s.food.ticketId && outbox))) return { ok: false, error: 'invalid_input' };
 
   try {
     return await withTenant(db, ctx.tenantId, async (tx): Promise<SaleResult> => {
