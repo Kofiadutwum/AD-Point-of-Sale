@@ -117,8 +117,10 @@ export async function handOverOrder(
 }
 
 /** The branches whose kitchen this user can run. */
-export async function kitchenBranches(db: Db, ctx: Ctx): Promise<Array<{ id: string; name: string }>> {
-  assertPermission(ctx, 'run_kitchen');
+export async function kitchenBranches(
+  db: Db, ctx: Ctx, permission: 'run_kitchen' | 'record_kitchen_stock' = 'run_kitchen',
+): Promise<Array<{ id: string; name: string }>> {
+  assertPermission(ctx, permission);
   return withTenant(db, ctx.tenantId, async (tx) => {
     const mine = await myBranches(tx, ctx);
     return mine.length ? tx.select({ id: branches.id, name: branches.name }).from(branches).where(inArray(branches.id, mine)).orderBy(asc(branches.name)) : [];

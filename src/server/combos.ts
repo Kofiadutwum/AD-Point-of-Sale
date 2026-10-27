@@ -66,3 +66,12 @@ export async function saveComboSlots(
     return { ok: true } as const;
   });
 }
+
+/** Items a combo slot may offer: active, sellable standard or recipe items. */
+export async function listChoosableItems(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; label: string }>> {
+  assertPermission(ctx, 'manage_products');
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, productName: products.name, variantName: variants.name })
+    .from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe'])))
+    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, label: itemLabel(v.productName, v.variantName) })));
+}

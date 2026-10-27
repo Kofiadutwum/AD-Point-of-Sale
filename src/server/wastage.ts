@@ -1,15 +1,15 @@
 import 'server-only';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '@/db/client';
-import { tenants, users, variants, wastageEntries } from '@/db/schema';
+import { products, tenants, users, variants, wastageEntries } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import { parseQuantity, validSaleQuantity } from '@/lib/decimal';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { costFor } from './pots';
-import type { Fail } from './products';
+import { type Fail, itemLabel } from './products';
 import { deductRecipe } from './stock';
 import { costOf } from './variants';
 
@@ -45,4 +45,13 @@ export async function recordWastage(
       changes: { variantId: input.variantId, quantity, reason: input.reason, costPesewas } });
     return { ok: true, costPesewas } as const;
   });
+}
+
+/** Items that can be recorded as waste: active plain items and recipes, not combos or by-amount items. */
+export async function listWastableItems(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; label: string }>> {
+  assertPermission(ctx, 'record_kitchen_stock');
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, productName: products.name, variantName: variants.name })
+    .from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellByAmount, false), inArray(variants.kind, ['standard', 'recipe', 'bundle'])))
+    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, label: itemLabel(v.productName, v.variantName) })));
 }

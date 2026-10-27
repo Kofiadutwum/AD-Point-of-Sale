@@ -6,7 +6,7 @@ import { asPlatform } from '@/db/tenant';
 import type { Ctx } from '@/server/context';
 import { createProduct } from '@/server/products';
 import { addComponent, updateVariant } from '@/server/variants';
-import { recordWastage } from '@/server/wastage';
+import { listWastableItems, recordWastage } from '@/server/wastage';
 import { ctxFor, foodShop, productFor, type SeededShop, seedShop, tillCtxFor } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -64,4 +64,12 @@ it('refuses another branch', async () => {
   const other = await seedShop(db, { shopType: 'food' });
   const item = await productFor(db, owner);
   expect(await recordWastage(db, till, { branchId: other.branchId, variantId: item.variantId, quantity: '1', reason: 'spoiled' }, t0)).toEqual({ ok: false, error: 'not_assigned' });
+});
+
+it('offers plain items and recipes for wastage, not combos or by-amount items', async () => {
+  await recipe('Meal 2', 'combo');
+  await productFor(db, owner, { name: 'Tomatoes' });
+  const list = (await listWastableItems(db, till)).map((i) => i.label);
+  expect(list).toContain('Tomatoes');
+  expect(list).not.toContain('Meal 2');
 });

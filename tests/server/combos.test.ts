@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { getComboSlots, saveComboSlots } from '@/server/combos';
+import { getComboSlots, listChoosableItems, saveComboSlots } from '@/server/combos';
 import type { Ctx } from '@/server/context';
 import { createProduct } from '@/server/products';
 import { completeSale } from '@/server/sales';
@@ -95,4 +95,13 @@ it('refuses switching sell by amount once the item has sales', async () => {
     .toMatchObject({ ok: true });
   expect(await updateVariant(db, owner, rice.variantId, { ...fields, basePricePesewas: 500, sellByAmount: true, minAmountPesewas: 500, valuePerPotPesewas: null }))
     .toMatchObject({ ok: false, error: 'in_use' });
+});
+
+it('offers active standard and recipe items as combo choices', async () => {
+  await combo();
+  const coke = await productFor(db, owner, { name: 'Coke' });
+  const list = await listChoosableItems(db, owner);
+  expect(list.map((i) => i.label)).toContain('Coke');
+  expect(list.map((i) => i.label)).not.toContain('Meal 2');
+  expect(list.find((i) => i.label === 'Coke')).toEqual({ variantId: coke.variantId, label: 'Coke' });
 });

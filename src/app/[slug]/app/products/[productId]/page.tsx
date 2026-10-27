@@ -9,6 +9,8 @@ import { variantCost } from '@/server/variants';
 import { pageCtx } from '../../page-ctx';
 import { ProductFieldsInputs } from '../product-fields';
 import { PhotoUpload } from '@/components/photo-upload';
+import { getComboSlots, listChoosableItems } from '@/server/combos';
+import { ComboSlots } from './combo-slots';
 import {
   addVariantAction, makeMainPhotoAction, removePhotoAction, setProductStatusAction, updateProductAction, uploadPhotoAction,
 } from './actions';
@@ -25,6 +27,9 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   const archived = product.status === 'archived';
   const costs = new Map(await Promise.all(product.variants.filter((v) => v.kind !== 'standard')
     .map(async (v) => [v.id, await variantCost(getDb(), ctx, v.id)] as const)));
+  const combos = product.variants.filter((v) => v.kind === 'combo');
+  const comboSlots = new Map(await Promise.all(combos.map(async (v) => [v.id, await getComboSlots(getDb(), ctx, v.id)] as const)));
+  const choosable = combos.length ? await listChoosableItems(getDb(), ctx) : [];
   return (
     <main className="flex flex-col gap-8">
       <a href={`/${slug}/app/products`} className="text-sm text-blue-800 underline">← Products</a>
@@ -62,6 +67,9 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         {product.variants.map((v) => (
           <VariantSection key={v.id} slug={slug} productId={productId} variant={v} cost={costs.get(v.id) ?? null}
             scaleOn={selling.scaleLayout !== null} kitchenOn={selling.modules.includes('kitchen')} lists={lists} />
+        ))}
+        {product.variants.filter((v) => v.kind === 'combo').map((v) => (
+          <ComboSlots key={`slots-${v.id}`} slug={slug} productId={productId} variantId={v.id} slots={comboSlots.get(v.id) ?? []} items={choosable} />
         ))}
         <details className="max-w-md">
           <summary className="cursor-pointer text-sm text-blue-800">Add a variant (size, colour, flavour…)</summary>

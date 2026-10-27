@@ -41,6 +41,11 @@ export function VariantSection({ slug, productId, variant: v, cost, scaleOn, kit
           {kitchenOn && <>
             <input type="hidden" name="needsPackShown" value="1" />
             <Check name="needsPack" label="Takeaway needs a pack for each one" defaultChecked={v.needsPack} />
+            {(v.kind === 'standard' || v.kind === 'recipe') && <>
+              <Check name="sellByAmount" label="Sell by amount (rice, stew, waakye)" defaultChecked={v.sellByAmount} />
+              <Field label="Minimum amount (GHS)" name="minAmount" inputMode="decimal" defaultValue={v.minAmountPesewas ? (v.minAmountPesewas / 100).toFixed(2) : ''} required={false} />
+              <Field label="Value of one pot (GHS, for the pot check)" name="valuePerPot" inputMode="decimal" defaultValue={v.valuePerPotPesewas ? (v.valuePerPotPesewas / 100).toFixed(2) : ''} required={false} />
+            </>}
           </>}
         </ActionForm>
       </details>

@@ -1,9 +1,9 @@
 'use client';
 import { useMemo, useState } from 'react';
-import { canAdd, type CartLine, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
+import { canAdd, type CartLine, comboSlotsOf, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import type { TenderInput } from '@/device/sale';
 import { businessDate, todayIn } from '@/lib/dates';
-import type { DiningOption } from '@/lib/food';
+import type { ComboChoice, DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
 import { markAvailableAction, markSoldOutAction } from '../actions';
 import { type Receipt, useDevice } from './use-device';
@@ -128,6 +128,8 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
   const hits = useMemo(() => searchCatalogue(cache, query, today), [cache, query, today]);
   const soldOutToday = (variantId: string) => cache.food?.businessDate === day && cache.food.soldOutVariantIds.includes(variantId);
   const staffPermissions = cache.staff.find((s) => s.id === d.cashier?.staffId)?.permissions ?? [];
+  // a by-amount item opens the amount pad; a combo walks through its slots (spec 6.52, 6.53)
+  const [pending, setPending] = useState<{ variantId: string; unitId: string; mode: 'amount' | 'combo' } | null>(null);
 
   if (receipt) return <ReceiptView receipt={receipt} shop={cache.shop.name} register={cache.register.name} onNew={() => setReceipt(null)} />;
 
@@ -139,13 +141,18 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     await d.refresh();
   };
 
-  const add = (found: { variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null }) => {
+  const add = (found: { variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null; amountPesewas?: number | null; choices?: ComboChoice[] }) => {
+    const variant = cache.variants.find((v) => v.id === found.variantId);
+    if (variant?.sellByAmount && found.amountPesewas == null && !soldOutToday(found.variantId)) return setPending({ variantId: found.variantId, unitId: found.unitId, mode: 'amount' });
+    if (variant?.kind === 'combo' && !found.choices && !soldOutToday(found.variantId)) return setPending({ variantId: found.variantId, unitId: found.unitId, mode: 'combo' });
     const problem = canAdd(cache, found, day);
     if (problem) return setMessage(ADD_ERRORS[problem]);
     setMessage(null);
     setQuery('');
+    setPending(null);
     setLines((ls) => {
-      const same = found.labelPricePesewas === null && ls.find((l) => l.variantId === found.variantId && l.unitId === found.unitId && l.labelPricePesewas === null);
+      const plain = found.labelPricePesewas === null && found.amountPesewas == null && !found.choices;
+      const same = plain && ls.find((l) => l.variantId === found.variantId && l.unitId === found.unitId && l.labelPricePesewas === null && l.amountPesewas == null && !l.choices);
       if (!same) return [...ls, { lineId: crypto.randomUUID(), ...found }];
       return ls.map((l) => (l === same ? { ...l, quantity: (Number(l.quantity) + Number(found.quantity)).toFixed(3) } : l));
     });
@@ -198,6 +205,14 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
           {d.reachable && staffPermissions.includes('run_kitchen') && <a href={`/${slug}/app/kitchen`} className="ml-auto text-sm text-blue-800 underline">Kitchen</a>}
         </div>
       )}
+      {pending?.mode === 'amount' && (
+        <AmountPad min={cache.variants.find((v) => v.id === pending.variantId)?.minAmountPesewas ?? 0} onCancel={() => setPending(null)}
+          onAdd={(amountPesewas) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, amountPesewas })} />
+      )}
+      {pending?.mode === 'combo' && (
+        <ComboPicker key={pending.variantId} slots={comboSlotsOf(cache, pending.variantId)} hidden={(id) => soldOutToday(id)} onCancel={() => setPending(null)}
+          onAdd={(choices) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, choices })} />
+      )}
       <form onSubmit={scan} className="flex gap-2">
         <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Scan a barcode or type a name"
           className="flex-1 rounded border border-gray-400 px-3 py-2" aria-label="Scan or search" />
@@ -230,7 +245,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
             <tr key={l.lineId} className="border-b">
               <td className="py-2">{l.label} <span className="text-gray-600">({l.unitName})</span></td>
               <td>
-                {l.labelPricePesewas === null && l.lineId !== 'pack'
+                {l.labelPricePesewas === null && l.lineId !== 'pack' && l.amountPesewas == null
                   ? <input type="number" step="any" min="0" value={Number(l.quantity)} onChange={(e) => setQty(l.lineId, e.target.value)} className="w-20 rounded border px-2 py-1" aria-label={`Quantity of ${l.label}`} />
                   : l.quantity}
               </td>
@@ -267,6 +282,62 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
       </fieldset>
       <button type="button" disabled={busy || priced.lines.length === 0} onClick={pay} className={primary}>{busy ? 'Saving…' : 'Complete sale'}</button>
     </section>
+  );
+}
+
+const QUICK_AMOUNTS = [500, 1000, 1500, 2000];
+
+/** Spec 6.53: the cashier types or taps the cedi amount; below the minimum is shown before it reaches the cart. */
+function AmountPad({ min, onAdd, onCancel }: { min: number; onAdd: (amountPesewas: number) => void; onCancel: () => void }) {
+  const [text, setText] = useState('');
+  const amount = parseCedis(text);
+  const below = amount !== null && amount < min;
+  return (
+    <div role="dialog" aria-label="Amount" className="flex flex-col gap-2 rounded border p-3">
+      <div className="flex flex-wrap gap-2">
+        {QUICK_AMOUNTS.map((a) => <button key={a} type="button" className={btn} onClick={() => onAdd(a)} disabled={a < min}>{formatCedis(a)}</button>)}
+      </div>
+      <div className="flex gap-2">
+        <input autoFocus inputMode="decimal" placeholder="Amount (GHS)" aria-label="Amount in cedis" value={text} onChange={(e) => setText(e.target.value)} className="w-32 rounded border px-2 py-2" />
+        <button type="button" className={primary} disabled={amount === null || below} onClick={() => amount !== null && onAdd(amount)}>Add</button>
+        <button type="button" className={btn} onClick={onCancel}>Cancel</button>
+      </div>
+      {below && <p role="alert" className="text-sm text-red-700">Minimum {formatCedis(min)}</p>}
+    </div>
+  );
+}
+
+/** Spec 6.52: one step per slot; sold-out choices are hidden and upgrades show their extra price. */
+function ComboPicker({ slots, hidden, onAdd, onCancel }: {
+  slots: ReturnType<typeof comboSlotsOf>; hidden: (variantId: string) => boolean; onAdd: (choices: ComboChoice[]) => void; onCancel: () => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [chosen, setChosen] = useState<ComboChoice[]>([]);
+  const slot = slots[step];
+  if (!slot) return null;
+  const mine = chosen.filter((c) => c.slotId === slot.id);
+  const toggle = (variantId: string) => setChosen((cs) => {
+    if (cs.some((c) => c.slotId === slot.id && c.variantId === variantId)) return cs.filter((c) => !(c.slotId === slot.id && c.variantId === variantId));
+    const others = slot.maxChoices === 1 ? cs.filter((c) => c.slotId !== slot.id) : cs;
+    return others.filter((c) => c.slotId === slot.id).length >= slot.maxChoices ? cs : [...others, { slotId: slot.id, variantId }];
+  });
+  const last = step === slots.length - 1;
+  return (
+    <div role="dialog" aria-label={slot.name} className="flex flex-col gap-2 rounded border p-3">
+      <p className="font-semibold">{slot.name} <span className="text-sm font-normal text-gray-600">(pick {slot.minChoices === slot.maxChoices ? slot.maxChoices : `${slot.minChoices}–${slot.maxChoices}`})</span></p>
+      <div className="grid grid-cols-2 gap-2">
+        {slot.choices.filter((c) => !hidden(c.variantId)).map((c) => (
+          <button key={c.variantId} type="button" aria-pressed={mine.some((m) => m.variantId === c.variantId)} onClick={() => toggle(c.variantId)}
+            className={`${btn} text-left ${mine.some((m) => m.variantId === c.variantId) ? 'bg-blue-800 text-white' : ''}`}>
+            {slot.choiceNames[c.variantId]}{c.upgradePesewas > 0 ? ` +${formatCedis(c.upgradePesewas)}` : ''}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <button type="button" className={primary} disabled={mine.length < slot.minChoices} onClick={() => (last ? onAdd(chosen) : setStep(step + 1))}>{last ? 'Add meal' : 'Next'}</button>
+        <button type="button" className={btn} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
   );
 }
 

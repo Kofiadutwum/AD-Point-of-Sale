@@ -5,7 +5,7 @@ import type { Db } from '@/db/client';
 import { auditLog, foodSettings, stockBalances, wastageEntries } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import type { Ctx } from '@/server/context';
-import { getPotDay, potReminders, recordClosingLeftover, recordPots } from '@/server/pots';
+import { getPotDay, getTodayPots, potReminders, recordClosingLeftover, recordPots } from '@/server/pots';
 import { createProduct } from '@/server/products';
 import { completeSale } from '@/server/sales';
 import { addComponent, updateVariant } from '@/server/variants';
@@ -137,4 +137,11 @@ it('lists earlier days still waiting for a leftover count', async () => {
   expect(await withTenant(db, shop.tenantId, (tx) => potReminders(tx, '2026-10-26'))).toEqual([]);
   expect(await recordClosingLeftover(db, till, { branchId: branch(), variantId: jollof.variantId, leftover: '0', businessDate: '2026-10-24' }, day2))
     .toEqual({ ok: false, error: 'too_old' });
+});
+
+it("lists today's by-amount items with their pot records", async () => {
+  await recordPots(db, till, { branchId: branch(), variantId: jollof.variantId, pots: '2' }, day1);
+  const r = await getTodayPots(db, till, branch(), close1);
+  expect(r.businessDate).toBe('2026-10-26');
+  expect(r.items).toMatchObject([{ variantId: jollof.variantId, name: 'Jollof', pot: { cooked: '2.000', closed: false } }]);
 });

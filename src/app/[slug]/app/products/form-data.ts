@@ -68,6 +68,9 @@ export function readVariantFields(fd: FormData): VariantFields {
     sellable: ticked(fd, 'sellable'), allowsFractions: ticked(fd, 'allowsFractions'),
     // shown only in food shops; when hidden, leave it out so the save keeps the flag
     needsPack: fd.has('needsPackShown') ? ticked(fd, 'needsPack') : undefined,
+    sellByAmount: fd.has('needsPackShown') ? ticked(fd, 'sellByAmount') : undefined,
+    minAmountPesewas: fd.has('needsPackShown') ? (value(fd, 'minAmount') ? cedis(fd, 'minAmount') : null) : undefined,
+    valuePerPotPesewas: fd.has('needsPackShown') ? (value(fd, 'valuePerPot') ? cedis(fd, 'valuePerPot') : null) : undefined,
   };
 }
 

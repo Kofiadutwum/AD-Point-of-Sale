@@ -154,3 +154,16 @@ export async function potReminders(tx: Tx, today: string): Promise<Array<{ branc
     .where(and(lt(potRecords.businessDate, today), isNull(potRecords.closedAt), sql`${potRecords.cooked} > 0`))
     .orderBy(asc(potRecords.businessDate), asc(products.name));
 }
+
+/** Today's business date at the branch and every by-amount item with its pot record, for the kitchen stock page. */
+export async function getTodayPots(db: Db, ctx: Ctx, branchId: string, now: Date): Promise<{
+  businessDate: string; items: Array<{ variantId: string; name: string; pot: PotRow | null }>;
+}> {
+  assertPermission(ctx, 'record_kitchen_stock');
+  const day = await withTenant(db, ctx.tenantId, async (tx) => (await shopDay(tx, ctx, branchId, now)).today);
+  const pots = await getPotDay(db, ctx, branchId, day);
+  const items = await withTenant(db, ctx.tenantId, (tx) => tx.select({ variantId: variants.id, name: products.name }).from(variants)
+    .innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variants.sellByAmount, true), eq(variants.status, 'active'), eq(products.status, 'active'))).orderBy(asc(products.name)));
+  return { businessDate: day, items: items.map((i) => ({ ...i, pot: pots.find((p) => p.variantId === i.variantId) ?? null })) };
+}

@@ -9,6 +9,7 @@ import {
 import { removePriceListItem, setPriceListItem } from '@/server/price-lists';
 import { getImageStore } from '@/server/image-store';
 import { makeMainImage, removeProductImage, uploadProductImage } from '@/server/product-images';
+import { getComboSlots, saveComboSlots } from '@/server/combos';
 import { pageCtx } from '../../page-ctx';
 import { catalogueMessage, cedis, optionalNumber, readProductFields, readUnitFields, readVariantFields, value } from '../form-data';
 
@@ -122,4 +123,26 @@ export async function makeMainPhotoAction(slug: string, productId: string, image
 
 export async function removePhotoAction(slug: string, productId: string, imageId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
   return run(slug, productId, 'Photo removed.', (ctx) => removeProductImage(getDb(), getImageStore(), ctx, imageId));
+}
+
+const COMBO_MESSAGES: Record<string, string> = {
+  invalid_input: 'Give the slot a name, pick at least one item, and keep the minimum at or below the maximum.',
+  not_a_combo: 'Only combo meals have choice slots.', unknown_item: 'Pick active items from this shop.', nested_combo: 'A combo cannot be a choice in another combo.',
+};
+
+export async function addComboSlotAction(slug: string, productId: string, variantId: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'Slot added.', async (ctx) => {
+    const current = await getComboSlots(getDb(), ctx, variantId);
+    const choices = fd.getAll('choice').map(String).map((id) => ({ variantId: id, upgradePesewas: value(fd, `upgrade-${id}`) ? cedis(fd, `upgrade-${id}`) : 0 }));
+    const slot = { name: value(fd, 'slotName'), minChoices: optionalNumber(fd, 'minChoices') ?? 1, maxChoices: optionalNumber(fd, 'maxChoices') ?? 1, choices };
+    return saveComboSlots(getDb(), ctx, variantId, [...current.map(({ name, minChoices, maxChoices, choices: c }) => ({ name, minChoices, maxChoices, choices: c })), slot]);
+  }, COMBO_MESSAGES);
+}
+
+export async function removeComboSlotAction(slug: string, productId: string, variantId: string, slotId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
+  return run(slug, productId, 'Slot removed.', async (ctx) => {
+    const rest = (await getComboSlots(getDb(), ctx, variantId)).filter((s) => s.id !== slotId);
+    if (rest.length === 0) return { ok: false, error: 'last_slot' };
+    return saveComboSlots(getDb(), ctx, variantId, rest.map(({ name, minChoices, maxChoices, choices }) => ({ name, minChoices, maxChoices, choices })));
+  }, { ...COMBO_MESSAGES, last_slot: 'A combo keeps at least one slot. Add the new slot first, then remove this one.' });
 }
