@@ -135,3 +135,9 @@ it('a sale without a food block is unchanged', async () => {
   expect(r).toMatchObject({ ok: true, orderNumber: null });
   expect(await kitchenOrderOf(r)).toBeUndefined();
 });
+
+it("an online order from a till whose clock is behind lands on the server's business day", async () => {
+  const after = new Date('2026-10-27T00:05:00Z'); // Accra is UTC; the cutoff is midnight
+  const r = await completeSale(db, till, counterSale('T1', { deviceCreatedAt: '2026-10-26T23:55:00.000Z' }), after);
+  expect(await kitchenOrderOf(r)).toMatchObject({ businessDate: '2026-10-27', orderNumber: '001' });
+});

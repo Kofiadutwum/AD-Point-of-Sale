@@ -89,7 +89,8 @@ export function priceCart(cache: DeviceCache, lines: CartLine[], today: string):
 /** Spec 6.56: adds, resizes, or removes the pack line (lineId 'pack') so the cart always carries the packs it owes. */
 export function withPackLine(cache: DeviceCache, lines: CartLine[], diningOption: DiningOption): CartLine[] {
   const food = cache.food;
-  const items = lines.filter((l) => l.lineId !== 'pack');
+  // a pack scanned by hand is dropped too: the pack line is always the one this function owes
+  const items = lines.filter((l) => l.lineId !== 'pack' && l.variantId !== food?.packVariantId);
   const packUnit = food?.packVariantId ? cache.units.find((u) => u.variantId === food.packVariantId && u.isBase) : undefined;
   if (!food || !packUnit) return items;
   const packs = packCount(items, {

@@ -30,5 +30,7 @@ CREATE TRIGGER device_cache_version AFTER UPDATE ON branches FOR EACH ROW
   WHEN ((OLD.name, OLD.branch_code, OLD.service_modes) IS DISTINCT FROM (NEW.name, NEW.branch_code, NEW.service_modes))
   EXECUTE FUNCTION bump_device_cache_version('tenant_id');
 --> statement-breakpoint
--- every preset gains the two food till permissions
-UPDATE users SET permissions = permissions || array['mark_sold_out', 'run_kitchen'] WHERE NOT ('run_kitchen' = ANY(permissions));
+-- existing sellers in food shops gain the two food till permissions; narrow custom roles (stock-only staff) and other shops do not
+UPDATE users u SET permissions = u.permissions || array['mark_sold_out', 'run_kitchen']
+  FROM tenants t
+  WHERE t.id = u.tenant_id AND 'kitchen' = ANY(t.modules) AND 'make_sale' = ANY(u.permissions) AND NOT ('run_kitchen' = ANY(u.permissions));

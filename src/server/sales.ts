@@ -137,6 +137,8 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       const deviceAt = new Date(s.deviceCreatedAt);
       const happenedAt = deviceAt.getTime() > now.getTime() ? now : deviceAt; // a device clock ahead of ours never moves a sale into the future
       const saleDay = businessDate(shop.timezone, shop.cutoff, happenedAt);
+      // the kitchen works on the server clock: a till whose clock is behind must not file a paid order under yesterday
+      const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
       const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
       const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
       const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
@@ -183,7 +185,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       if (paid < totals.totalPesewas) lenient('payment_incomplete', 'underpaid');
       const changeDue = Math.max(0, paid - totals.totalPesewas);
       const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
-      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay, lines: priced, lenient });
+      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient });
 
       const [saved] = await tx.insert(sales).values({
         id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
@@ -226,11 +228,11 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       if (s.food?.serviceMode === 'counter') {
         // spec 6.51: one counter per branch per business date; the upsert's row lock keeps two tills from sharing a number
         orderNumber = deviceNumber ?? formatOrderNumber((await tx.insert(branchOrderCounters)
-          .values({ tenantId: ctx.tenantId, branchId: reg.branchId, businessDate: saleDay, last: 1 })
+          .values({ tenantId: ctx.tenantId, branchId: reg.branchId, businessDate: kitchenDay, last: 1 })
           .onConflictDoUpdate({ target: [branchOrderCounters.tenantId, branchOrderCounters.branchId, branchOrderCounters.businessDate], set: { last: sql`${branchOrderCounters.last} + 1` } })
           .returning({ last: branchOrderCounters.last }))[0].last);
         await tx.insert(kitchenOrders).values({
-          tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: saleDay, diningOption: dining!,
+          tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: kitchenDay, diningOption: dining!,
           needsPacking: needsPacking(dining!), sentAt: now,
         });
         await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));

@@ -104,3 +104,9 @@ it('per-item packs follow the cart quantity', () => {
   expect(withPackLine(perItem, [milo, rice('1.500')], 'takeaway').find((l) => l.lineId === 'pack')!.quantity).toBe('2.000');
   expect(withPackLine(perItem, [milo], 'takeaway').find((l) => l.lineId === 'pack')).toBeUndefined(); // milo needs no pack
 });
+
+it('a pack scanned by hand is not counted twice', () => {
+  const scanned: CartLine = { lineId: 'l9', variantId: 'v-pack', unitId: 'u-pack', quantity: '1.000', labelPricePesewas: null };
+  const lines = withPackLine(foodCache, [milo, scanned], 'takeaway');
+  expect(lines.filter((l) => l.variantId === 'v-pack')).toEqual([{ lineId: 'pack', variantId: 'v-pack', unitId: 'u-pack', quantity: '1.000', labelPricePesewas: null }]);
+});
