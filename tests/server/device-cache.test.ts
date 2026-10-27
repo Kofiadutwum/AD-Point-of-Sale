@@ -6,7 +6,9 @@ import { asPlatform } from '@/db/tenant';
 import { getDeviceCache, getDeviceCacheVersion, readDeviceImage } from '@/server/device-cache';
 import { deregisterDevice, registerDevice, switchCashierWithPin } from '@/server/devices';
 import { listHeldSales, reportHeldSale, resolveHeldSale } from '@/server/held-sales';
+import { saveComboSlots } from '@/server/combos';
 import { setServiceModes } from '@/server/food-settings';
+import { createProduct } from '@/server/products';
 import { setOfflineEnabled } from '@/server/shop-settings';
 import { markSoldOut } from '@/server/sold-out';
 import { addBarcode } from '@/server/variants';
@@ -156,6 +158,18 @@ describe('food', () => {
     expect(c!.shop.businessDayCutoff).toBe('00:00');
     expect(c!.variants.find((v) => v.id === jollof.variantId)!.needsPack).toBe(true);
     expect(owner).toBeDefined();
+  });
+
+  it('includes combo slots and by-amount fields', async () => {
+    const { food, owner, token } = await foodDevice(['counter']);
+    const coke = await productFor(db, owner, { name: 'Coke' });
+    const m = await createProduct(db, owner, { name: 'Meal 2', kind: 'combo', tracking: 'none', baseUnit: 'meal', allowsFractions: false, variants: [{ basePricePesewas: 4500, costPesewas: 0 }] });
+    const meal = (m as { variants: Array<{ variantId: string }> }).variants[0];
+    await saveComboSlots(db, owner, meal.variantId, [{ name: 'Drink', minChoices: 1, maxChoices: 1, choices: [{ variantId: coke.variantId, upgradePesewas: 0 }] }]);
+    const c = await getDeviceCache(db, { deviceToken: token, slug: 'chop-bar' }, at);
+    expect(c!.comboSlots).toMatchObject([{ comboVariantId: meal.variantId, name: 'Drink', minChoices: 1, maxChoices: 1, choiceNames: { [coke.variantId]: 'Coke' } }]);
+    expect(c!.variants.find((v) => v.id === meal.variantId)).toMatchObject({ kind: 'combo', sellByAmount: false, minAmountPesewas: null });
+    expect(food).toBeDefined();
   });
 
   it('food is null when the kitchen module is off', async () => {

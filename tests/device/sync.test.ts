@@ -110,7 +110,7 @@ const cache = (version: number, resolved: string[] = []): DeviceCache => ({
   version, generatedAt: '', shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'inclusive', taxEnabled: false, scaleLayout: null, offlineEnabled: true, canSell: true, businessDayCutoff: '00:00' },
   register: { id: 'r', name: 'Till 1', registerCode: 'T1', branchId: 'b', branchCode: 'B1', branchName: 'Main' },
   staff: [{ id: 'kofi', name: 'Kofi', permissions: ['make_sale'], pinHash: 'h', pinLockedUntil: null }],
-  taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: resolved, food: null,
+  taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: resolved, food: null, comboSlots: [],
 });
 const device = (version: number, counter: number | null, resolved: string[] = []) => fakeFetch((url) => {
   if (url.endsWith('/device/cache/version')) return Response.json({ version });

@@ -1,8 +1,8 @@
 import 'server-only';
 import { and, arrayContains, asc, desc, eq, isNotNull } from 'drizzle-orm';
-import type { Db } from '@/db/client';
+import type { Db, Tx } from '@/db/client';
 import {
-  barcodes, branches, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
+  barcodes, branches, comboChoices, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate, todayIn } from '@/lib/dates';
@@ -69,7 +69,7 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       variants: await tx.select({
         id: variants.id, productId: variants.productId, name: variants.name, sku: variants.sku, allowsFractions: variants.allowsFractions,
         basePricePesewas: variants.basePricePesewas, scaleItemCode: variants.scaleItemCode, sellable: variants.sellable, status: variants.status,
-        needsPack: variants.needsPack,
+        needsPack: variants.needsPack, kind: variants.kind, sellByAmount: variants.sellByAmount, minAmountPesewas: variants.minAmountPesewas,
       }).from(variants),
       units: await tx.select({
         id: variantUnits.id, variantId: variantUnits.variantId, name: variantUnits.name, factor: variantUnits.factor,
@@ -77,12 +77,29 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       }).from(variantUnits),
       barcodes: await tx.select({ code: barcodes.code, variantId: barcodes.variantId, unitId: barcodes.unitId }).from(barcodes),
       resolvedHeldSaleIds: resolved.map((r) => r.saleId),
+      comboSlots: await cachedComboSlots(tx),
       food: shop.t.modules.includes('kitchen') ? {
         // table mode waits for open tickets (Phase 1b tickets plan)
         serviceModes: till.b.serviceModes.filter((m): m is 'counter' | 'quick' => m === 'counter' || m === 'quick'),
         packVariantId: food?.packVariantId ?? null, packFeeMode: food?.packFeeMode ?? 'per_order',
         businessDate: day, soldOutVariantIds: sold.map((r) => r.id),
       } : null,
+    };
+  });
+}
+
+/** Every combo slot with its choices, for the till to build combos offline. */
+async function cachedComboSlots(tx: Tx): Promise<DeviceCache['comboSlots']> {
+  const slots = await tx.select().from(comboSlots).orderBy(asc(comboSlots.comboVariantId), asc(comboSlots.sortOrder));
+  const choices = await tx.select({ slotId: comboChoices.slotId, variantId: comboChoices.variantId, upgradePesewas: comboChoices.upgradePesewas,
+    productName: products.name, variantName: variants.name }).from(comboChoices)
+    .innerJoin(variants, eq(variants.id, comboChoices.variantId)).innerJoin(products, eq(products.id, variants.productId));
+  return slots.map((s) => {
+    const mine = choices.filter((c) => c.slotId === s.id);
+    return {
+      id: s.id, comboVariantId: s.comboVariantId, name: s.name, sortOrder: s.sortOrder, minChoices: s.minChoices, maxChoices: s.maxChoices,
+      choices: mine.map((c) => ({ variantId: c.variantId, upgradePesewas: c.upgradePesewas })),
+      choiceNames: Object.fromEntries(mine.map((c) => [c.variantId, c.variantName ? `${c.productName} – ${c.variantName}` : c.productName])),
     };
   });
 }

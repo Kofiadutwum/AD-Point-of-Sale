@@ -1,7 +1,7 @@
 // Shapes shared by the server and the device till. Types only: the browser imports this file.
-import type { CatalogueStatus, Tracking } from '@/db/schema';
+import type { CatalogueStatus, Tracking, VariantKind } from '@/db/schema';
 import type { ScaleLayout } from './barcode';
-import type { DiningOption } from './food';
+import type { ComboSlotDef, DiningOption } from './food';
 import type { Permission } from './permissions';
 import type { PriceRule } from './pricing';
 
@@ -39,10 +39,13 @@ export type DeviceCache = {
   variants: Array<{
     id: string; productId: string; name: string; sku: string | null; allowsFractions: boolean; basePricePesewas: number;
     scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus; needsPack: boolean;
+    kind: VariantKind; sellByAmount: boolean; minAmountPesewas: number | null;
   }>;
   units: Array<{ id: string; variantId: string; name: string; factor: string; pricePesewas: number | null; sellable: boolean; isBase: boolean }>;
   barcodes: Array<{ code: string; variantId: string; unitId: string }>;
   resolvedHeldSaleIds: string[];
+  /** Choice slots of every combo (spec 6.52). */
+  comboSlots: Array<ComboSlotDef & { comboVariantId: string; name: string; sortOrder: number; choiceNames: Record<string, string> }>;
   /** Null when the kitchen module is off. Sold-out ids are for businessDate only; a till ignores them on another date. */
   food: {
     serviceModes: Array<'counter' | 'quick'>; packVariantId: string | null; packFeeMode: 'per_item' | 'per_order';

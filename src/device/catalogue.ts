@@ -2,7 +2,7 @@ import { normaliseBarcode, readScaleLabel } from '@/lib/barcode';
 import { type CartTotals, calculateCartTotals } from '@/lib/cart-totals';
 import { fromMilli, ratioToQty, validSaleQuantity } from '@/lib/decimal';
 import type { DeviceCache } from '@/lib/device-contract';
-import { type DiningOption, packCount } from '@/lib/food';
+import { checkComboChoices, type ComboChoice, comboUpgradeTotal, type DiningOption, packCount } from '@/lib/food';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { chooseTaxRule } from '@/lib/tax';
 
@@ -10,7 +10,10 @@ import { chooseTaxRule } from '@/lib/tax';
 
 export type Found = { variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null };
 export type SearchHit = { variantId: string; unitId: string; label: string; unitName: string; pricePesewas: number; imageId: string | null };
-export type CartLine = { lineId: string; variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null };
+export type CartLine = {
+  lineId: string; variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null;
+  amountPesewas?: number | null; choices?: ComboChoice[]; // sold by amount (spec 6.53); combo choices (spec 6.52)
+};
 export type PricedLine = CartLine & { label: string; unitName: string; unitPricePesewas: number; taxRateBp: number };
 
 const labelOf = (productName: string, variantName: string) => (variantName ? `${productName} – ${variantName}` : productName);
@@ -42,10 +45,21 @@ function parts(cache: DeviceCache, variantId: string, unitId: string) {
 
 /** Why this item cannot go in the cart, or null. */
 /** `today` is the device business date; a sold-out list from another date is stale and ignored (the server checks again on sync). */
-export function canAdd(cache: DeviceCache, found: Found, today?: string): 'unavailable' | 'serial_item' | 'invalid_quantity' | 'sold_out' | null {
+export function canAdd(
+  cache: DeviceCache, found: Found & { amountPesewas?: number | null; choices?: ComboChoice[] }, today?: string,
+): 'unavailable' | 'serial_item' | 'invalid_quantity' | 'sold_out' | 'amount_required' | 'below_minimum_amount' | 'invalid_choices' | null {
   const p = parts(cache, found.variantId, found.unitId);
   if (!p || p.product.status !== 'active' || p.variant.status !== 'active' || !p.variant.sellable || !p.unit.sellable) return 'unavailable';
-  if (cache.food && today === cache.food.businessDate && cache.food.soldOutVariantIds.includes(found.variantId)) return 'sold_out';
+  const soldOutToday = cache.food && today === cache.food.businessDate ? new Set(cache.food.soldOutVariantIds) : new Set<string>();
+  if (soldOutToday.has(found.variantId)) return 'sold_out';
+  if (p.variant.sellByAmount) {
+    if (found.amountPesewas == null) return 'amount_required';
+    if (found.amountPesewas < (p.variant.minAmountPesewas ?? 0)) return 'below_minimum_amount';
+  }
+  if (p.variant.kind === 'combo') {
+    const check = checkComboChoices(comboSlotsOf(cache, found.variantId), found.choices ?? [], soldOutToday);
+    if (check !== 'ok') return check;
+  }
   if (p.product.tracking === 'serial') return 'serial_item'; // the device till has no serial picker yet
   return validSaleQuantity(found.quantity, p.unit.isBase && p.variant.allowsFractions) ? null : 'invalid_quantity';
 }
@@ -71,6 +85,11 @@ export function searchCatalogue(cache: DeviceCache, text: string, today: string)
 }
 
 /** Cart lines priced from the cache (price lists, tax rules), with spec 6.6 totals. Lines whose item vanished from the cache are dropped. */
+/** The combo slots the cache holds for one combo, in order. */
+export function comboSlotsOf(cache: DeviceCache, comboVariantId: string) {
+  return cache.comboSlots.filter((s) => s.comboVariantId === comboVariantId).sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
 export function priceCart(cache: DeviceCache, lines: CartLine[], today: string): { lines: PricedLine[]; totals: CartTotals } {
   const priced: PricedLine[] = [];
   for (const l of lines) {
@@ -79,7 +98,9 @@ export function priceCart(cache: DeviceCache, lines: CartLine[], today: string):
     const rule = chooseTaxRule(cache.shop.taxEnabled, p.product.taxRuleId, cache.taxRules);
     priced.push({
       ...l, label: labelOf(p.product.name, p.variant.name), unitName: p.unit.name,
-      unitPricePesewas: unitPrice(cache, p.variant, p.unit, l.quantity, today), taxRateBp: rule?.rateBp ?? 0,
+      unitPricePesewas: p.variant.sellByAmount && l.amountPesewas != null ? l.amountPesewas
+        : unitPrice(cache, p.variant, p.unit, l.quantity, today) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0),
+      taxRateBp: rule?.rateBp ?? 0,
     });
   }
   const totals = calculateCartTotals(priced.map((l) => ({ ...l, discountPesewas: 0 })), { taxMode: cache.shop.taxMode });

@@ -16,6 +16,7 @@ const METHODS: Array<{ value: TenderInput['method']; label: string }> = [
 ];
 const ADD_ERRORS = {
   unavailable: 'Product unavailable', serial_item: 'Sell serial items on the online sell page.', invalid_quantity: 'Enter a valid quantity', sold_out: 'Sold out today',
+  amount_required: 'Type the amount to sell', below_minimum_amount: 'Below the minimum amount', invalid_choices: 'Pick the combo choices first',
 } as const;
 const btn = 'rounded border px-3 py-2';
 const primary = 'rounded bg-blue-800 px-4 py-2 text-white disabled:opacity-50';

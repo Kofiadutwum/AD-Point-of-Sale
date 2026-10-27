@@ -6,7 +6,8 @@ import type { DeviceCache } from '@/lib/device-contract';
 const P = (id: string, name: string, extra: Partial<DeviceCache['products'][number]> = {}) =>
   ({ id, name, genericName: null, taxRuleId: null, tracking: 'none' as const, status: 'active' as const, imageId: null, ...extra });
 const V = (id: string, productId: string, price: number, extra: Partial<DeviceCache['variants'][number]> = {}) =>
-  ({ id, productId, name: '', sku: null, allowsFractions: false, basePricePesewas: price, scaleItemCode: null, sellable: true, status: 'active' as const, needsPack: false, ...extra });
+  ({ id, productId, name: '', sku: null, allowsFractions: false, basePricePesewas: price, scaleItemCode: null, sellable: true, status: 'active' as const, needsPack: false,
+    kind: 'standard' as const, sellByAmount: false, minAmountPesewas: null, ...extra });
 const U = (id: string, variantId: string, extra: Partial<DeviceCache['units'][number]> = {}) =>
   ({ id, variantId, name: 'piece', factor: '1.000', pricePesewas: null, sellable: true, isBase: true, ...extra });
 
@@ -27,6 +28,7 @@ const cache: DeviceCache = {
   barcodes: [{ code: '6001234567890', variantId: 'v-milo', unitId: 'u-milo' }, { code: '0123456789012', variantId: 'v-old', unitId: 'u-old' }],
   resolvedHeldSaleIds: [],
   food: null,
+  comboSlots: [],
 };
 const today = '2026-10-20';
 const label = (first12: string) => first12 + ean13CheckDigit(first12);
@@ -109,4 +111,42 @@ it('a pack scanned by hand is not counted twice', () => {
   const scanned: CartLine = { lineId: 'l9', variantId: 'v-pack', unitId: 'u-pack', quantity: '1.000', labelPricePesewas: null };
   const lines = withPackLine(foodCache, [milo, scanned], 'takeaway');
   expect(lines.filter((l) => l.variantId === 'v-pack')).toEqual([{ lineId: 'pack', variantId: 'v-pack', unitId: 'u-pack', quantity: '1.000', labelPricePesewas: null }]);
+});
+
+const menuCache: DeviceCache = {
+  ...foodCache,
+  products: [...foodCache.products, P('p-meal', 'Meal 2'), P('p-coke', 'Coke'), P('p-large', 'Large Coke'), P('p-jollof', 'Jollof')],
+  variants: [...foodCache.variants, V('v-meal', 'p-meal', 4500, { kind: 'combo' }), V('v-coke', 'p-coke', 800), V('v-large', 'p-large', 1200),
+    V('v-jollof', 'p-jollof', 1000, { kind: 'recipe', sellByAmount: true, minAmountPesewas: 500 })],
+  units: [...foodCache.units, U('u-meal', 'v-meal'), U('u-coke', 'v-coke'), U('u-large', 'v-large'), U('u-jollof', 'v-jollof', { name: 'plate' })],
+  comboSlots: [{ id: 'drink', comboVariantId: 'v-meal', name: 'Drink', sortOrder: 0, minChoices: 1, maxChoices: 1,
+    choices: [{ variantId: 'v-coke', upgradePesewas: 0 }, { variantId: 'v-large', upgradePesewas: 500 }], choiceNames: { 'v-coke': 'Coke', 'v-large': 'Large Coke' } }],
+  food: { ...foodCache.food!, soldOutVariantIds: ['v-coke'] },
+};
+const meal = (choices: Array<{ slotId: string; variantId: string }>) => ({ variantId: 'v-meal', unitId: 'u-meal', quantity: '1.000', labelPricePesewas: null, choices });
+
+it('prices a combo with its upgrade', () => {
+  const { lines } = priceCart(menuCache, [{ lineId: 'm', ...meal([{ slotId: 'drink', variantId: 'v-large' }]) }], today);
+  expect(lines[0].unitPricePesewas).toBe(5000);
+});
+
+it('hides and refuses a sold-out choice', () => {
+  expect(canAdd(menuCache, meal([{ slotId: 'drink', variantId: 'v-coke' }]), today)).toBe('sold_out');
+  expect(canAdd(menuCache, meal([{ slotId: 'drink', variantId: 'v-large' }]), today)).toBeNull();
+});
+
+it('a combo needs its required choices', () => {
+  expect(canAdd(menuCache, meal([]), today)).toBe('invalid_choices');
+});
+
+it('prices a by-amount line at the amount typed', () => {
+  const line = { lineId: 'j', variantId: 'v-jollof', unitId: 'u-jollof', quantity: '1.000', labelPricePesewas: null, amountPesewas: 1500 };
+  expect(canAdd(menuCache, line, today)).toBeNull();
+  expect(priceCart(menuCache, [line], today).lines[0].unitPricePesewas).toBe(1500);
+});
+
+it('refuses an amount below the minimum', () => {
+  const base = { variantId: 'v-jollof', unitId: 'u-jollof', quantity: '1.000', labelPricePesewas: null };
+  expect(canAdd(menuCache, { ...base, amountPesewas: 400 }, today)).toBe('below_minimum_amount');
+  expect(canAdd(menuCache, base, today)).toBe('amount_required');
 });
