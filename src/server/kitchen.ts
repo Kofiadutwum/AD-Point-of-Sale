@@ -2,7 +2,7 @@ import 'server-only';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { type KitchenOrderStatus, kitchenOrders, packingTicks, saleLines, tenants, users } from '@/db/schema';
+import { branches, type KitchenOrderStatus, kitchenOrders, packingTicks, saleLines, tenants, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import type { DiningOption } from '@/lib/food';
@@ -113,5 +113,14 @@ export async function handOverOrder(
       recordType: 'kitchen_order', recordId: order.id, changes: order.needsPacking ? { handedTo } : undefined,
     });
     return { ok: true } as const;
+  });
+}
+
+/** The branches whose kitchen this user can run. */
+export async function kitchenBranches(db: Db, ctx: Ctx): Promise<Array<{ id: string; name: string }>> {
+  assertPermission(ctx, 'run_kitchen');
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const mine = await myBranches(tx, ctx);
+    return mine.length ? tx.select({ id: branches.id, name: branches.name }).from(branches).where(inArray(branches.id, mine)).orderBy(asc(branches.name)) : [];
   });
 }

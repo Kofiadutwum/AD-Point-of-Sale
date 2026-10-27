@@ -66,6 +66,8 @@ export function readVariantFields(fd: FormData): VariantFields {
     // shown only while scale labels are on; when hidden, leave it out so the save keeps the code
     scaleItemCode: fd.has('scaleItemCode') ? optionalNumber(fd, 'scaleItemCode') ?? null : undefined,
     sellable: ticked(fd, 'sellable'), allowsFractions: ticked(fd, 'allowsFractions'),
+    // shown only in food shops; when hidden, leave it out so the save keeps the flag
+    needsPack: fd.has('needsPackShown') ? ticked(fd, 'needsPack') : undefined,
   };
 }
 

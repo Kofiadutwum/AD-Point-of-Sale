@@ -18,6 +18,7 @@ import {
 export type VariantFields = {
   name: string; sku: string | null; basePricePesewas: number; costPesewas: number | null; reorderLevel: string | null; // cost null = keep the current average cost
   scaleItemCode?: number | null; sellable: boolean; allowsFractions: boolean; // scaleItemCode left out = keep the saved code
+  needsPack?: boolean; // food takeaway packs (spec 6.56); left out = keep
 };
 export type UnitFields = { name: string; factor: string; pricePesewas: number | null; sellable: boolean; purchasable: boolean };
 
@@ -73,6 +74,7 @@ const variantFieldsSchema = z.object({
   scaleItemCode: z.number().int().nullable().optional(),
   sellable: z.boolean(),
   allowsFractions: z.boolean(),
+  needsPack: z.boolean().optional(),
 });
 
 export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: VariantFields): Promise<{ ok: true } | Fail<CatalogueError | 'not_found' | 'in_use'>> {
@@ -106,7 +108,7 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
     if (clash) return clash;
     await tx.update(variants).set({
       name: f.name, sku, basePricePesewas: f.basePricePesewas, ...(f.costPesewas === null ? {} : { averageCost: String(f.costPesewas) }), reorderLevel,
-      scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions,
+      scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions, ...(f.needsPack === undefined ? {} : { needsPack: f.needsPack }),
     }).where(eq(variants.id, variantId));
     // price and cost changes are sensitive (spec 6.0 AUDIT): record old and new values
     const changes: Record<string, [number, number]> = {};

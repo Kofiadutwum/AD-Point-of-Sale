@@ -150,3 +150,13 @@ it('keeps a fractional average cost when an edit leaves the cost out', async () 
   expect(await updateVariant(db, owner, p.variantId, fields)).toEqual({ ok: true });
   expect((await getProduct(db, owner, p.productId))!.variants[0]).toMatchObject({ basePricePesewas: 12, averageCost: '4.5000' });
 });
+
+it('saves needs pack on a variant', async () => {
+  const p = await productFor(db, owner, { variants: [{ basePricePesewas: 3000, costPesewas: 1500 }] });
+  const fields = { name: '', sku: null, basePricePesewas: 3000, costPesewas: null, reorderLevel: null, sellable: true, allowsFractions: false };
+  expect(await updateVariant(db, owner, p.variantId, { ...fields, needsPack: true })).toEqual({ ok: true });
+  const read = async () => (await asPlatform(db, (tx) => tx.select({ needsPack: variants.needsPack }).from(variants).where(eq(variants.id, p.variantId))))[0].needsPack;
+  expect(await read()).toBe(true);
+  expect(await updateVariant(db, owner, p.variantId, fields)).toEqual({ ok: true }); // left out: kept
+  expect(await read()).toBe(true);
+});

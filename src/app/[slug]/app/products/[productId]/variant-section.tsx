@@ -12,8 +12,8 @@ import {
 type Variant = ProductDetail['variants'][number];
 
 /** One variant: its fields, units with their barcodes, and (for bundles and recipes) its parts and their cost. */
-export function VariantSection({ slug, productId, variant: v, cost, scaleOn, lists }: {
-  slug: string; productId: string; variant: Variant; cost: string | null; scaleOn: boolean; lists: PriceListView[];
+export function VariantSection({ slug, productId, variant: v, cost, scaleOn, kitchenOn = false, lists }: {
+  slug: string; productId: string; variant: Variant; cost: string | null; scaleOn: boolean; kitchenOn?: boolean; lists: PriceListView[];
 }) {
   const ids = [slug, productId] as const;
   const costText = cediText(Math.round(Number(v.averageCost)));
@@ -38,6 +38,10 @@ export function VariantSection({ slug, productId, variant: v, cost, scaleOn, lis
           {scaleOn && <Field label="Scale item code" name="scaleItemCode" inputMode="numeric" defaultValue={v.scaleItemCode ?? ''} required={false} />}
           <Check name="allowsFractions" label="Sold in fractions" defaultChecked={v.allowsFractions} />
           <Check name="sellable" label="Sold on its own (untick for ingredients)" defaultChecked={v.sellable} />
+          {kitchenOn && <>
+            <input type="hidden" name="needsPackShown" value="1" />
+            <Check name="needsPack" label="Takeaway needs a pack for each one" defaultChecked={v.needsPack} />
+          </>}
         </ActionForm>
       </details>
       <div className="flex flex-col gap-3">

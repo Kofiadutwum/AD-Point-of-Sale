@@ -22,6 +22,8 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/settings`, label: 'Settings', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/app/staff`, label: 'Staff', allowed: ctx.permissions.includes('manage_staff') },
     { href: `/${slug}/app/devices`, label: 'Devices', allowed: ctx.permissions.includes('manage_devices') },
+    { href: `/${slug}/app/kitchen`, label: 'Kitchen', allowed: ctx.permissions.includes('run_kitchen') },
+    { href: `/${slug}/app/settings/food`, label: 'Food settings', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/till`, label: 'Till PIN screen', allowed: true },
     { href: `/${slug}/till/sell`, label: 'Selling screen', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/security`, label: 'Two-step sign-in', allowed: ctx.sessionKind === 'password' },

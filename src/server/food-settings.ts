@@ -1,13 +1,13 @@
 import 'server-only';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { branches, foodSettings, tenants, variants } from '@/db/schema';
+import { branches, foodSettings, products, tenants, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { SERVICE_MODES, type ServiceMode } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
-import type { Fail } from './products';
+import { type Fail, itemLabel } from './products';
 
 export type FoodSettings = { packVariantId: string | null; packFeeMode: 'per_item' | 'per_order' };
 
@@ -69,4 +69,13 @@ export async function setServiceModes(
     });
     return { ok: true } as const;
   });
+}
+
+/** Items that can be the takeaway pack: active, sellable, standard variants. */
+export async function listPackChoices(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; label: string }>> {
+  assertPermission(ctx, 'manage_shop_settings');
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, productName: products.name, variantName: variants.name })
+    .from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), eq(variants.kind, 'standard')))
+    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, label: itemLabel(v.productName, v.variantName) })));
 }

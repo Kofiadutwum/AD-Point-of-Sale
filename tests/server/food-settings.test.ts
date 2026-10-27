@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
 import { branches, variants } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
-import { getFoodSettings, saveFoodSettings, setServiceModes } from '@/server/food-settings';
+import { getFoodSettings, listPackChoices, saveFoodSettings, setServiceModes } from '@/server/food-settings';
 import { ctxFor, expectAccess, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -58,4 +58,12 @@ it('a cashier cannot change food settings', async () => {
   const cashier = await ctxFor(db, shop, 'cashier', t0);
   await expectAccess(saveFoodSettings(db, cashier, { packVariantId: null, packFeeMode: 'per_order' }), 'forbidden');
   await expectAccess(setServiceModes(db, cashier, shop.branchId, ['counter']), 'forbidden');
+});
+
+it('offers active standard items as the pack', async () => {
+  const owner = await ctxFor(db, shop, 'owner', t0);
+  const pack = await productFor(db, owner, { name: 'Takeaway pack' });
+  const gone = await productFor(db, owner, { name: 'Old bag' });
+  await asPlatform(db, (tx) => tx.update(variants).set({ status: 'archived' }).where(eq(variants.id, gone.variantId)));
+  expect(await listPackChoices(db, owner)).toEqual([{ variantId: pack.variantId, label: 'Takeaway pack' }]);
 });

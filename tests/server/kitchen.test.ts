@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
 import type { Ctx } from '@/server/context';
-import { handOverOrder, listKitchenOrders, markOrderReady, tickPackedLine } from '@/server/kitchen';
+import { handOverOrder, kitchenBranches, listKitchenOrders, markOrderReady, tickPackedLine } from '@/server/kitchen';
 import { completeSale, type SaleInput } from '@/server/sales';
 import { ctxFor, foodShop, productFor, saleInput, type SeededShop, seedShop, tillCtxFor } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
@@ -92,4 +92,8 @@ it('unticking a line blocks hand-over again', async () => {
 it('ticking on an eat-in order is refused', async () => {
   const id = await order('eat_in');
   expect(await tickPackedLine(db, till, { orderId: id, lineNo: 1, packed: true }, later(1))).toEqual({ ok: false, error: 'no_packing' });
+});
+
+it("lists the user's branches for the kitchen screen", async () => {
+  expect(await kitchenBranches(db, till)).toEqual([{ id: shop.branchId, name: 'Main' }]);
 });

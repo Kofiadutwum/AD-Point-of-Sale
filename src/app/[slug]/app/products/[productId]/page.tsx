@@ -61,7 +61,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         <h2 className="text-lg font-semibold">Variants</h2>
         {product.variants.map((v) => (
           <VariantSection key={v.id} slug={slug} productId={productId} variant={v} cost={costs.get(v.id) ?? null}
-            scaleOn={selling.scaleLayout !== null} lists={lists} />
+            scaleOn={selling.scaleLayout !== null} kitchenOn={selling.modules.includes('kitchen')} lists={lists} />
         ))}
         <details className="max-w-md">
           <summary className="cursor-pointer text-sm text-blue-800">Add a variant (size, colour, flavour…)</summary>
