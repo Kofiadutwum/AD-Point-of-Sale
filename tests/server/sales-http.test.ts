@@ -41,7 +41,7 @@ it('completes a sale for a PIN session and returns the contract JSON', async () 
   const input = sale();
   const res = await handleSalePost(db, post(await session('cashier', 'pin'), input), shop.slug, t0);
   expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ ok: true, saleId: input.saleId, status: 'completed', changeDuePesewas: 0, alreadyExisted: false });
+  expect(await res.json()).toEqual({ ok: true, saleId: input.saleId, status: 'completed', changeDuePesewas: 0, alreadyExisted: false, orderNumber: null });
   const again = await handleSalePost(db, post(await session('cashier', 'pin'), input), shop.slug, t0);
   expect(await again.json()).toMatchObject({ ok: true, alreadyExisted: true });
 });

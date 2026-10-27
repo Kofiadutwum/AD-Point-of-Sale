@@ -91,6 +91,6 @@ it('a PIN session only carries till permissions, even for the owner', async () =
   });
   const r = await pin(shop.users.owner.id, '1234') as { token: string };
   const session = await validateSession(db, r.token, t0);
-  expect(session!.permissions.sort()).toEqual(['approve_actions', 'give_discount', 'make_sale']);
+  expect(session!.permissions.sort()).toEqual(['approve_actions', 'give_discount', 'make_sale', 'mark_sold_out', 'run_kitchen']);
   await expectAccess(requireContext(db, { slug: 'shop-a', sessionToken: r.token, permission: 'manage_staff' }, t0), 'forbidden');
 });

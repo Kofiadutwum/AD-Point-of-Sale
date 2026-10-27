@@ -49,7 +49,7 @@ const fail = (error: string) => ({ ok: false, error });
 
 it('completes a cash sale with change and reduces stock once', async () => {
   const r = await completeSale(db, cashier, saleInput({ lines: [line(p, '2', 500)], tenders: [cash(2000)] }), t0);
-  expect(r).toEqual({ ok: true, saleId: expect.any(String), status: 'completed', changeDuePesewas: 1000, alreadyExisted: false });
+  expect(r).toEqual({ ok: true, saleId: expect.any(String), status: 'completed', changeDuePesewas: 1000, alreadyExisted: false, orderNumber: null });
   expect(await onHand()).toBe('8.000');
   const [s] = await allSales();
   expect(s).toMatchObject({ totalPesewas: 1000, taxPesewas: 130, businessDate: '2026-10-20', status: 'completed', cashierId: shop.users.cashier.id });

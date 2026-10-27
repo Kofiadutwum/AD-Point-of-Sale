@@ -40,7 +40,7 @@ it('creates an invited member with preset permissions and a working invite link'
   const shop = await seedShop(db);
   const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_staff');
   const r = await addStaff(db, ctx, { name: 'Kofi', phone: '020 123 4567', rolePreset: 'cashier', branchIds: [shop.branchId] }, t0) as { userId: string; inviteUrl: string };
-  expect(await userRow(r.userId)).toMatchObject({ status: 'invited', permissions: ['make_sale'], phone: '233201234567', rolePreset: 'cashier' });
+  expect(await userRow(r.userId)).toMatchObject({ status: 'invited', permissions: ['make_sale', 'mark_sold_out', 'run_kitchen'], phone: '233201234567', rolePreset: 'cashier' });
   expect(await activateAccount(db, { token: tokenOf(r.inviteUrl), password: 'kofi-password', pin: '5678' }, t0)).toMatchObject({ ok: true });
   expect(await userRow(r.userId)).toMatchObject({ status: 'active' });
 });
@@ -113,7 +113,7 @@ it('stops a manager from raising permissions above their own or changing their o
 
 it('refuses to add staff whose role carries permissions the actor lacks', async () => {
   const shop = await seedShop(db, { users: [{ key: 'owner', email: 'o@x.test' }, { key: 'lead', email: 'l@x.test', rolePreset: 'cashier' }] });
-  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'manage_staff'] }).where(eq(users.id, shop.users.lead.id)));
+  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'mark_sold_out', 'run_kitchen', 'manage_staff'] }).where(eq(users.id, shop.users.lead.id)));
   const ctx = await ctxFor(db, shop, 'lead', t0, 'manage_staff');
   expect(await addStaff(db, ctx, { name: 'M', email: 'm2@x.test', rolePreset: 'manager', branchIds: [shop.branchId] }, t0))
     .toEqual({ ok: false, error: 'cannot_grant' });

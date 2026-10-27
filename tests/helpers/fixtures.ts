@@ -9,6 +9,7 @@ import type { SubscriptionStatus } from '@/lib/subscription';
 import { expect } from 'vitest';
 import { type AccessCode, AccessError, type Ctx, requireContext } from '@/server/context';
 import { hashSecret } from '@/server/crypto';
+import { saveFoodSettings, setServiceModes } from '@/server/food-settings';
 import { createProduct, type NewProductInput } from '@/server/products';
 import type { SaleInput } from '@/server/sales';
 import { createSession } from '@/server/sessions';
@@ -114,6 +115,17 @@ export async function tillCtxFor(db: Db, shop: SeededShop, userKey: string, now:
 export async function stockFor(db: Db, ctx: Ctx, branchId: string, line: ReceiveLine, now: Date): Promise<void> {
   const r = await receiveStock(db, ctx, { branchId, kind: 'received', lines: [line] }, now);
   if (!r.ok) throw new Error(`stockFor: ${r.error} ${r.detail ?? ''}`);
+}
+
+/** A food shop (kitchen module on) whose branch uses counter and quick serve, with a GHS 1 pack charged per order. */
+export async function foodShop(db: Db, now: Date, opts: SeedShopOptions = {}): Promise<SeededShop & { packVariantId: string; packUnitId: string }> {
+  const shop = await seedShop(db, { shopType: 'food', ...opts });
+  const owner = await ctxFor(db, shop, Object.keys(shop.users)[0], now);
+  const pack = await productFor(db, owner, { name: 'Takeaway pack', variants: [{ basePricePesewas: 100, costPesewas: 50 }] });
+  const saved = await saveFoodSettings(db, owner, { packVariantId: pack.variantId, packFeeMode: 'per_order' });
+  const modes = await setServiceModes(db, owner, shop.branchId, ['counter', 'quick']);
+  if (!saved.ok || !modes.ok) throw new Error('foodShop: settings refused');
+  return { ...shop, packVariantId: pack.variantId, packUnitId: pack.baseUnitId };
 }
 
 let receiptCounter = 0;

@@ -1,6 +1,7 @@
 // Shapes shared by the server and the device till. Types only: the browser imports this file.
 import type { CatalogueStatus, Tracking } from '@/db/schema';
 import type { ScaleLayout } from './barcode';
+import type { DiningOption } from './food';
 import type { Permission } from './permissions';
 import type { PriceRule } from './pricing';
 
@@ -12,9 +13,10 @@ export type SaleRequest = {
   lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[] }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
+  food?: { serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string };
 };
 export type SaleResponse =
-  | { ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean }
+  | { ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null }
   | { ok: false; error: string };
 
 export type CachedStaff = { id: string; name: string; permissions: Permission[]; pinHash: string | null; pinLockedUntil: string | null };
