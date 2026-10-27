@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
+import { potRecords } from '@/db/schema';
+import { asPlatform } from '@/db/tenant';
+import { addDays } from '@/lib/dates';
 import type { Ctx } from '@/server/context';
 import { getDashboard } from '@/server/dashboard';
 import { completeSale } from '@/server/sales';
@@ -54,4 +57,19 @@ it('lists low and negative stock', async () => {
 
 it('needs view_dashboard', async () => {
   await expectAccess(getDashboard(db, cashier, t0), 'forbidden');
+});
+
+it('lists open pot counts and flagged pot variances', async () => {
+  const day = (await getDashboard(db, owner, t0)).businessDate;
+  const yesterday = addDays(day, -1);
+  await asPlatform(db, (tx) => tx.insert(potRecords).values([
+    { tenantId: shop.tenantId, branchId: shop.branchId, variantId: p.variantId, businessDate: yesterday, cooked: '2.000' },
+    { tenantId: shop.tenantId, branchId: shop.branchId, variantId: p.variantId, businessDate: addDays(day, -2), cooked: '3.000', leftover: '0.000',
+      expectedPesewas: 180000, actualPesewas: 156000, variancePesewas: -24000, flagged: true, closedAt: t0 },
+    { tenantId: shop.tenantId, branchId: shop.branchId, variantId: p.variantId, businessDate: addDays(day, -10), cooked: '1.000', leftover: '0.000',
+      expectedPesewas: 60000, actualPesewas: 30000, variancePesewas: -30000, flagged: true, closedAt: t0 },
+  ]));
+  const d = await getDashboard(db, owner, t0);
+  expect(d.potReminders).toEqual([{ name: expect.any(String), businessDate: yesterday }]);
+  expect(d.potVariances).toEqual([{ name: expect.any(String), businessDate: addDays(day, -2), expectedPesewas: 180000, actualPesewas: 156000, variancePesewas: -24000 }]);
 });

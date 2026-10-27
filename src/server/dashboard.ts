@@ -1,10 +1,11 @@
 import 'server-only';
-import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '@/db/client';
-import { branches, payments, products, sales, stockBalances, TENDER_METHODS, type TenderMethod, tenants, variants } from '@/db/schema';
+import { branches, payments, potRecords, products, sales, stockBalances, TENDER_METHODS, type TenderMethod, tenants, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
-import { businessDate } from '@/lib/dates';
+import { addDays, businessDate } from '@/lib/dates';
 import { assertPermission, type Ctx } from './context';
+import { potReminders } from './pots';
 import { itemLabel } from './products';
 
 export type Dashboard = {
@@ -13,6 +14,8 @@ export type Dashboard = {
   lowStock: Array<{ variantId: string; name: string; branchName: string; onHand: string; reorderLevel: string }>;
   negativeStock: Array<{ variantId: string; name: string; branchName: string; onHand: string }>;
   needsReview: number;
+  potReminders: Array<{ name: string; businessDate: string }>;
+  potVariances: Array<{ name: string; businessDate: string; expectedPesewas: number; actualPesewas: number; variancePesewas: number }>;
 };
 
 /** Spec 4.7 basics: today's completed sales (by business day), how they were paid, and stock that needs attention. */
@@ -43,12 +46,20 @@ export async function getDashboard(db: Db, ctx: Ctx, now: Date): Promise<Dashboa
     const low = await stockFrom().where(and(isNotNull(variants.reorderLevel), sql`${stockBalances.onHand} >= 0`, sql`${stockBalances.onHand} <= ${variants.reorderLevel}`))
       .orderBy(asc(products.name)).limit(50);
     const negative = await stockFrom().where(sql`${stockBalances.onHand} < 0`).orderBy(asc(products.name)).limit(50);
+    // spec 6.54: pots still waiting for a closing count, and flagged gaps of the last 7 days
+    const reminders = await potReminders(tx, day);
+    const variances = await tx.select({ name: products.name, businessDate: potRecords.businessDate, expectedPesewas: potRecords.expectedPesewas,
+      actualPesewas: potRecords.actualPesewas, variancePesewas: potRecords.variancePesewas }).from(potRecords)
+      .innerJoin(variants, eq(variants.id, potRecords.variantId)).innerJoin(products, eq(products.id, variants.productId))
+      .where(and(eq(potRecords.flagged, true), gte(potRecords.businessDate, addDays(day, -7)))).orderBy(desc(potRecords.businessDate)).limit(50);
     return {
       businessDate: day, salesCount: t.n, grossPesewas: t.gross, discountPesewas: t.discount, netPesewas: t.gross - t.discount, taxPesewas: t.tax,
       totalPesewas: t.total, averagePesewas: t.n ? Math.floor((2 * t.total + t.n) / (2 * t.n)) : 0, payments: paid,
       lowStock: low.map((r) => ({ variantId: r.variantId, name: itemLabel(r.productName, r.variantName), branchName: r.branchName, onHand: r.onHand, reorderLevel: r.reorderLevel! })),
       negativeStock: negative.map((r) => ({ variantId: r.variantId, name: itemLabel(r.productName, r.variantName), branchName: r.branchName, onHand: r.onHand })),
       needsReview: review,
+      potReminders: reminders.map((r) => ({ name: r.name, businessDate: r.businessDate })),
+      potVariances: variances.map((v) => ({ name: v.name, businessDate: v.businessDate, expectedPesewas: v.expectedPesewas!, actualPesewas: v.actualPesewas!, variancePesewas: v.variancePesewas! })),
     };
   });
 }

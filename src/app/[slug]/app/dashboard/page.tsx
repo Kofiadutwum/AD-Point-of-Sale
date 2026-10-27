@@ -26,6 +26,19 @@ export default async function DashboardPage({ params }: { params: Promise<{ slug
         <h2 className="mb-2 font-semibold">Payments</h2>
         <ul className="text-sm">{d.payments.length === 0 ? <li>No payments yet today.</li> : d.payments.map((p) => <li key={p.method}>{TENDER_LABELS[p.method]}: {formatCedis(p.amountPesewas)}</li>)}</ul>
       </section>
+      {(d.potReminders.length > 0 || d.potVariances.length > 0) && (
+        <section>
+          <h2 className="mb-2 font-semibold">Pots</h2>
+          <ul className="text-sm">
+            {d.potReminders.map((r) => <li key={r.name + r.businessDate}>{r.name}: count the leftover for {r.businessDate}</li>)}
+            {d.potVariances.map((v) => (
+              <li key={v.name + v.businessDate} className="text-red-700">
+                {v.name} ({v.businessDate}): sold {formatCedis(v.actualPesewas)}, expected {formatCedis(v.expectedPesewas)} ({v.variancePesewas > 0 ? '+' : ''}{Math.round((v.variancePesewas * 100) / v.expectedPesewas)}%)
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <section>
         <h2 className="mb-2 font-semibold">Negative stock</h2>
         <ul className="text-sm">{d.negativeStock.length === 0 ? <li>None.</li> : d.negativeStock.map((s) => <li key={s.variantId + s.branchName} className="text-red-700">{s.name} · {s.branchName}: {s.onHand}</li>)}</ul>
