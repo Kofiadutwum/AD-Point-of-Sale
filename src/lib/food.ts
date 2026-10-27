@@ -1,4 +1,5 @@
-import { toMilli } from './decimal';
+import { fromMilli, toMilli } from './decimal';
+import { pesewasTimesQty } from './money';
 
 /** Food rules shared by the server and the till (spec 6.51, 6.56, 6.58). */
 export type ServiceMode = 'counter' | 'table' | 'quick';
@@ -31,4 +32,34 @@ export function packCount(
 
 export function needsPacking(diningOption: DiningOption): boolean {
   return diningOption !== 'eat_in';
+}
+
+export type ComboSlotDef = { id: string; minChoices: number; maxChoices: number; choices: Array<{ variantId: string; upgradePesewas: number }> };
+export type ComboChoice = { slotId: string; variantId: string };
+
+/** Spec 6.52: every slot gets min..max distinct choices from its own list; a choice sold out today is refused. */
+export function checkComboChoices(slots: ComboSlotDef[], chosen: ComboChoice[], soldOut: ReadonlySet<string>): 'ok' | 'invalid_choices' | 'sold_out' {
+  if (chosen.some((c) => !slots.some((s) => s.id === c.slotId))) return 'invalid_choices';
+  for (const slot of slots) {
+    const picks = chosen.filter((c) => c.slotId === slot.id).map((c) => c.variantId);
+    if (picks.length < slot.minChoices || picks.length > slot.maxChoices || new Set(picks).size !== picks.length) return 'invalid_choices';
+    if (picks.some((v) => !slot.choices.some((c) => c.variantId === v))) return 'invalid_choices';
+  }
+  return chosen.some((c) => soldOut.has(c.variantId)) ? 'sold_out' : 'ok';
+}
+
+/** Sum of the chosen upgrade prices, in pesewas; call after checkComboChoices says 'ok'. */
+export function comboUpgradeTotal(slots: ComboSlotDef[], chosen: ComboChoice[]): number {
+  return chosen.reduce((sum, c) => sum + (slots.find((s) => s.id === c.slotId)?.choices.find((x) => x.variantId === c.variantId)?.upgradePesewas ?? 0), 0);
+}
+
+/** Spec 6.54: expected sales from the pots eaten; flagged when the gap is above the shop's limit (exactly the limit is fine). */
+export function potVariance(i: { cookedQty: string; leftoverQty: string; valuePerPotPesewas: number | null; actualPesewas: number; limitBp: number }):
+  { expectedPesewas: number | null; variancePesewas: number | null; flagged: boolean } {
+  if (i.valuePerPotPesewas === null) return { expectedPesewas: null, variancePesewas: null, flagged: false };
+  const eaten = fromMilli(toMilli(i.cookedQty) - toMilli(i.leftoverQty));
+  const expected = pesewasTimesQty(i.valuePerPotPesewas, eaten);
+  const variance = i.actualPesewas - expected;
+  const flagged = expected > 0 && BigInt(Math.abs(variance)) * 10000n > BigInt(expected) * BigInt(i.limitBp);
+  return { expectedPesewas: expected, variancePesewas: variance, flagged };
 }

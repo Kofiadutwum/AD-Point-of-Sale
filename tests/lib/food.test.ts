@@ -1,5 +1,7 @@
 import { expect, it } from 'vitest';
-import { formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount } from '@/lib/food';
+import {
+  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance,
+} from '@/lib/food';
 
 it('order numbers run 001 to 999 and wrap', () => {
   expect([1, 47, 999, 1000, 1998].map(formatOrderNumber)).toEqual(['001', '047', '999', '001', '999']);
@@ -30,4 +32,37 @@ it('a cart holding only the pack needs no pack', () => {
 
 it('only orders that leave the shop need packing', () => {
   expect([needsPacking('eat_in'), needsPacking('takeaway'), needsPacking('delivery')]).toEqual([false, true, true]);
+});
+
+const slots: ComboSlotDef[] = [{ id: 'drink', minChoices: 1, maxChoices: 1, choices: [{ variantId: 'coke', upgradePesewas: 0 }, { variantId: 'large', upgradePesewas: 500 }] }];
+
+it('accepts a valid choice and adds upgrade prices', () => {
+  expect(checkComboChoices(slots, [{ slotId: 'drink', variantId: 'large' }], new Set())).toBe('ok');
+  expect(comboUpgradeTotal(slots, [{ slotId: 'drink', variantId: 'large' }])).toBe(500);
+});
+
+it('refuses too few, too many, repeated, or unknown choices', () => {
+  const repeated = [{ slotId: 'drink', variantId: 'coke' }, { slotId: 'drink', variantId: 'coke' }];
+  const two: ComboSlotDef[] = [{ ...slots[0], maxChoices: 2 }];
+  expect(checkComboChoices(two, repeated, new Set())).toBe('invalid_choices');
+  for (const chosen of [[], [{ slotId: 'drink', variantId: 'coke' }, { slotId: 'drink', variantId: 'large' }], [{ slotId: 'drink', variantId: 'fanta' }], [{ slotId: 'food', variantId: 'coke' }]]) {
+    expect(checkComboChoices(slots, chosen, new Set())).toBe('invalid_choices');
+  }
+});
+
+it('refuses a sold-out choice', () => {
+  expect(checkComboChoices(slots, [{ slotId: 'drink', variantId: 'coke' }], new Set(['coke']))).toBe('sold_out');
+});
+
+it('works out pot variance and flags gaps above the limit', () => {
+  // 3 pots cooked, 0.5 left, GHS 600 per pot -> expected 150000; actual 130000 -> variance -20000 (13.3%) -> flagged
+  expect(potVariance({ cookedQty: '3.000', leftoverQty: '0.500', valuePerPotPesewas: 60000, actualPesewas: 130000, limitBp: 1000 }))
+    .toEqual({ expectedPesewas: 150000, variancePesewas: -20000, flagged: true });
+  expect(potVariance({ cookedQty: '3.000', leftoverQty: '0.500', valuePerPotPesewas: 60000, actualPesewas: 140000, limitBp: 1000 }).flagged).toBe(false); // 6.7%
+  expect(potVariance({ cookedQty: '1.000', leftoverQty: '0.000', valuePerPotPesewas: null, actualPesewas: 5000, limitBp: 1000 }))
+    .toEqual({ expectedPesewas: null, variancePesewas: null, flagged: false });
+});
+
+it('a gap of exactly the limit is not flagged', () => {
+  expect(potVariance({ cookedQty: '1.000', leftoverQty: '0.000', valuePerPotPesewas: 10000, actualPesewas: 9000, limitBp: 1000 }).flagged).toBe(false);
 });
