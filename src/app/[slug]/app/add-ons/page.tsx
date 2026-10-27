@@ -1,8 +1,7 @@
 import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { formatCedis } from '@/lib/money';
-import { type AddOnGroup, listAddOnGroups } from '@/server/add-ons';
-import { listChoosableItems } from '@/server/combos';
+import { type AddOnGroup, listAddOnGroups, listIngredientItems } from '@/server/add-ons';
 import { pageCtx } from '../page-ctx';
 import { saveAddOnGroupAction } from './actions';
 
@@ -13,7 +12,7 @@ const cedis = (pesewas: number) => formatCedis(pesewas).replace(/^GHS\s*/, '');
 export default async function AddOnsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_products');
-  const [groups, items] = await Promise.all([listAddOnGroups(getDb(), ctx), listChoosableItems(getDb(), ctx)]);
+  const [groups, items] = await Promise.all([listAddOnGroups(getDb(), ctx), listIngredientItems(getDb(), ctx)]);
   return (
     <main className="flex max-w-3xl flex-col gap-6">
       <a href={`/${slug}/app`} className="text-sm text-blue-800 underline">← Home</a>
@@ -55,6 +54,8 @@ function GroupForm({ slug, group: g, items }: { slug: string; group: AddOnGroup 
               <td>
                 <select name={`ingredient-${i}`} defaultValue={o?.ingredientVariantId ?? ''} aria-label={`Option ${i + 1} ingredient`} className="w-40 rounded border px-2 py-1">
                   <option value="">None</option>
+                  {/* an ingredient since archived stays selected, so saving the group never drops it silently */}
+                  {o?.ingredientVariantId && !items.some((it) => it.variantId === o.ingredientVariantId) && <option value={o.ingredientVariantId}>(item no longer active)</option>}
                   {items.map((it) => <option key={it.variantId} value={it.variantId}>{it.label}</option>)}
                 </select>
               </td>

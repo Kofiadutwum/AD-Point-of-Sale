@@ -93,6 +93,8 @@ export function searchCatalogue(cache: DeviceCache, text: string, today: string)
 /** Cart lines priced from the cache (price lists, tax rules), with spec 6.6 totals. Lines whose item vanished from the cache are dropped. */
 /** The add-on groups an item offers, in order (spec 4.24). */
 export function addOnGroupsOf(cache: DeviceCache, variantId: string): DeviceCache['addOnGroups'] {
+  const variant = cache.variants.find((v) => v.id === variantId);
+  if (!variant || variant.sellByAmount || variant.kind === 'combo') return []; // the server takes no add-ons on these either
   const ids = cache.itemAddOnGroups.find((x) => x.variantId === variantId)?.groupIds ?? [];
   return ids.flatMap((id) => cache.addOnGroups.filter((g) => g.id === id));
 }

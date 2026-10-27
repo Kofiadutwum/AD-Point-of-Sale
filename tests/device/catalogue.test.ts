@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { canAdd, type CartLine, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
+import { addOnGroupsOf, canAdd, type CartLine, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import { ean13CheckDigit } from '@/lib/barcode';
 import type { DeviceCache } from '@/lib/device-contract';
 
@@ -46,6 +46,12 @@ const fish = [{ groupId: 'g1', optionId: 'fish' }];
 it('refuses a cart line missing a required add-on', () => {
   expect(canAdd(withAddOns, milo1, today)).toBe('invalid_add_ons');
   expect(canAdd(withAddOns, { ...milo1, addOns: fish }, today)).toBeNull();
+});
+
+it('a by-amount item ignores add-on groups, as the server does', () => {
+  const byAmount: DeviceCache = { ...withAddOns, variants: withAddOns.variants.map((v) => (v.id === 'v-milo' ? { ...v, sellByAmount: true, minAmountPesewas: 100 } : v)) };
+  expect(canAdd(byAmount, { ...milo1, amountPesewas: 500 }, today)).toBeNull();
+  expect(addOnGroupsOf(byAmount, 'v-milo')).toEqual([]);
 });
 
 it('prices add-ons into the line', () => {

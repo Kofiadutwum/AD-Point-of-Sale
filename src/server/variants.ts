@@ -2,7 +2,7 @@ import 'server-only';
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { barcodes, type CatalogueStatus, components, products, variants, variantUnits } from '@/db/schema';
+import { barcodes, type CatalogueStatus, components, products, variantAddOnGroups, variants, variantUnits } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { normaliseBarcode } from '@/lib/barcode';
 import { parseQuantity, rollUpCost, toMilli, validSaleQuantity } from '@/lib/decimal';
@@ -120,6 +120,8 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
       scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions, ...(f.needsPack === undefined ? {} : { needsPack: f.needsPack }),
       sellByAmount: byAmount, minAmountPesewas: minAmount, ...(f.valuePerPotPesewas === undefined ? {} : { valuePerPotPesewas: f.valuePerPotPesewas }),
     }).where(eq(variants.id, variantId));
+    // a by-amount line takes no add-ons (spec 4.24); links left behind would block the item on the till
+    if (byAmount && !old.sellByAmount) await tx.delete(variantAddOnGroups).where(eq(variantAddOnGroups.variantId, variantId));
     // price and cost changes are sensitive (spec 6.0 AUDIT): record old and new values
     const changes: Record<string, [number, number]> = {};
     if (old.basePricePesewas !== f.basePricePesewas) changes.basePricePesewas = [old.basePricePesewas, f.basePricePesewas];

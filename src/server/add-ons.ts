@@ -2,13 +2,13 @@ import 'server-only';
 import { and, asc, eq, inArray, notInArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '@/db/client';
-import { addOnGroups, addOnOptions, variantAddOnGroups, variants } from '@/db/schema';
+import { addOnGroups, addOnOptions, products, variantAddOnGroups, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { parseQuantity } from '@/lib/decimal';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { foodEnabled } from './food-settings';
-import { type Fail, fail, isUuid } from './products';
+import { type Fail, fail, isUuid, itemLabel } from './products';
 
 export type AddOnOptionInput = { id?: string; name: string; pricePesewas: number; ingredientVariantId: string | null; ingredientQuantity: string | null };
 export type AddOnGroup = {
@@ -88,6 +88,15 @@ export async function saveAddOnGroup(db: Db, ctx: Ctx, input: {
       changes: { name: g.name, options: options.length } });
     return { ok: true, groupId };
   });
+}
+
+/** Items an add-on may use as its ingredient: the same rule saveAddOnGroup checks, so raw stock that is never sold on its own is offered too. */
+export async function listIngredientItems(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; label: string }>> {
+  assertPermission(ctx, 'manage_products');
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, productName: products.name, variantName: variants.name })
+    .from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), inArray(variants.kind, ['standard', 'recipe'])))
+    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, label: itemLabel(v.productName, v.variantName) })));
 }
 
 /** The item's add-on group ids, in order. */

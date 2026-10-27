@@ -1,6 +1,10 @@
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it } from 'vitest';
+import { variants } from '@/db/schema';
+import { asPlatform } from '@/db/tenant';
 import type { Db } from '@/db/client';
-import { getItemAddOnGroups, listAddOnGroups, saveAddOnGroup, setItemAddOnGroups } from '@/server/add-ons';
+import { getItemAddOnGroups, listAddOnGroups, listIngredientItems, saveAddOnGroup, setItemAddOnGroups } from '@/server/add-ons';
+import { updateVariant } from '@/server/variants';
 import type { Ctx } from '@/server/context';
 import { createProduct } from '@/server/products';
 import { ctxFor, expectAccess, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
@@ -66,6 +70,21 @@ it('links groups to an item in order and refuses combos', async () => {
   expect(await setItemAddOnGroups(db, owner, jollof, [p, p])).toMatchObject({ ok: false, error: 'invalid_input' });
   const meal = await createProduct(db, owner, { name: 'Meal 3', kind: 'combo', tracking: 'none', baseUnit: 'meal', allowsFractions: false, variants: [{ basePricePesewas: 4500, costPesewas: 0 }] });
   expect(await setItemAddOnGroups(db, owner, (meal as { variants: Array<{ variantId: string }> }).variants[0].variantId, [p])).toMatchObject({ ok: false, error: 'not_allowed' });
+});
+
+it('offers ingredients that are not sold on their own', async () => {
+  const raw = await productFor(db, owner, { name: 'Raw chicken' });
+  await asPlatform(db, (tx) => tx.update(variants).set({ sellable: false }).where(eq(variants.id, raw.variantId)));
+  expect((await listIngredientItems(db, owner)).map((i) => i.variantId)).toContain(raw.variantId);
+});
+
+it('turning on sell by amount removes the item from its add-on groups', async () => {
+  const p = (await saveAddOnGroup(db, owner, protein()) as { groupId: string }).groupId;
+  const rice = (await productFor(db, owner, { name: 'Rice' })).variantId;
+  await setItemAddOnGroups(db, owner, rice, [p]);
+  const fields = { name: '', sku: null, basePricePesewas: 1000, costPesewas: null, reorderLevel: null, sellable: true, allowsFractions: false };
+  expect(await updateVariant(db, owner, rice, { ...fields, sellByAmount: true, minAmountPesewas: 500, valuePerPotPesewas: 60000 })).toEqual({ ok: true });
+  expect(await getItemAddOnGroups(db, owner, rice)).toEqual([]);
 });
 
 it('a cashier cannot change add-ons', async () => {
