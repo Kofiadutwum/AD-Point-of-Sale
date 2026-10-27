@@ -16,7 +16,11 @@ export type SaleRequest = {
   }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
-  food?: { serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string };
+  food?: {
+    serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string;
+    channelId?: string; externalOrderId?: string; customer?: { name: string; phone: string }; pickupAt?: string; deliveryAddress?: string;
+    kitchenOrderId?: string;
+  };
 };
 export type SaleResponse =
   | { ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null }

@@ -4,15 +4,17 @@ import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, branchOrderCounters, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines, taxRules,
+  branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
+  salesChannels, taxRules,
   TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { calculateCartTotals } from '@/lib/cart-totals';
+import { normaliseGhanaPhone } from '@/lib/contact';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
-  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount,
+  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount,
 } from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
@@ -38,14 +40,20 @@ export type SaleInput = {
   }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
-  food?: { serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string };
+  food?: {
+    serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string;
+    channelId?: string; externalOrderId?: string; customer?: { name: string; phone: string }; pickupAt?: string; deliveryAddress?: string;
+    kitchenOrderId?: string;
+  };
 };
 export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
   | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
-  | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount';
+  | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
+  | 'unknown_channel' | 'channel_not_allowed' | 'external_order_id_required' | 'channel_order_exists' | 'channel_settlement_required'
+  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
 } | { ok: false; error: SaleError };
@@ -70,10 +78,13 @@ const inputSchema = z.object({
   fromOfflineOutbox: z.boolean().optional(),
   food: z.object({
     serviceMode: z.enum(['counter', 'quick']), diningOption: z.enum(DINING_OPTIONS), orderNumber: z.string().max(10).optional(),
+    channelId: z.uuid().optional(), externalOrderId: z.string().max(100).optional(),
+    customer: z.object({ name: z.string().max(100), phone: z.string().max(30) }).optional(),
+    pickupAt: z.iso.datetime({ offset: true }).optional(), deliveryAddress: z.string().max(300).optional(), kitchenOrderId: z.uuid().optional(),
   }).optional(),
 });
 
-const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer'];
+const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer', 'channel_settlement'];
 
 /** A refusal found after the first write: thrown so the whole transaction rolls back. */
 class SaleRefused extends Error {
@@ -149,8 +160,10 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       // the kitchen works on the server clock: a till whose clock is behind must not file a paid order under yesterday
       const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
       const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
-      const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
       const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
+      const order = s.food?.channelId ? await checkChannel(tx, s.food, { ctxPermissions: ctx.permissions, cashierPermissions, lenient }) : null;
+      const channel = order?.channel ?? null;
+      const list = choosePriceList(await loadPriceRules(tx), { cartListId: channel?.priceListId ?? null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
 
       const priced = [];
       for (const [i, l] of s.lines.entries()) {
@@ -199,6 +212,11 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       }
 
       const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
+      // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
+      const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
+      if (channel?.collectedBy === 'app') {
+        if (s.tenders.length !== 1 || settlements.length !== 1 || settlements[0].amountPesewas !== totals.totalPesewas || !settlements[0].reference) refuse('channel_settlement_required');
+      } else if (settlements.length) refuse('invalid_tender');
       if (s.tenders.some((t) => NEEDS_REFERENCE.includes(t.method) && !t.reference)) return refuse('reference_required');
       const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
       if (nonCash > totals.totalPesewas) return refuse('reduce_non_cash_amount'); // only cash can produce change
@@ -209,6 +227,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
       if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient });
 
+      const commission = channel ? commissionPesewas(totals.totalPesewas, channel.commissionBp) : 0;
       const [saved] = await tx.insert(sales).values({
         id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
         receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
@@ -216,6 +235,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
         businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
         serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
+        channelId: channel?.id ?? null, externalOrderId: order?.externalOrderId ?? null, commissionPesewas: commission,
       }).onConflictDoNothing({ target: sales.id }).returning({ id: sales.id });
       if (!saved) {
         const again = await findSale(tx, s.saleId); // row-level security hides another shop's sale with this id
@@ -238,6 +258,9 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
       }
       await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
+      if (channel?.collectedBy === 'app') {
+        await tx.insert(channelReceivables).values({ tenantId: ctx.tenantId, saleId: s.saleId, channelId: channel.id, expectedPesewas: totals.totalPesewas - commission });
+      }
 
       const done = await finaliseSaleTx(tx, ctx.tenantId, s.saleId, now);
       if (done.problems.onlyExpired) lenient('only_expired_stock', 'only_expired_stock');
@@ -255,7 +278,9 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
           .returning({ last: branchOrderCounters.last }))[0].last);
         await tx.insert(kitchenOrders).values({
           tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: kitchenDay, diningOption: dining!,
-          needsPacking: needsPacking(dining!), sentAt: now,
+          needsPacking: needsPacking(dining!, channel !== null), sentAt: now,
+          channelId: channel?.id ?? null, customerName: order?.customer?.name ?? null, customerPhone: order?.customer?.phone ?? null,
+          pickupAt: order?.pickupAt ?? null, deliveryAddress: order?.deliveryAddress ?? null,
         });
         await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
       }
@@ -264,11 +289,49 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
     });
   } catch (e) {
     if (e instanceof SaleRefused) return { ok: false, error: e.code };
+    if (isUniqueViolation(e, 'sales_channel_order')) return { ok: false, error: 'channel_order_exists' }; // another till saved this platform order first
     throw e;
   }
 }
 
 type PricedLine = { variantId: string; quantity: string };
+
+/** A Postgres unique violation of `constraint`, from postgres.js or PGlite, wrapped by Drizzle or not. */
+function isUniqueViolation(e: unknown, constraint: string): boolean {
+  for (let err = e as { code?: string; constraint?: string; constraint_name?: string; message?: string; cause?: unknown } | undefined; err; err = err.cause as typeof err) {
+    if (err.code === '23505') return [err.constraint, err.constraint_name, err.message].some((v) => v?.includes(constraint));
+  }
+  return false;
+}
+
+type ChannelOrder = {
+  channel: typeof salesChannels.$inferSelect; externalOrderId: string | null; customer: { name: string; phone: string } | null;
+  pickupAt: Date | null; deliveryAddress: string | null;
+};
+
+/** Spec 6.57: who may enter a channel order, how it is served, and the order ID or customer it needs. */
+async function checkChannel(tx: Tx, food: NonNullable<SaleInput['food']>, c: {
+  ctxPermissions: readonly string[]; cashierPermissions: readonly string[]; lenient: (code: SaleError, reason: string) => unknown;
+}): Promise<ChannelOrder> {
+  if (!c.ctxPermissions.includes('enter_channel_orders') || !c.cashierPermissions.includes('enter_channel_orders')) refuse('channel_not_allowed');
+  const [channel] = await tx.select().from(salesChannels).where(eq(salesChannels.id, food.channelId!));
+  if (!channel) return refuse('unknown_channel');
+  if (!channel.active) c.lenient('unknown_channel', 'channel_inactive');
+  if (food.serviceMode !== 'counter' || (food.diningOption !== 'takeaway' && food.diningOption !== 'delivery')) refuse('dining_option_not_allowed');
+  if (channel.kind === 'delivery_app') {
+    const externalOrderId = food.externalOrderId?.trim() ?? '';
+    if (externalOrderId.length < 1 || externalOrderId.length > 64) refuse('external_order_id_required');
+    // a real duplicate is never lenient, not even from the outbox: the manager sees it in held sales
+    const [dup] = await tx.select({ id: sales.id }).from(sales).where(and(eq(sales.channelId, channel.id), eq(sales.externalOrderId, externalOrderId)));
+    if (dup) refuse('channel_order_exists');
+    return { channel, externalOrderId, customer: null, pickupAt: null, deliveryAddress: null };
+  }
+  const name = food.customer?.name.trim() ?? '';
+  const phone = food.customer ? normaliseGhanaPhone(food.customer.phone) : null;
+  const deliveryAddress = food.deliveryAddress?.trim() || null;
+  if (name.length < 1 || name.length > 80 || !phone || (!food.pickupAt && !deliveryAddress) || (deliveryAddress?.length ?? 0) > 200) refuse('customer_details_required');
+  return { channel, externalOrderId: null, customer: { name, phone: phone! }, pickupAt: food.pickupAt ? new Date(food.pickupAt) : null, deliveryAddress };
+}
 
 /** Spec 6.52: the combo slots checked against the choices sent; upgrades add to the price; choices are stored as sold. */
 /** The choices of a stale combo line as the till sent them, named from the catalogue, with no upgrade price. */
