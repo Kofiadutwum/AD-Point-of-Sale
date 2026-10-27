@@ -40,7 +40,10 @@ export function formatReceiptNumber(branchCode: string, registerCode: string, co
 
 export function buildSaleRequest(i: {
   saleId: string; receiptNumber: string; cashierId: string;
-  lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number; amountPesewas?: number | null; choices?: Array<{ slotId: string; variantId: string }> }>;
+  lines: Array<{
+    variantId: string; unitId: string; quantity: string; unitPricePesewas: number; amountPesewas?: number | null; choices?: Array<{ slotId: string; variantId: string }>;
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string;
+  }>;
   tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean; food?: SaleRequest['food'];
 }): SaleRequest {
   return {
@@ -49,6 +52,7 @@ export function buildSaleRequest(i: {
     lines: i.lines.map((l) => ({
       variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: 0,
       ...(l.amountPesewas != null ? { byAmount: true } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
+      ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note?.trim() ? { note: l.note.trim() } : {}),
     })),
     tenders: i.tenders.map((t, k) => ({
       id: i.tenderIds[k], method: t.method, amountPesewas: t.amountPesewas, ...(t.method === 'cash' ? {} : { reference: t.reference.trim() }),

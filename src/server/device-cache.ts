@@ -2,7 +2,7 @@ import 'server-only';
 import { and, arrayContains, asc, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
-  barcodes, branches, comboChoices, salesChannels, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
+  addOnGroups, addOnOptions, barcodes, branches, comboChoices, salesChannels, variantAddOnGroups, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate, todayIn } from '@/lib/dates';
@@ -78,6 +78,7 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       barcodes: await tx.select({ code: barcodes.code, variantId: barcodes.variantId, unitId: barcodes.unitId }).from(barcodes),
       resolvedHeldSaleIds: resolved.map((r) => r.saleId),
       comboSlots: await cachedComboSlots(tx),
+      ...(await cachedAddOns(tx)),
       channels: await tx.select({
         id: salesChannels.id, name: salesChannels.name, kind: salesChannels.kind, priceListId: salesChannels.priceListId, collectedBy: salesChannels.collectedBy,
       }).from(salesChannels).where(eq(salesChannels.active, true)).orderBy(asc(salesChannels.name)),
@@ -89,6 +90,23 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       } : null,
     };
   });
+}
+
+/** Every add-on group with its options, and each item's groups in order, for the till to price add-ons offline. */
+async function cachedAddOns(tx: Tx): Promise<Pick<DeviceCache, 'addOnGroups' | 'itemAddOnGroups'>> {
+  const groups = await tx.select().from(addOnGroups).orderBy(asc(addOnGroups.name));
+  const options = await tx.select().from(addOnOptions).orderBy(asc(addOnOptions.sortOrder));
+  const links = await tx.select().from(variantAddOnGroups).orderBy(asc(variantAddOnGroups.variantId), asc(variantAddOnGroups.sortOrder));
+  return {
+    addOnGroups: groups.map((g) => {
+      const mine = options.filter((o) => o.groupId === g.id);
+      return {
+        id: g.id, name: g.name, minChoices: g.minChoices, maxChoices: g.maxChoices,
+        options: mine.map((o) => ({ id: o.id, pricePesewas: o.pricePesewas, active: o.active })), optionNames: Object.fromEntries(mine.map((o) => [o.id, o.name])),
+      };
+    }),
+    itemAddOnGroups: [...new Set(links.map((l) => l.variantId))].map((variantId) => ({ variantId, groupIds: links.filter((l) => l.variantId === variantId).map((l) => l.groupId) })),
+  };
 }
 
 /** Every combo slot with its choices, for the till to build combos offline. */

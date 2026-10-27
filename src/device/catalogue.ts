@@ -2,7 +2,7 @@ import { normaliseBarcode, readScaleLabel } from '@/lib/barcode';
 import { type CartTotals, calculateCartTotals } from '@/lib/cart-totals';
 import { fromMilli, ratioToQty, validSaleQuantity } from '@/lib/decimal';
 import type { DeviceCache } from '@/lib/device-contract';
-import { checkComboChoices, type ComboChoice, comboUpgradeTotal, type DiningOption, packCount } from '@/lib/food';
+import { type AddOnChoice, addOnTotal, checkAddOns, checkComboChoices, type ComboChoice, comboUpgradeTotal, type DiningOption, packCount, sameAddOns } from '@/lib/food';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { chooseTaxRule } from '@/lib/tax';
 
@@ -13,6 +13,7 @@ export type SearchHit = { variantId: string; unitId: string; label: string; unit
 export type CartLine = {
   lineId: string; variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null;
   amountPesewas?: number | null; choices?: ComboChoice[]; // sold by amount (spec 6.53); combo choices (spec 6.52)
+  addOns?: AddOnChoice[]; note?: string; // spec 4.24
 };
 export type PricedLine = CartLine & { label: string; unitName: string; unitPricePesewas: number; taxRateBp: number };
 
@@ -46,8 +47,8 @@ function parts(cache: DeviceCache, variantId: string, unitId: string) {
 /** Why this item cannot go in the cart, or null. */
 /** `today` is the device business date; a sold-out list from another date is stale and ignored (the server checks again on sync). */
 export function canAdd(
-  cache: DeviceCache, found: Found & { amountPesewas?: number | null; choices?: ComboChoice[] }, today?: string,
-): 'unavailable' | 'serial_item' | 'invalid_quantity' | 'sold_out' | 'amount_required' | 'below_minimum_amount' | 'invalid_choices' | null {
+  cache: DeviceCache, found: Found & { amountPesewas?: number | null; choices?: ComboChoice[]; addOns?: AddOnChoice[] }, today?: string,
+): 'unavailable' | 'serial_item' | 'invalid_quantity' | 'sold_out' | 'amount_required' | 'below_minimum_amount' | 'invalid_choices' | 'invalid_add_ons' | null {
   const p = parts(cache, found.variantId, found.unitId);
   if (!p || p.product.status !== 'active' || p.variant.status !== 'active' || !p.variant.sellable || !p.unit.sellable) return 'unavailable';
   const soldOutToday = cache.food && today === cache.food.businessDate ? new Set(cache.food.soldOutVariantIds) : new Set<string>();
@@ -60,6 +61,8 @@ export function canAdd(
     const check = checkComboChoices(comboSlotsOf(cache, found.variantId), found.choices ?? [], soldOutToday);
     if (check !== 'ok') return check;
   }
+  const groups = addOnGroupsOf(cache, found.variantId);
+  if ((groups.length || found.addOns?.length) && checkAddOns(groups, found.addOns ?? []) !== 'ok') return 'invalid_add_ons';
   if (p.product.tracking === 'serial') return 'serial_item'; // the device till has no serial picker yet
   return validSaleQuantity(found.quantity, p.unit.isBase && p.variant.allowsFractions) ? null : 'invalid_quantity';
 }
@@ -88,6 +91,21 @@ export function searchCatalogue(cache: DeviceCache, text: string, today: string)
 }
 
 /** Cart lines priced from the cache (price lists, tax rules), with spec 6.6 totals. Lines whose item vanished from the cache are dropped. */
+/** The add-on groups an item offers, in order (spec 4.24). */
+export function addOnGroupsOf(cache: DeviceCache, variantId: string): DeviceCache['addOnGroups'] {
+  const ids = cache.itemAddOnGroups.find((x) => x.variantId === variantId)?.groupIds ?? [];
+  return ids.flatMap((id) => cache.addOnGroups.filter((g) => g.id === id));
+}
+
+/** Spec 6.5: a plain line adds to the same item already in the cart only when its add-ons and note are the same too. */
+export function mergeLine(lines: CartLine[], found: Omit<CartLine, 'lineId'>): CartLine[] {
+  const plain = found.labelPricePesewas === null && found.amountPesewas == null && !found.choices;
+  const same = plain && lines.find((l) => l.variantId === found.variantId && l.unitId === found.unitId && l.labelPricePesewas === null && l.amountPesewas == null
+    && !l.choices && sameAddOns(l.addOns, found.addOns) && (l.note ?? '') === (found.note ?? ''));
+  if (!same) return [...lines, { lineId: crypto.randomUUID(), ...found }];
+  return lines.map((l) => (l === same ? { ...l, quantity: (Number(l.quantity) + Number(found.quantity)).toFixed(3) } : l));
+}
+
 /** The combo slots the cache holds for one combo, in order. */
 export function comboSlotsOf(cache: DeviceCache, comboVariantId: string) {
   return cache.comboSlots.filter((s) => s.comboVariantId === comboVariantId).sort((a, b) => a.sortOrder - b.sortOrder);
@@ -105,7 +123,8 @@ export function priceCart(
     priced.push({
       ...l, label: labelOf(p.product.name, p.variant.name), unitName: p.unit.name,
       unitPricePesewas: p.variant.sellByAmount && l.amountPesewas != null ? l.amountPesewas
-        : unitPrice(cache, p.variant, p.unit, l.quantity, today, opts.priceListId ?? null) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0),
+        : unitPrice(cache, p.variant, p.unit, l.quantity, today, opts.priceListId ?? null) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0)
+          + addOnTotal(addOnGroupsOf(cache, l.variantId), l.addOns ?? []),
       taxRateBp: rule?.rateBp ?? 0,
     });
   }

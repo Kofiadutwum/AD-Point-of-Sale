@@ -6,6 +6,7 @@ import { asPlatform } from '@/db/tenant';
 import { getDeviceCache, getDeviceCacheVersion, readDeviceImage } from '@/server/device-cache';
 import { deregisterDevice, registerDevice, switchCashierWithPin } from '@/server/devices';
 import { listHeldSales, reportHeldSale, resolveHeldSale } from '@/server/held-sales';
+import { saveAddOnGroup, setItemAddOnGroups } from '@/server/add-ons';
 import { saveChannel } from '@/server/channels';
 import { saveComboSlots } from '@/server/combos';
 import { setServiceModes } from '@/server/food-settings';
@@ -175,6 +176,18 @@ describe('food', () => {
 
   it('food is null when the kitchen module is off', async () => {
     expect((await getDeviceCache(db, dev(), t0))!.food).toBeNull();
+  });
+
+  it('includes add-on groups and item links', async () => {
+    const { owner, token, jollof } = await foodDevice(['counter']);
+    const { groupId } = await saveAddOnGroup(db, owner, { name: 'Protein', minChoices: 1, maxChoices: 1, options: [
+      { name: 'Fish', pricePesewas: 1200, ingredientVariantId: null, ingredientQuantity: null },
+    ] }) as { groupId: string };
+    await setItemAddOnGroups(db, owner, jollof.variantId, [groupId]);
+    const c = await getDeviceCache(db, { deviceToken: token, slug: 'chop-bar' }, at);
+    expect(c!.addOnGroups).toMatchObject([{ id: groupId, name: 'Protein', minChoices: 1, maxChoices: 1, options: [{ pricePesewas: 1200, active: true }] }]);
+    expect(Object.values(c!.addOnGroups[0].optionNames)).toEqual(['Fish']);
+    expect(c!.itemAddOnGroups).toEqual([{ variantId: jollof.variantId, groupIds: [groupId] }]);
   });
 
   it('includes active channels only', async () => {

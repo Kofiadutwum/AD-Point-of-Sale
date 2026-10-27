@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { canAdd, type CartLine, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
+import { canAdd, type CartLine, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import { ean13CheckDigit } from '@/lib/barcode';
 import type { DeviceCache } from '@/lib/device-contract';
 
@@ -30,8 +30,34 @@ const cache: DeviceCache = {
   food: null,
   comboSlots: [],
   channels: [],
+  addOnGroups: [],
+  itemAddOnGroups: [],
 };
 const today = '2026-10-20';
+
+const withAddOns: DeviceCache = {
+  ...cache,
+  addOnGroups: [{ id: 'g1', name: 'Protein', minChoices: 1, maxChoices: 1, options: [{ id: 'fish', pricePesewas: 1200, active: true }], optionNames: { fish: 'Fish' } }],
+  itemAddOnGroups: [{ variantId: 'v-milo', groupIds: ['g1'] }],
+};
+const milo1 = { variantId: 'v-milo', unitId: 'u-milo', quantity: '1.000', labelPricePesewas: null };
+const fish = [{ groupId: 'g1', optionId: 'fish' }];
+
+it('refuses a cart line missing a required add-on', () => {
+  expect(canAdd(withAddOns, milo1, today)).toBe('invalid_add_ons');
+  expect(canAdd(withAddOns, { ...milo1, addOns: fish }, today)).toBeNull();
+});
+
+it('prices add-ons into the line', () => {
+  expect(priceCart(withAddOns, [{ lineId: 'l1', ...milo1, addOns: fish }], today).lines[0].unitPricePesewas).toBe(2400 + 1200);
+});
+
+it('merges only identical add-ons and notes', () => {
+  let lines = mergeLine(mergeLine([], { ...milo1, addOns: fish }), { ...milo1, addOns: fish });
+  expect(lines).toMatchObject([{ quantity: '2.000' }]);
+  lines = mergeLine(mergeLine(lines, { ...milo1, addOns: fish, note: 'no ice' }), milo1);
+  expect(lines).toHaveLength(3);
+});
 
 it("prices with the channel's price list", () => {
   const withBolt: DeviceCache = { ...cache, priceRules: [...cache.priceRules,

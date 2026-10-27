@@ -1,7 +1,7 @@
 // Shapes shared by the server and the device till. Types only: the browser imports this file.
 import type { CatalogueStatus, Tracking, VariantKind } from '@/db/schema';
 import type { ScaleLayout } from './barcode';
-import type { ChannelKind, ComboSlotDef, DiningOption } from './food';
+import type { AddOnGroupDef, ChannelKind, ComboSlotDef, DiningOption } from './food';
 import type { Permission } from './permissions';
 import type { PriceRule } from './pricing';
 
@@ -51,6 +51,9 @@ export type DeviceCache = {
   resolvedHeldSaleIds: string[];
   /** Choice slots of every combo (spec 6.52). */
   comboSlots: Array<ComboSlotDef & { comboVariantId: string; name: string; sortOrder: number; choiceNames: Record<string, string> }>;
+  /** Add-on groups with every option (the till offers active ones only) and the groups each item offers, in order (spec 4.24). */
+  addOnGroups: Array<AddOnGroupDef & { name: string; optionNames: Record<string, string> }>;
+  itemAddOnGroups: Array<{ variantId: string; groupIds: string[] }>;
   /** Active delivery-app, phone, and WhatsApp channels (spec 6.57). */
   channels: Array<{ id: string; name: string; kind: ChannelKind; priceListId: string | null; collectedBy: 'app' | 'shop' }>;
   /** Null when the kitchen module is off. Sold-out ids are for businessDate only; a till ignores them on another date. */

@@ -16,7 +16,7 @@ const METHODS: Array<{ value: TenderInput['method']; label: string }> = [
 ];
 const ADD_ERRORS = {
   unavailable: 'Product unavailable', serial_item: 'Sell serial items on the online sell page.', invalid_quantity: 'Enter a valid quantity', sold_out: 'Sold out today',
-  amount_required: 'Type the amount to sell', below_minimum_amount: 'Below the minimum amount', invalid_choices: 'Pick the combo choices first',
+  amount_required: 'Type the amount to sell', below_minimum_amount: 'Below the minimum amount', invalid_choices: 'Pick the combo choices first', invalid_add_ons: 'Pick the add-ons first',
 } as const;
 const EMPTY_ORDER = { externalOrderId: '', name: '', phone: '', pickup: '', address: '' };
 const btn = 'rounded border px-3 py-2';

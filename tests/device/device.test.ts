@@ -18,7 +18,7 @@ async function cacheWith(pin: string | null, extra: Partial<DeviceCache['shop']>
     shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'inclusive', taxEnabled: false, scaleLayout: null, offlineEnabled: true, canSell: true, businessDayCutoff: '00:00', ...extra },
     register: { id: 'r', name: 'Till 1', registerCode: 'T1', branchId: 'b', branchCode: 'B1', branchName: 'Main' },
     staff: [{ id: 'kofi', name: 'Kofi', permissions: ['make_sale'], pinHash: pin && (await hashSecret(pin)), pinLockedUntil: null }],
-    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [], food: null, comboSlots: [], channels: [],
+    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [], food: null, comboSlots: [], channels: [], addOnGroups: [], itemAddOnGroups: [],
   };
 }
 const entry = (saleId: string, seq: number): OutboxEntry => ({
