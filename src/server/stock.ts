@@ -276,3 +276,26 @@ export async function lookupStockItem(
     return hit ? { variantId: hit.variantId, unitId: hit.unitId, name: itemLabel(hit.productName, hit.variantName), unitName: hit.unitName, tracking: hit.tracking } : null;
   });
 }
+
+/**
+ * Spec 6.27, 6.54: takes `qty` of a variant out of stock outside a sale (pots cooked, wastage).
+ * A recipe or bundle gives its components; a standard item goes down itself. Batches are not picked here: pot ingredients are bulk stock.
+ */
+export async function deductRecipe(
+  tx: Tx, s: { tenantId: string; branchId: string; userId: string }, variantId: string, qty: string,
+  type: 'used_in_production' | 'waste', ref: { type: 'pot_record' | 'wastage'; id: string },
+): Promise<{ negative: boolean }> {
+  const [v] = await tx.select({ kind: variants.kind }).from(variants).where(eq(variants.id, variantId));
+  if (!v) throw new Error(`unknown variant ${variantId}`);
+  if (v.kind !== 'standard') {
+    const parts = await tx.select({ id: components.componentVariantId, quantity: components.quantity }).from(components)
+      .where(eq(components.parentVariantId, variantId)).orderBy(asc(components.createdAt), asc(components.id));
+    let negative = false;
+    for (const part of parts) negative = (await deductRecipe(tx, s, part.id, multiplyQty(part.quantity, qty), type, ref)).negative || negative;
+    return { negative };
+  }
+  await tx.insert(stockMovements).values({
+    tenantId: s.tenantId, branchId: s.branchId, variantId, type, quantity: minus(toMilli(qty)), referenceType: ref.type, referenceId: ref.id, userId: s.userId,
+  });
+  return { negative: await changeBalance(tx, s.tenantId, s.branchId, variantId, qty, true) };
+}
