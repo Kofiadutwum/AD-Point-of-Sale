@@ -113,7 +113,7 @@ it('stops a manager from raising permissions above their own or changing their o
 
 it('refuses to add staff whose role carries permissions the actor lacks', async () => {
   const shop = await seedShop(db, { users: [{ key: 'owner', email: 'o@x.test' }, { key: 'lead', email: 'l@x.test', rolePreset: 'cashier' }] });
-  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_staff'] }).where(eq(users.id, shop.users.lead.id)));
+  await asPlatform(db, (tx) => tx.update(users).set({ permissions: ['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'manage_staff'] }).where(eq(users.id, shop.users.lead.id)));
   const ctx = await ctxFor(db, shop, 'lead', t0, 'manage_staff');
   expect(await addStaff(db, ctx, { name: 'M', email: 'm2@x.test', rolePreset: 'manager', branchIds: [shop.branchId] }, t0))
     .toEqual({ ok: false, error: 'cannot_grant' });
