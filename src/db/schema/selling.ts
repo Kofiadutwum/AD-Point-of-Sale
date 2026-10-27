@@ -1,14 +1,15 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
 import { priceLists, variants } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
-export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit'];
+export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement'];
+export type ChannelKind = 'delivery_app' | 'phone' | 'whatsapp';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
 const quantity = (name: string) => numeric(name, { precision: 14, scale: 3 });
@@ -48,6 +49,26 @@ export const storeCreditEntries = pgTable('store_credit_entries', {
   check('store_credit_entries_amount', sql`${t.amountPesewas} <> 0`),
 ]);
 
+/** Where an order came from besides walk-in: a delivery app, phone, or WhatsApp, with its own prices and commission (spec 6.57). */
+export const salesChannels = pgTable('sales_channels', {
+  id: id(),
+  tenantId: tenantId(),
+  name: text('name').notNull(),
+  kind: text('kind').$type<ChannelKind>().notNull(),
+  priceListId: uuid('price_list_id'),
+  commissionBp: integer('commission_bp').notNull().default(0),
+  collectedBy: text('collected_by').$type<'app' | 'shop'>().notNull().default('shop'),
+  active: boolean('active').notNull().default(true),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('sales_channels_tenant_id').on(t.tenantId, t.id),
+  uniqueIndex('sales_channels_name').on(t.tenantId, sql`lower(${t.name})`),
+  foreignKey({ name: 'sales_channels_price_list_fk', columns: [t.tenantId, t.priceListId], foreignColumns: [priceLists.tenantId, priceLists.id] }),
+  check('sales_channels_kind', sql`${t.kind} in ('delivery_app', 'phone', 'whatsapp')`),
+  check('sales_channels_commission', sql`${t.commissionBp} between 0 and 10000`),
+  check('sales_channels_collected_by', sql`${t.collectedBy} in ('app', 'shop') and (${t.kind} = 'delivery_app' or ${t.collectedBy} = 'shop')`),
+]);
+
 /** The id is the UUID made on the device; it is also the idempotency key (spec 6.0, 6.8). */
 export const sales = pgTable('sales', {
   id: uuid('id').primaryKey(),
@@ -76,12 +97,19 @@ export const sales = pgTable('sales', {
   serviceMode: text('service_mode').$type<'counter' | 'quick'>(), // food sales only
   diningOption: text('dining_option').$type<'eat_in' | 'takeaway' | 'delivery'>(),
   orderNumber: text('order_number'),
+  channelId: uuid('channel_id'), // delivery app, phone, or WhatsApp; null for walk-in (spec 6.57)
+  externalOrderId: text('external_order_id'), // the platform order ID
+  commissionPesewas: integer('commission_pesewas').notNull().default(0),
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
   index('sales_business_date').on(t.tenantId, t.businessDate),
   check('sales_service_mode', sql`${t.serviceMode} in ('counter', 'quick')`),
   check('sales_dining_option', sql`${t.diningOption} in ('eat_in', 'takeaway', 'delivery')`),
+  uniqueIndex('sales_channel_order').on(t.tenantId, t.channelId, t.externalOrderId).where(sql`${t.externalOrderId} is not null`),
+  check('sales_external_order', sql`${t.externalOrderId} is null or ${t.channelId} is not null`),
+  check('sales_commission', sql`${t.commissionPesewas} >= 0`),
+  foreignKey({ name: 'sales_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
   foreignKey({ name: 'sales_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
   foreignKey({ name: 'sales_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),
   foreignKey({ name: 'sales_cashier_fk', columns: [t.tenantId, t.cashierId], foreignColumns: [users.tenantId, users.id] }),
@@ -132,7 +160,7 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit')`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement')`),
   check('payments_reference', sql`${t.method} in ('cash', 'store_credit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),

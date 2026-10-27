@@ -28,4 +28,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   mark_sold_out: 'Mark items sold out',
   run_kitchen: 'Run the kitchen screen and packing check',
   record_kitchen_stock: 'Record pots, leftovers, and wastage',
+  enter_channel_orders: 'Enter delivery-app and phone orders',
+  manage_channels: 'Set up channels and record app payouts',
 };

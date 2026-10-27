@@ -1,11 +1,12 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, date, foreignKey, index, integer, numeric, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
 import { variants } from './catalogue';
 import { users } from './people';
-import { sales } from './selling';
+import { sales, salesChannels } from './selling';
 import { branches, tenants } from './tenancy';
 
+export type PendingLine = { variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }> };
 export type KitchenOrderStatus = 'preparing' | 'ready' | 'collected' | 'handed_over' | 'cancelled';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -66,7 +67,17 @@ export const kitchenOrders = pgTable('kitchen_orders', {
   closedAt: timestamptz('closed_at'),
   closedBy: uuid('closed_by'),
   handedTo: text('handed_to'),
+  channelId: uuid('channel_id'),
+  customerName: text('customer_name'),
+  customerPhone: text('customer_phone'),
+  pickupAt: timestamptz('pickup_at'),
+  deliveryAddress: text('delivery_address'),
+  payOnCollect: boolean('pay_on_collect').notNull().default(false), // phone order paid when collected; its sale is made then (spec 6.57)
+  pendingLines: jsonb('pending_lines').$type<PendingLine[]>(),
 }, (t) => [
+  check('kitchen_orders_paid', sql`${t.payOnCollect} or ${t.saleId} is not null`),
+  check('kitchen_orders_pending_lines', sql`not ${t.payOnCollect} or ${t.pendingLines} is not null`),
+  foreignKey({ name: 'kitchen_orders_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
   unique('kitchen_orders_tenant_id').on(t.tenantId, t.id),
   unique('kitchen_orders_sale').on(t.tenantId, t.saleId),
   index('kitchen_orders_day').on(t.tenantId, t.branchId, t.businessDate, t.status),
@@ -172,4 +183,42 @@ export const wastageEntries = pgTable('wastage_entries', {
   check('wastage_entries_quantity', sql`${t.quantity} > 0`),
   check('wastage_entries_reason', sql`${t.reason} in ('spoiled', 'dropped', 'staff_meal', 'leftover')`),
   check('wastage_entries_cost', sql`${t.costPesewas} >= 0`),
+]);
+
+/** A payout from a delivery app, matched against what the app owed for its orders (spec 6.57). */
+export const channelPayouts = pgTable('channel_payouts', {
+  id: id(),
+  tenantId: tenantId(),
+  channelId: uuid('channel_id').notNull(),
+  amountPesewas: integer('amount_pesewas').notNull(),
+  reference: text('reference').notNull(),
+  periodFrom: date('period_from', { mode: 'string' }),
+  periodTo: date('period_to', { mode: 'string' }),
+  expectedPesewas: integer('expected_pesewas').notNull(),
+  differencePesewas: integer('difference_pesewas').notNull(),
+  recordedBy: uuid('recorded_by'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('channel_payouts_tenant_id').on(t.tenantId, t.id),
+  unique('channel_payouts_reference').on(t.tenantId, t.channelId, t.reference),
+  foreignKey({ name: 'channel_payouts_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
+  foreignKey({ name: 'channel_payouts_recorded_by_fk', columns: [t.tenantId, t.recordedBy], foreignColumns: [users.tenantId, users.id] }),
+  check('channel_payouts_amount', sql`${t.amountPesewas} > 0`),
+  check('channel_payouts_period', sql`${t.periodTo} >= ${t.periodFrom}`),
+]);
+
+/** What a delivery app owes for one sale it collected the money for: total minus commission (spec 6.57). */
+export const channelReceivables = pgTable('channel_receivables', {
+  id: id(),
+  tenantId: tenantId(),
+  saleId: uuid('sale_id').notNull(),
+  channelId: uuid('channel_id').notNull(),
+  expectedPesewas: integer('expected_pesewas').notNull(),
+  payoutId: uuid('payout_id'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('channel_receivables_sale').on(t.tenantId, t.saleId),
+  foreignKey({ name: 'channel_receivables_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'channel_receivables_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
+  foreignKey({ name: 'channel_receivables_payout_fk', columns: [t.tenantId, t.payoutId], foreignColumns: [channelPayouts.tenantId, channelPayouts.id] }),
 ]);

@@ -57,7 +57,7 @@ it('gives a registered device its catalogue, settings, and branch staff with PIN
   expect(c!.staff.map((s) => s.name).sort()).toEqual(['kofi', 'owner']);
   const kofi = c!.staff.find((s) => s.name === 'kofi')!;
   expect(kofi.pinHash).toMatch(/^\$argon2id\$/);
-  expect(kofi.permissions).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock']);
+  expect(kofi.permissions).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders']);
   expect(c!.barcodes).toEqual([expect.objectContaining({ code: '6001234567890' })]);
   expect(c!.products[0]).toMatchObject({ name: 'Milo 400g', imageId: null });
   expect(c!.version).toBe(await getDeviceCacheVersion(db, dev()));
@@ -65,7 +65,7 @@ it('gives a registered device its catalogue, settings, and branch staff with PIN
 
 it('limits an owner to till permissions in the cache', async () => {
   const c = await getDeviceCache(db, dev(), t0);
-  expect(c!.staff.find((s) => s.name === 'owner')!.permissions.sort()).toEqual(['approve_actions', 'give_discount', 'make_sale', 'mark_sold_out', 'record_kitchen_stock', 'run_kitchen']);
+  expect(c!.staff.find((s) => s.name === 'owner')!.permissions.sort()).toEqual(['approve_actions', 'enter_channel_orders', 'give_discount', 'make_sale', 'mark_sold_out', 'record_kitchen_stock', 'run_kitchen']);
 });
 
 it('sends no PIN hashes when the shop switched offline off', async () => {

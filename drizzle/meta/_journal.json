@@ -99,6 +99,20 @@
       "when": 1793066737246,
       "tag": "0013_food_menu_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793071803923,
+      "tag": "0014_food_channels",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793071808508,
+      "tag": "0015_food_channels_rls",
+      "breakpoints": true
     }
   ]
 }

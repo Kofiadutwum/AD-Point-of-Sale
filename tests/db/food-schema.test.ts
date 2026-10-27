@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { branches, comboChoices, comboSlots, deviceCacheVersions, kitchenOrders, potRecords, sales, soldOut, variants, wastageEntries } from '@/db/schema';
+import { branches, comboChoices, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb, dbError } from '../helpers/test-db';
@@ -118,5 +118,43 @@ describe('menu', () => {
     const before = await cacheVersion(a.tenantId);
     await insertSlot(0, 1);
     expect(await cacheVersion(a.tenantId)).toBeGreaterThan(before);
+  });
+});
+
+describe('channels', () => {
+  const insertChannel = (shop: SeededShop, extra: Partial<typeof salesChannels.$inferInsert> = {}) => asPlatform(db, (tx) => tx.insert(salesChannels).values({
+    tenantId: shop.tenantId, name: `Bolt ${randomUUID().slice(0, 4)}`, kind: 'delivery_app', commissionBp: 2000, collectedBy: 'app', ...extra,
+  }).returning().then((r) => r[0]));
+  const setOrder = (saleId: string, channelId: string, externalOrderId: string) => asPlatform(db, (tx) => tx.update(sales)
+    .set({ channelId, externalOrderId }).where(eq(sales.id, saleId)));
+
+  it('a platform order ID is unique per channel', async () => {
+    const bolt = await insertChannel(a);
+    await setOrder(saleA, bolt.id, 'BOLT-1');
+    const second = await insertSale(a);
+    expect(await dbError(setOrder(second, bolt.id, 'BOLT-1'))).toMatch(/sales_channel_order/);
+  });
+
+  it('the same order ID on two channels is allowed at the database', async () => {
+    const bolt = await insertChannel(a);
+    const chow = await insertChannel(a, { name: 'Chowdeck' });
+    await setOrder(saleA, bolt.id, 'X-9');
+    await expect(setOrder(await insertSale(a), chow.id, 'X-9')).resolves.toBeDefined();
+  });
+
+  it('a phone channel cannot be collected by the app', async () => {
+    expect(await dbError(insertChannel(a, { name: 'Phone', kind: 'phone', collectedBy: 'app' }))).toMatch(/sales_channels_collected_by/);
+  });
+
+  it('a paid kitchen order needs its sale; an unpaid one needs its lines', async () => {
+    const base = { tenantId: a.tenantId, branchId: a.branchId, orderNumber: '001', businessDate: '2026-10-26', diningOption: 'takeaway' as const, needsPacking: true, sentAt: t0 };
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(kitchenOrders).values({ ...base, saleId: null })))).toMatch(/kitchen_orders_paid/);
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(kitchenOrders).values({ ...base, saleId: null, payOnCollect: true })))).toMatch(/kitchen_orders_pending_lines/);
+    await expect(asPlatform(db, (tx) => tx.insert(kitchenOrders).values({ ...base, saleId: null, payOnCollect: true, pendingLines: [] }))).resolves.toBeDefined();
+  });
+
+  it('channel_settlement needs a reference', async () => {
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(payments).values({ id: randomUUID(), tenantId: a.tenantId, saleId: saleA, method: 'channel_settlement', amountPesewas: 500 }))))
+      .toMatch(/payments_reference/);
   });
 });
