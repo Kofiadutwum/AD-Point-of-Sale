@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance,
+  checkComboChoices, type ComboSlotDef, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
 } from '@/lib/food';
 
 it('order numbers run 001 to 999 and wrap', () => {
@@ -65,4 +65,23 @@ it('works out pot variance and flags gaps above the limit', () => {
 
 it('a gap of exactly the limit is not flagged', () => {
   expect(potVariance({ cookedQty: '1.000', leftoverQty: '0.000', valuePerPotPesewas: 10000, actualPesewas: 9000, limitBp: 1000 }).flagged).toBe(false);
+});
+
+it('works out commission half up', () => {
+  expect(commissionPesewas(10_000, 2250)).toBe(2250);
+  expect(commissionPesewas(333, 1500)).toBe(50); // 49.95 -> 50
+  expect(commissionPesewas(5_000, 0)).toBe(0);
+});
+
+it('splits a combo net price in proportion and keeps every pesewa', () => {
+  const s = splitComboNet(4500, [{ key: 'chicken', weightPesewas: 3000 }, { key: 'chips', weightPesewas: 1200 }, { key: 'coke', weightPesewas: 800 }]);
+  expect([...s.values()].reduce((a, b) => a + b, 0)).toBe(4500);
+  expect(s.get('chicken')).toBe(2700);
+  expect([...splitComboNet(100, [{ key: 'a', weightPesewas: 0 }, { key: 'b', weightPesewas: 0 }]).values()]).toEqual([100, 0]);
+});
+
+it('every channel order needs packing; walk-in eat in does not', () => {
+  expect(needsPacking('eat_in')).toBe(false);
+  expect(needsPacking('takeaway')).toBe(true);
+  expect(needsPacking('eat_in', true)).toBe(true);
 });

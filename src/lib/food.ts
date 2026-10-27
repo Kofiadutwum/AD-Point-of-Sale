@@ -1,4 +1,4 @@
-import { fromMilli, toMilli } from './decimal';
+import { divHalfUp, fromMilli, toMilli } from './decimal';
 import { pesewasTimesQty } from './money';
 
 /** Food rules shared by the server and the till (spec 6.51, 6.56, 6.58). */
@@ -30,8 +30,9 @@ export function packCount(
   return Number((milli + 999n) / 1000n); // part units round up to a whole pack
 }
 
-export function needsPacking(diningOption: DiningOption): boolean {
-  return diningOption !== 'eat_in';
+/** Spec 6.58: anything leaving the shop is packed and checked, and every delivery-app or phone order counts as leaving. */
+export function needsPacking(diningOption: DiningOption, hasChannel = false): boolean {
+  return hasChannel || diningOption !== 'eat_in';
 }
 
 export type ComboSlotDef = { id: string; minChoices: number; maxChoices: number; choices: Array<{ variantId: string; upgradePesewas: number }> };
@@ -62,4 +63,23 @@ export function potVariance(i: { cookedQty: string; leftoverQty: string; valuePe
   const variance = i.actualPesewas - expected;
   const flagged = expected > 0 && BigInt(Math.abs(variance)) * 10000n > BigInt(expected) * BigInt(i.limitBp);
   return { expectedPesewas: expected, variancePesewas: variance, flagged };
+}
+
+export type ChannelKind = 'delivery_app' | 'phone' | 'whatsapp';
+
+/** Spec 6.57: the app’s cut of a sale, in pesewas, rounded half up. */
+export function commissionPesewas(totalPesewas: number, commissionBp: number): number {
+  return Number(divHalfUp(BigInt(totalPesewas) * BigInt(commissionBp), 10000n));
+}
+
+/**
+ * Spec 6.52 (reports): shares a combo net price across its parts in proportion to their usual prices.
+ * Each part gets the floor of its share; the pesewas left over go to the largest part (the first on a tie), so the shares add up to .
+ */
+export function splitComboNet(netPesewas: number, parts: Array<{ key: string; weightPesewas: number }>): Map<string, number> {
+  const total = parts.reduce((sum, p) => sum + p.weightPesewas, 0);
+  const shares = new Map(parts.map((p) => [p.key, total > 0 ? Math.floor((netPesewas * p.weightPesewas) / total) : 0]));
+  const largest = total > 0 ? parts.reduce((best, p) => (p.weightPesewas > best.weightPesewas ? p : best), parts[0]) : parts[0];
+  if (largest) shares.set(largest.key, shares.get(largest.key)! + netPesewas - [...shares.values()].reduce((a, b) => a + b, 0));
+  return shares;
 }
