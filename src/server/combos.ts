@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db } from '@/db/client';
 import { comboChoices, comboSlots, products, variants } from '@/db/schema';
@@ -50,10 +50,12 @@ export async function saveComboSlots(
     const [parent] = await tx.select({ kind: variants.kind }).from(variants).where(eq(variants.id, comboVariantId)).for('update');
     if (!parent || parent.kind !== 'combo') return { ok: false, error: 'not_a_combo' } as const;
     const ids = [...new Set(parsed.data.flatMap((s) => s.choices.map((c) => c.variantId)))];
-    const found = await tx.select({ id: variants.id, kind: variants.kind }).from(variants).where(and(inArray(variants.id, ids), eq(variants.status, 'active')));
+    const found = await tx.select({ id: variants.id, kind: variants.kind, sellByAmount: variants.sellByAmount, tracking: products.tracking })
+      .from(variants).innerJoin(products, eq(products.id, variants.productId)).where(and(inArray(variants.id, ids), eq(variants.status, 'active')));
     if (found.length !== ids.length) return { ok: false, error: 'unknown_item' } as const;
     if (found.some((v) => v.kind === 'combo')) return { ok: false, error: 'nested_combo' } as const;
-    if (found.some((v) => v.kind !== 'standard' && v.kind !== 'recipe')) return { ok: false, error: 'unknown_item' } as const;
+    // a by-amount item is a pot, not a plate, and a serial item needs its serial at sale: neither can be a combo choice
+    if (found.some((v) => (v.kind !== 'standard' && v.kind !== 'recipe') || v.sellByAmount || v.tracking === 'serial')) return { ok: false, error: 'unknown_item' } as const;
     await tx.delete(comboSlots).where(eq(comboSlots.comboVariantId, comboVariantId)); // choices go with their slots (cascade)
     for (const [i, s] of parsed.data.entries()) {
       const [slot] = await tx.insert(comboSlots).values({
@@ -72,6 +74,7 @@ export async function listChoosableItems(db: Db, ctx: Ctx): Promise<Array<{ vari
   assertPermission(ctx, 'manage_products');
   return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, productName: products.name, variantName: variants.name })
     .from(variants).innerJoin(products, eq(products.id, variants.productId))
-    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe'])))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe']),
+      eq(variants.sellByAmount, false), ne(products.tracking, 'serial')))
     .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, label: itemLabel(v.productName, v.variantName) })));
 }

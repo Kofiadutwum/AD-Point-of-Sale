@@ -105,3 +105,15 @@ it('offers active standard and recipe items as combo choices', async () => {
   expect(list.map((i) => i.label)).not.toContain('Meal 2');
   expect(list.find((i) => i.label === 'Coke')).toEqual({ variantId: coke.variantId, label: 'Coke' });
 });
+
+it('refuses a sell-by-amount or serial-tracked item as a choice', async () => {
+  const meal = await combo();
+  const rice = await productFor(db, owner, { name: 'Jollof rice' });
+  await updateVariant(db, owner, rice.variantId, { ...fields, sellByAmount: true, minAmountPesewas: 500, valuePerPotPesewas: null });
+  expect(await saveComboSlots(db, owner, meal.variantId, [{ name: 'Main', minChoices: 1, maxChoices: 1, choices: [{ variantId: rice.variantId, upgradePesewas: 0 }] }]))
+    .toMatchObject({ ok: false, error: 'unknown_item' });
+  const phone = await productFor(db, owner, { name: 'Phone', tracking: 'serial' });
+  expect(await saveComboSlots(db, owner, meal.variantId, [{ name: 'Gift', minChoices: 1, maxChoices: 1, choices: [{ variantId: phone.variantId, upgradePesewas: 0 }] }]))
+    .toMatchObject({ ok: false, error: 'unknown_item' });
+  expect((await listChoosableItems(db, owner)).map((i) => i.label)).not.toContain('Jollof rice');
+});

@@ -180,8 +180,9 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         }
         const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay) : null;
         if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
+        if (combo === 'stale_choices') lenient('invalid_choices', 'combo_changed'); // a paid offline sale from before a combo edit is kept for review
         if (combo === 'sold_out') lenient('sold_out', 'sold_out');
-        const comboPriced = typeof combo === 'object' ? combo : null;
+        const comboPriced = typeof combo === 'object' ? combo : combo === 'stale_choices' ? await choicesAsSent(tx, l.choices ?? []) : null;
         const listPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
         const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0);
         if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
@@ -270,15 +271,28 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
 type PricedLine = { variantId: string; quantity: string };
 
 /** Spec 6.52: the combo slots checked against the choices sent; upgrades add to the price; choices are stored as sold. */
+/** The choices of a stale combo line as the till sent them, named from the catalogue, with no upgrade price. */
+async function choicesAsSent(tx: Tx, chosen: Array<{ slotId: string; variantId: string }>): Promise<{ upgrades: number; choices: SaleLineChoice[] }> {
+  const named = chosen.length ? await tx.select({ id: variants.id, productName: products.name, variantName: variants.name }).from(variants)
+    .innerJoin(products, eq(products.id, variants.productId)).where(inArray(variants.id, chosen.map((c) => c.variantId))) : [];
+  const known = chosen.filter((c) => named.some((n) => n.id === c.variantId));
+  return { upgrades: 0, choices: known.map((c) => {
+    const n = named.find((x) => x.id === c.variantId)!;
+    return { slotId: c.slotId, variantId: c.variantId, name: itemLabel(n.productName, n.variantName), upgradePesewas: 0 };
+  }) };
+}
+
 async function priceCombo(
   tx: Tx, comboVariantId: string, chosen: Array<{ slotId: string; variantId: string }>, branchId: string, day: string,
-): Promise<'invalid_choices' | 'sold_out' | { upgrades: number; choices: SaleLineChoice[] }> {
+): Promise<'invalid_choices' | 'stale_choices' | 'sold_out' | { upgrades: number; choices: SaleLineChoice[] }> {
   const slotRows = await tx.select().from(comboSlots).where(eq(comboSlots.comboVariantId, comboVariantId));
   const choiceRows = slotRows.length ? await tx.select({
     slotId: comboChoices.slotId, variantId: comboChoices.variantId, upgradePesewas: comboChoices.upgradePesewas, productName: products.name, variantName: variants.name,
   }).from(comboChoices).innerJoin(variants, eq(variants.id, comboChoices.variantId)).innerJoin(products, eq(products.id, variants.productId))
     .where(inArray(comboChoices.slotId, slotRows.map((s) => s.id))) : [];
   const slots: ComboSlotDef[] = slotRows.map((s) => ({ id: s.id, minChoices: s.minChoices, maxChoices: s.maxChoices, choices: choiceRows.filter((c) => c.slotId === s.id) }));
+  // a slot id the combo no longer has means the owner edited the combo after the till built this cart
+  if (chosen.some((c) => !slotRows.some((s) => s.id === c.slotId))) return 'stale_choices';
   const check = checkComboChoices(slots, chosen, await isSoldOut(tx, branchId, chosen.map((c) => c.variantId), day));
   if (check !== 'ok') return check;
   const choices = chosen.map((c) => {

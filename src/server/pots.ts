@@ -125,11 +125,11 @@ export async function recordClosingLeftover(
             set: { cooked: sql`${potRecords.cooked} + ${leftover}::numeric`, carriedIn: sql`${potRecords.carriedIn} + ${leftover}::numeric` },
           });
       } else {
-        const [w] = await tx.insert(wastageEntries).values({
+        await tx.insert(wastageEntries).values({
           tenantId: ctx.tenantId, branchId: pot.branchId, variantId: pot.variantId, businessDate: day, quantity: leftover, reason: 'leftover',
           costPesewas: costFor(await costOf(tx, pot.variantId), leftover), potRecordId: pot.id, userId: ctx.userId,
-        }).returning({ id: wastageEntries.id });
-        await deductPots(tx, { tenantId: ctx.tenantId, branchId: pot.branchId, userId: ctx.userId }, pot.variantId, leftover, 'waste', { type: 'wastage', id: w.id });
+        });
+        // the ingredients already left stock when the pots were cooked: the leftover is recorded with its cost, never taken out again
       }
     }
     const [row] = await tx.select(potColumns).from(potRecords).innerJoin(variants, eq(variants.id, potRecords.variantId))

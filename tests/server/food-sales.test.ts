@@ -207,6 +207,17 @@ describe('combos and sell by amount', () => {
     expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine({ choices: two })], fromOfflineOutbox: true }), t)).toEqual({ ok: false, error: 'invalid_choices' });
   });
 
+  it('an offline combo sale made before the combo was edited is kept for review', async () => {
+    const owner = await ctxFor(db, shop, 'owner', t);
+    await saveComboSlots(db, owner, meal.variantId, [{ name: 'Drink', minChoices: 1, maxChoices: 1, choices: [{ variantId: coke.variantId, upgradePesewas: 0 }] }]); // new slot ids
+    expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine()] }), t)).toEqual({ ok: false, error: 'invalid_choices' });
+    const r = await completeSale(db, till, counterSale('T1', { lines: [comboLine()], fromOfflineOutbox: true }), t);
+    expect(r.ok).toBe(true);
+    expect((await saleOf(r)).reviewReasons).toContain('combo_changed');
+    expect(await lineOf(r)).toMatchObject({ choices: [{ variantId: coke.variantId, name: 'Coke' }] });
+    expect(await onHand(coke.variantId)).toBe('-1.000'); // the drink still leaves stock
+  });
+
   it('refuses a sold-out choice', async () => {
     await markSoldOut(db, till, { branchId: shop.branchId, variantId: coke.variantId }, t);
     expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine()] }), t)).toEqual({ ok: false, error: 'sold_out' });

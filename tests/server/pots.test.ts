@@ -93,7 +93,7 @@ it('closing twice is refused and wastes stock once', async () => {
 it('wastes the leftover by default', async () => {
   await recordPots(db, till, { branchId: branch(), variantId: jollof.variantId, pots: '1' }, day1);
   await recordClosingLeftover(db, till, { branchId: branch(), variantId: jollof.variantId, leftover: '0.5' }, close1);
-  expect([await onHand(rice.variantId), await onHand(oil.variantId)]).toEqual(['-7.500', '-1.500']);
+  expect([await onHand(rice.variantId), await onHand(oil.variantId)]).toEqual(['-5.000', '-1.000']); // cooked once; the leftover is recorded, not taken again
   const [w] = await asPlatform(db, (tx) => tx.select().from(wastageEntries));
   // one pot costs 5 kg x GHS 10 + 1 L x GHS 20 = GHS 70; half a pot = GHS 35
   expect(w).toMatchObject({ reason: 'leftover', quantity: '0.500', costPesewas: 3500, businessDate: '2026-10-26' });
