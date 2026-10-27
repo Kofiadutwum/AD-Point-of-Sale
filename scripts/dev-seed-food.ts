@@ -6,7 +6,9 @@ import { DEFAULT_MODULES, ROLE_PRESETS } from '@/lib/permissions';
 import { requireContext } from '@/server/context';
 import { hashSecret } from '@/server/crypto';
 import { saveFoodSettings, setServiceModes } from '@/server/food-settings';
+import { saveComboSlots } from '@/server/combos';
 import { createProduct } from '@/server/products';
+import { addComponent, updateVariant } from '@/server/variants';
 import { createSession } from '@/server/sessions';
 
 async function main() {
@@ -33,6 +35,28 @@ async function main() {
     const r = await item(name, price);
     if (!r.ok) throw new Error(r.error);
   }
+  // a combo with a drink choice and an upgrade, and jollof sold by amount from pots of rice and oil
+  const drink = async (name: string, price: number) => (await createProduct(db, ctx, { name, kind: 'standard', tracking: 'none', baseUnit: 'bottle',
+    allowsFractions: false, variants: [{ basePricePesewas: price, costPesewas: Math.round(price / 2) }] }) as { variants: Array<{ variantId: string }> }).variants[0].variantId;
+  const [coke, largeCoke] = [await drink('Coke', 800), await drink('Large Coke', 1200)];
+  const chicken = await createProduct(db, ctx, { name: 'Chicken piece', kind: 'standard', tracking: 'none', baseUnit: 'piece', allowsFractions: false,
+    variants: [{ sku: 'CHK', basePricePesewas: 1500, costPesewas: 800 }] });
+  const meal = await createProduct(db, ctx, { name: 'Meal 2', kind: 'combo', tracking: 'none', baseUnit: 'meal', allowsFractions: false, variants: [{ basePricePesewas: 4500, costPesewas: 0 }] });
+  if (!chicken.ok || !meal.ok) throw new Error('combo seed failed');
+  await addComponent(db, ctx, meal.variants[0].variantId, { code: 'CHK', quantity: '2' });
+  await saveComboSlots(db, ctx, meal.variants[0].variantId, [{ name: 'Drink', minChoices: 1, maxChoices: 1,
+    choices: [{ variantId: coke, upgradePesewas: 0 }, { variantId: largeCoke, upgradePesewas: 500 }] }]);
+  for (const [name, sku, unit] of [['Rice', 'RICE', 'kg'], ['Oil', 'OIL', 'L']] as const) {
+    await createProduct(db, ctx, { name, kind: 'standard', tracking: 'none', baseUnit: unit, allowsFractions: true, variants: [{ sku, basePricePesewas: 2000, costPesewas: 1000 }] });
+  }
+  const jollof = await createProduct(db, ctx, { name: 'Jollof (by amount)', kind: 'recipe', tracking: 'none', baseUnit: 'plate', allowsFractions: false,
+    variants: [{ basePricePesewas: 1000, costPesewas: 0 }] });
+  if (!jollof.ok) throw new Error(jollof.error);
+  const jollofId = jollof.variants[0].variantId;
+  await addComponent(db, ctx, jollofId, { code: 'RICE', quantity: '5' });
+  await addComponent(db, ctx, jollofId, { code: 'OIL', quantity: '1' });
+  await updateVariant(db, ctx, jollofId, { name: '', sku: null, basePricePesewas: 1000, costPesewas: null, reorderLevel: null, sellable: true, allowsFractions: false,
+    sellByAmount: true, minAmountPesewas: 500, valuePerPotPesewas: 60000 });
   await saveFoodSettings(db, ctx, { packVariantId: pack.variants[0].variantId, packFeeMode: 'per_order' });
   await setServiceModes(db, ctx, ids.branchId, ['counter', 'quick']);
   console.log('seeded demo-food');

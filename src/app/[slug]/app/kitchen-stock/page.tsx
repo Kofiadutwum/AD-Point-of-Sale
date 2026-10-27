@@ -33,7 +33,7 @@ export default async function KitchenStockPage({ params, searchParams }: { param
         {today.items.map(({ variantId, name, pot }) => (
           <div key={variantId} className="flex flex-col gap-2 rounded border p-3">
             <p className="font-medium">
-              {name}: {pot ? `${Number(pot.cooked)} pots cooked` : 'no pots yet'}{pot && Number(pot.carriedIn) > 0 ? ` (${Number(pot.carriedIn)} from yesterday)` : ''}
+              {name}: {pot ? `${Number(pot.cooked)} ${Number(pot.cooked) === 1 ? 'pot' : 'pots'} cooked` : 'no pots yet'}{pot && Number(pot.carriedIn) > 0 ? ` (${Number(pot.carriedIn)} from yesterday)` : ''}
             </p>
             {pot?.closed ? (
               <p className={`text-sm ${pot.flagged ? 'text-red-700' : ''}`}>
