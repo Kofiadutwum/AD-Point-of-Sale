@@ -73,6 +73,13 @@ export function commissionPesewas(totalPesewas: number, commissionBp: number): n
   return Number(divHalfUp(BigInt(totalPesewas) * BigInt(commissionBp), 10000n));
 }
 
+/** Spec 6.6: the table service charge on the bill after discounts, half up; untaxed until the GRA E-VAT phase. */
+export function serviceChargePesewas(netPesewas: number, bp: number): number {
+  return commissionPesewas(netPesewas, bp); // the same basis-point rule
+}
+
+export const KITCHEN_STATIONS = ['kitchen', 'bar', 'grill'] as const;
+
 /**
  * Spec 6.52 (reports): shares a combo net price across its parts in proportion to their usual prices.
  * Each part gets the floor of its share; the pesewas left over go to the largest part (the first on a tie), so the shares add up to .
