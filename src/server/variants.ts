@@ -19,6 +19,8 @@ export type VariantFields = {
   name: string; sku: string | null; basePricePesewas: number; costPesewas: number | null; reorderLevel: string | null; // cost null = keep the current average cost
   scaleItemCode?: number | null; sellable: boolean; allowsFractions: boolean; // scaleItemCode left out = keep the saved code
   needsPack?: boolean; // food takeaway packs (spec 6.56); left out = keep
+  // food sell by amount (spec 6.53, 6.54); left out = keep
+  sellByAmount?: boolean; minAmountPesewas?: number | null; valuePerPotPesewas?: number | null;
 };
 export type UnitFields = { name: string; factor: string; pricePesewas: number | null; sellable: boolean; purchasable: boolean };
 
@@ -75,6 +77,9 @@ const variantFieldsSchema = z.object({
   sellable: z.boolean(),
   allowsFractions: z.boolean(),
   needsPack: z.boolean().optional(),
+  sellByAmount: z.boolean().optional(),
+  minAmountPesewas: z.number().int().min(1).max(100_000_000).nullable().optional(),
+  valuePerPotPesewas: z.number().int().min(1).max(2_000_000_000).nullable().optional(),
 });
 
 export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: VariantFields): Promise<{ ok: true } | Fail<CatalogueError | 'not_found' | 'in_use'>> {
@@ -96,6 +101,10 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
     const scaleItemCode = f.scaleItemCode === undefined ? old.scaleItemCode : f.scaleItemCode; // left out = keep (field hidden while labels are off)
     if (!trackingAllowed(row.tracking, old.kind, f.allowsFractions, scaleItemCode !== null)) return fail('invalid_input');
     if (f.allowsFractions !== old.allowsFractions && await variantsInUse(tx, [variantId])) return fail('in_use');
+    const byAmount = f.sellByAmount ?? old.sellByAmount;
+    const minAmount = f.minAmountPesewas === undefined ? old.minAmountPesewas : f.minAmountPesewas;
+    if (byAmount && (!minAmount || (old.kind !== 'standard' && old.kind !== 'recipe'))) return fail('invalid_input');
+    if (byAmount !== old.sellByAmount && await variantsInUse(tx, [variantId])) return fail('in_use'); // old sales were priced per unit
     const layout = await scaleLayoutOf(tx, ctx.tenantId);
     // a kept code is inert while scale labels are off; it is checked again when a layout is saved
     const checkScale = scaleItemCode !== null && (layout !== null || f.scaleItemCode !== undefined);
@@ -109,6 +118,7 @@ export async function updateVariant(db: Db, ctx: Ctx, variantId: string, input: 
     await tx.update(variants).set({
       name: f.name, sku, basePricePesewas: f.basePricePesewas, ...(f.costPesewas === null ? {} : { averageCost: String(f.costPesewas) }), reorderLevel,
       scaleItemCode, sellable: f.sellable, allowsFractions: f.allowsFractions, ...(f.needsPack === undefined ? {} : { needsPack: f.needsPack }),
+      sellByAmount: byAmount, minAmountPesewas: minAmount, ...(f.valuePerPotPesewas === undefined ? {} : { valuePerPotPesewas: f.valuePerPotPesewas }),
     }).where(eq(variants.id, variantId));
     // price and cost changes are sensitive (spec 6.0 AUDIT): record old and new values
     const changes: Record<string, [number, number]> = {};

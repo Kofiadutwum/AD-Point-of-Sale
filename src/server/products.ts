@@ -195,7 +195,7 @@ async function refProblem(tx: Tx, f: CleanFields): Promise<'unknown_category' | 
   return null;
 }
 
-const KINDS: readonly VariantKind[] = ['standard', 'bundle', 'recipe'];
+const KINDS: readonly VariantKind[] = ['standard', 'bundle', 'recipe', 'combo'];
 
 /** Spec 6.3. Opening stock is a stock receipt (Plan 3); photos are added with uploadProductImage. */
 export async function createProduct(
@@ -206,7 +206,7 @@ export async function createProduct(
   const baseUnit = typeof input.baseUnit === 'string' ? input.baseUnit.trim() : '';
   const list = Array.isArray(input.variants) && input.variants.length >= 1 && input.variants.length <= 50 ? input.variants.map(cleanVariant) : [null];
   if (!f.success || !baseUnit || baseUnit.length > 20 || !KINDS.includes(input.kind) || typeof input.allowsFractions !== 'boolean'
-    || list.some((v) => v === null)) return fail('invalid_input');
+    || list.some((v) => v === null) || (input.kind === 'combo' && input.allowsFractions)) return fail('invalid_input'); // a combo is sold in whole meals
   const clean = list as CleanVariant[];
   const shape = { kind: input.kind, allowsFractions: input.allowsFractions, baseUnit };
   if (!clean.every((v) => trackingAllowed(f.data.tracking, shape.kind, shape.allowsFractions, v.scaleItemCode !== null))) return fail('invalid_input');
