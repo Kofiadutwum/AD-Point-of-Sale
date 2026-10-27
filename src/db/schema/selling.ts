@@ -95,7 +95,7 @@ export const sales = pgTable('sales', {
   completedAt: timestamptz('completed_at'),
   businessDate: date('business_date', { mode: 'string' }).notNull(),
   shareCode: text('share_code').notNull().unique(),
-  serviceMode: text('service_mode').$type<'counter' | 'quick'>(), // food sales only
+  serviceMode: text('service_mode').$type<'counter' | 'quick' | 'table'>(), // food sales only
   diningOption: text('dining_option').$type<'eat_in' | 'takeaway' | 'delivery'>(),
   orderNumber: text('order_number'),
   channelId: uuid('channel_id'), // delivery app, phone, or WhatsApp; null for walk-in (spec 6.57)
@@ -106,7 +106,7 @@ export const sales = pgTable('sales', {
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
   index('sales_business_date').on(t.tenantId, t.businessDate),
-  check('sales_service_mode', sql`${t.serviceMode} in ('counter', 'quick')`),
+  check('sales_service_mode', sql`${t.serviceMode} in ('counter', 'quick', 'table')`),
   check('sales_dining_option', sql`${t.diningOption} in ('eat_in', 'takeaway', 'delivery')`),
   uniqueIndex('sales_channel_order').on(t.tenantId, t.channelId, t.externalOrderId).where(sql`${t.externalOrderId} is not null`),
   check('sales_external_order', sql`${t.externalOrderId} is null or ${t.channelId} is not null`),

@@ -1,0 +1,2 @@
+ALTER TABLE "sales" DROP CONSTRAINT "sales_service_mode";--> statement-breakpoint
+ALTER TABLE "sales" ADD CONSTRAINT "sales_service_mode" CHECK ("sales"."service_mode" in ('counter', 'quick', 'table'));

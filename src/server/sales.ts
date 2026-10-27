@@ -1,11 +1,11 @@
 import 'server-only';
 import { randomBytes } from 'node:crypto';
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
   addOnGroups, addOnOptions, branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
-  salesChannels, taxRules, variantAddOnGroups,
+  salesChannels, taxRules, ticketLines, tickets, variantAddOnGroups, diningTables,
   TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
@@ -13,7 +13,7 @@ import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
-  addOnTotal, checkAddOns, checkComboChoices, sameAddOns, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
+  addOnTotal, checkAddOns, checkComboChoices, sameAddOns, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer, serviceChargePesewas,
 } from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
@@ -41,7 +41,7 @@ export type SaleInput = {
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: {
-    serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string;
+    serviceMode: 'counter' | 'quick' | 'table'; diningOption: DiningOption; orderNumber?: string; ticketId?: string; // 'table' only from payTicket
     channelId?: string; externalOrderId?: string; customer?: { name: string; phone: string }; pickupAt?: string; deliveryAddress?: string;
     kitchenOrderId?: string;
   };
@@ -53,7 +53,7 @@ export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cash
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
   | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
   | 'unknown_channel' | 'channel_not_allowed' | 'external_order_id_required' | 'channel_order_exists' | 'channel_settlement_required'
-  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open' | 'invalid_add_ons';
+  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open' | 'invalid_add_ons' | 'ticket_not_open';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
 } | { ok: false; error: SaleError };
@@ -79,7 +79,7 @@ const inputSchema = z.object({
   deviceCreatedAt: z.iso.datetime({ offset: true }),
   fromOfflineOutbox: z.boolean().optional(),
   food: z.object({
-    serviceMode: z.enum(['counter', 'quick']), diningOption: z.enum(DINING_OPTIONS), orderNumber: z.string().max(10).optional(),
+    serviceMode: z.enum(['counter', 'quick', 'table']), diningOption: z.enum(DINING_OPTIONS), orderNumber: z.string().max(10).optional(), ticketId: z.uuid().optional(),
     channelId: z.uuid().optional(), externalOrderId: z.string().max(100).optional(),
     customer: z.object({ name: z.string().max(100), phone: z.string().max(30) }).optional(),
     pickupAt: z.iso.datetime({ offset: true }).optional(), deliveryAddress: z.string().max(300).optional(), kitchenOrderId: z.uuid().optional(),
@@ -153,7 +153,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       if (s.customerId && !customer) return refuse('unknown_customer');
 
       const [shop] = await tx.select({
-        taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
+        serviceChargeBp: tenants.serviceChargeBp, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
       }).from(tenants).where(eq(tenants.id, ctx.tenantId));
       const today = todayIn(shop.timezone, now);
       const deviceAt = new Date(s.deviceCreatedAt);
@@ -166,6 +166,9 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       // collecting a phone order: its channel, customer, and lines come from the order taken on the phone (spec 6.57)
       const collecting = s.food?.kitchenOrderId ? await openPhoneOrder(tx, s.food, reg.branchId) : null;
       if (collecting) await checkCollectedLines(tx, s.lines, collecting.pendingLines!);
+      // paying a table ticket: the sale is exactly its live lines, priced from the catalogue now (spec 6.37)
+      const paying = s.food?.ticketId ? await openTicketForSale(tx, s.food, reg.branchId) : null;
+      if (paying) await checkCollectedLines(tx, s.lines, paying.lines);
       const channelFood = collecting ? {
         ...s.food!, customer: { name: collecting.customerName!, phone: collecting.customerPhone! },
         pickupAt: collecting.pickupAt?.toISOString(), deliveryAddress: collecting.deliveryAddress ?? undefined,
@@ -201,7 +204,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
           if (n === 0 && slots === 0) return refuse('empty_bundle');
         }
         // a phone order being collected was cooked already: selling out since then must not stop its payment
-        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay, collecting === null) : null;
+        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay, collecting === null && paying === null) : null;
         if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
         if (combo === 'stale_choices') lenient('invalid_choices', 'combo_changed'); // a paid offline sale from before a combo edit is kept for review
         if (combo === 'sold_out') lenient('sold_out', 'sold_out');
@@ -215,6 +218,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         if (addOnCheck === 'stale_add_ons') lenient('invalid_add_ons', 'add_ons_changed'); // a paid offline sale from before an add-on edit is kept for review
         const addOns = await addOnsAsSold(tx, addOnGroupsOfItem, l.addOns ?? [], addOnCheck === 'ok');
         const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
+        if (paying && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
         if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
         if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
         const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
@@ -229,26 +233,29 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       }
 
       const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
+      // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
+      const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
+      const saleTotal = totals.totalPesewas + serviceCharge;
       // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
       const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
       if (channel?.collectedBy === 'app') {
-        if (s.tenders.length !== 1 || settlements.length !== 1 || settlements[0].amountPesewas !== totals.totalPesewas || !settlements[0].reference) refuse('channel_settlement_required');
+        if (s.tenders.length !== 1 || settlements.length !== 1 || settlements[0].amountPesewas !== saleTotal || !settlements[0].reference) refuse('channel_settlement_required');
       } else if (settlements.length) refuse('invalid_tender');
       if (s.tenders.some((t) => NEEDS_REFERENCE.includes(t.method) && !t.reference)) return refuse('reference_required');
       const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
-      if (nonCash > totals.totalPesewas) return refuse('reduce_non_cash_amount'); // only cash can produce change
+      if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
       if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
       const paid = s.tenders.reduce((a, t) => a + t.amountPesewas, 0);
-      if (paid < totals.totalPesewas) lenient('payment_incomplete', 'underpaid');
-      const changeDue = Math.max(0, paid - totals.totalPesewas);
+      if (paid < saleTotal) lenient('payment_incomplete', 'underpaid');
+      const changeDue = Math.max(0, paid - saleTotal);
       const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
-      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null });
+      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null || paying !== null });
 
-      const commission = channel ? commissionPesewas(totals.totalPesewas, channel.commissionBp) : 0;
+      const commission = channel ? commissionPesewas(saleTotal, channel.commissionBp) : 0;
       const [saved] = await tx.insert(sales).values({
         id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
         receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
-        discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: totals.totalPesewas, paidPesewas: paid,
+        discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, paidPesewas: paid,
         changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
         businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
         serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
@@ -276,7 +283,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       }
       await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
       if (channel?.collectedBy === 'app') {
-        await tx.insert(channelReceivables).values({ tenantId: ctx.tenantId, saleId: s.saleId, channelId: channel.id, expectedPesewas: totals.totalPesewas - commission });
+        await tx.insert(channelReceivables).values({ tenantId: ctx.tenantId, saleId: s.saleId, channelId: channel.id, expectedPesewas: saleTotal - commission });
       }
 
       const done = await finaliseSaleTx(tx, ctx.tenantId, s.saleId, now);
@@ -287,6 +294,10 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         else if (!shop.allowNegativeStock) refuse('not_enough_stock');
       }
       let orderNumber: string | null = null;
+      if (paying) {
+        await tx.update(tickets).set({ status: 'paid', saleId: s.saleId, closedAt: now }).where(eq(tickets.id, paying.ticket.id));
+        if (paying.ticket.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, paying.ticket.tableId));
+      }
       if (collecting) {
         orderNumber = collecting.orderNumber; // already in the kitchen under its number: it is paid, not sent again
         await tx.update(kitchenOrders).set({ saleId: s.saleId }).where(eq(kitchenOrders.id, collecting.id));
@@ -410,6 +421,20 @@ export async function nextOrderNumber(tx: Tx, tenantId: string, branchId: string
     .onConflictDoUpdate({ target: [branchOrderCounters.tenantId, branchOrderCounters.branchId, branchOrderCounters.businessDate], set: { last: sql`${branchOrderCounters.last} + 1` } })
     .returning({ last: branchOrderCounters.last });
   return formatOrderNumber(row.last);
+}
+
+/** The open table ticket being paid, locked, with its live lines as they must appear on the sale. */
+async function openTicketForSale(tx: Tx, food: NonNullable<SaleInput['food']>, branchId: string) {
+  const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, food.ticketId!)).for('update');
+  if (!ticket || ticket.status !== 'open' || ticket.branchId !== branchId) return refuse('ticket_not_open');
+  if (food.serviceMode !== 'table' || food.diningOption !== ticket.diningOption) return refuse('order_changed');
+  const rows = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, ticket.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
+  const lines: PendingLine[] = rows.map((l) => ({
+    variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, ...(l.note ? { note: l.note } : {}),
+    ...(l.byAmount ? { byAmount: true, amountPesewas: l.amountPesewas ?? undefined } : {}), ...(l.choices.length ? { choices: l.choices } : {}),
+    ...(l.addOns.length ? { addOns: l.addOns } : {}),
+  }));
+  return { ticket, lines };
 }
 
 /** The unpaid phone order being collected, locked; anything else (paid, cancelled, another branch) is not open. */

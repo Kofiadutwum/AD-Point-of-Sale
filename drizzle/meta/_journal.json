@@ -141,6 +141,13 @@
       "when": 1793122976873,
       "tag": "0019_food_tickets_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793124476779,
+      "tag": "0020_sales_table_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,5 @@
 import 'server-only';
+import { randomUUID } from 'node:crypto';
 import { and, asc, count, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
@@ -9,13 +10,14 @@ import {
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import { multiplyQty } from '@/lib/decimal';
-import { DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS } from '@/lib/food';
+import { formatReceiptNumber } from '@/device/sale';
+import { DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS, packCount } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid, itemLabel } from './products';
 import { verifyStaffPin } from './devices';
 import { costFor } from './pots';
-import { checkOrderLine, isUniqueViolation, type OrderLineError } from './sales';
+import { checkOrderLine, completeSale, isUniqueViolation, type OrderLineError, type SaleInput, type SaleResult } from './sales';
 import { deductRecipe } from './stock';
 import { costOf } from './variants';
 
@@ -289,4 +291,51 @@ export async function cancelTicket(db: Db, ctx: Ctx, ticketId: string, reason: s
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'ticket_cancelled', recordType: 'ticket', recordId: t.id, changes: { reason: why } });
     return { ok: true };
   });
+}
+
+/** Spec 6.37: closes a ticket into one sale at today's prices with the shop's service charge; the server numbers the receipt. Online only. */
+export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; tenders: SaleInput['tenders'] }, now: Date): Promise<SaleResult> {
+  assertPermission(ctx, 'take_orders');
+  if (!isUuid(input.ticketId)) return { ok: false, error: 'ticket_not_open' };
+  if (!ctx.registerId) return { ok: false, error: 'no_register' };
+  const registerId = ctx.registerId;
+  const found = await withTenant(db, ctx.tenantId, async (tx) => {
+    const [t] = await tx.select().from(tickets).where(eq(tickets.id, input.ticketId));
+    if (!t || t.status !== 'open') return null;
+    const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, t.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
+    const [settings] = await tx.select().from(foodSettings);
+    const packId = settings?.packVariantId ?? null;
+    const flags = lines.length ? await tx.select({ id: variants.id, needsPack: variants.needsPack }).from(variants).where(inArray(variants.id, lines.map((l) => l.variantId))) : [];
+    // the same pack rule the sale checks (spec 6.56): takeaway and delivery tickets carry their packs
+    const packs = packCount(lines, {
+      diningOption: t.diningOption, mode: settings?.packFeeMode ?? 'per_order', packVariantId: packId, needsPack: (id) => flags.find((f) => f.id === id)?.needsPack ?? false,
+    });
+    const [packUnit] = packs && packId ? await tx.select({ id: variantUnits.id }).from(variantUnits).where(and(eq(variantUnits.variantId, packId), eq(variantUnits.isBase, true))) : [];
+    const [reg] = await tx.select({ counter: registers.receiptCounter, registerCode: registers.registerCode, branchCode: branches.branchCode })
+      .from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId));
+    return { t, lines, packs, packId, packUnitId: packUnit?.id ?? null, reg };
+  });
+  if (!found) return { ok: false, error: 'ticket_not_open' };
+  if (!found.reg) return { ok: false, error: 'no_register' };
+  const { t, reg } = found;
+  const lines: SaleInput['lines'] = [
+    // prices are filled in by completeSale from the catalogue; a by-amount line keeps its amount
+    ...found.lines.map((l) => ({
+      variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.amountPesewas ?? 0, discountPesewas: 0,
+      ...(l.byAmount ? { byAmount: true } : {}), ...(l.choices.length ? { choices: l.choices } : {}), ...(l.addOns.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
+    })),
+    ...(found.packs && found.packId && found.packUnitId
+      ? [{ variantId: found.packId, unitId: found.packUnitId, quantity: String(found.packs), unitPricePesewas: 0, discountPesewas: 0 }] : []),
+  ];
+  if (!lines.length) return { ok: false, error: 'invalid_input' };
+  const saleId = randomUUID();
+  let counter = Number(reg.counter) + 1;
+  for (let attempt = 0; ; attempt++) {
+    const r = await completeSale(db, ctx, {
+      saleId, receiptNumber: formatReceiptNumber(reg.branchCode, reg.registerCode, counter), lines, tenders: input.tenders, deviceCreatedAt: now.toISOString(),
+      food: { serviceMode: 'table', diningOption: t.diningOption, ticketId: t.id },
+    }, now);
+    if (r.ok || r.error !== 'duplicate_receipt_number' || attempt === 1) return r;
+    counter++; // another sale on this till took the number first
+  }
 }
