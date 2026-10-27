@@ -167,7 +167,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     const r = await createPhoneOrderAction(slug, {
       channelId: channel.id, diningOption: dining === 'delivery' ? 'delivery' : 'takeaway', customer: { name: order.name, phone: order.phone },
       ...(pickupAt ? { pickupAt } : {}), ...(order.address.trim() ? { deliveryAddress: order.address.trim() } : {}),
-      lines: lines.map((l) => ({
+      lines: lines.filter((l) => l.variantId !== cache.food?.packVariantId).map((l) => ({
         variantId: l.variantId, unitId: l.unitId, quantity: l.quantity,
         ...(l.amountPesewas != null ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
       })),

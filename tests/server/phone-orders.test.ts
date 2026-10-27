@@ -91,6 +91,18 @@ it('collecting checks the lines match the order', async () => {
   expect(await asPlatform(db, (tx) => tx.select().from(kitchenOrders))).toHaveLength(1);
 });
 
+it('a phone order is still paid for after its item sold out', async () => {
+  const r = await created();
+  await markSoldOut(db, owner, { branchId: shop.branchId, variantId: jollof.variantId }, t); // the last portion went to this order
+  expect(await completeSale(db, till, collect(r.kitchenOrderId, [jollofLine(), pack()]), t)).toMatchObject({ ok: true });
+});
+
+it('a pack scanned by hand is not kept on the phone order', async () => {
+  const r = await createPhoneOrder(db, till, order({ lines: [pending(), { variantId: shop.packVariantId, unitId: shop.packUnitId, quantity: '1' }] }), t) as { kitchenOrderId: string };
+  expect((await orderRow(r.kitchenOrderId)).pendingLines).toEqual([pending('2.000')]);
+  expect(await completeSale(db, till, collect(r.kitchenOrderId, [jollofLine(), pack()]), t)).toMatchObject({ ok: true });
+});
+
 it('a paid or cancelled order cannot be collected again', async () => {
   const r = await created();
   await completeSale(db, till, collect(r.kitchenOrderId, [jollofLine(), pack()]), t);

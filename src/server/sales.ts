@@ -197,7 +197,8 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
           const [{ slots }] = item.kind === 'combo' ? await tx.select({ slots: count() }).from(comboSlots).where(eq(comboSlots.comboVariantId, l.variantId)) : [{ slots: 0 }];
           if (n === 0 && slots === 0) return refuse('empty_bundle');
         }
-        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay) : null;
+        // a phone order being collected was cooked already: selling out since then must not stop its payment
+        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay, collecting === null) : null;
         if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
         if (combo === 'stale_choices') lenient('invalid_choices', 'combo_changed'); // a paid offline sale from before a combo edit is kept for review
         if (combo === 'sold_out') lenient('sold_out', 'sold_out');
@@ -231,7 +232,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       if (paid < totals.totalPesewas) lenient('payment_incomplete', 'underpaid');
       const changeDue = Math.max(0, paid - totals.totalPesewas);
       const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
-      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient });
+      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null });
 
       const commission = channel ? commissionPesewas(totals.totalPesewas, channel.commissionBp) : 0;
       const [saved] = await tx.insert(sales).values({
@@ -377,7 +378,7 @@ async function choicesAsSent(tx: Tx, chosen: Array<{ slotId: string; variantId: 
 }
 
 export async function priceCombo(
-  tx: Tx, comboVariantId: string, chosen: Array<{ slotId: string; variantId: string }>, branchId: string, day: string,
+  tx: Tx, comboVariantId: string, chosen: Array<{ slotId: string; variantId: string }>, branchId: string, day: string, checkSoldOut = true,
 ): Promise<'invalid_choices' | 'stale_choices' | 'sold_out' | { upgrades: number; choices: SaleLineChoice[] }> {
   const slotRows = await tx.select().from(comboSlots).where(eq(comboSlots.comboVariantId, comboVariantId));
   const choiceRows = slotRows.length ? await tx.select({
@@ -387,7 +388,7 @@ export async function priceCombo(
   const slots: ComboSlotDef[] = slotRows.map((s) => ({ id: s.id, minChoices: s.minChoices, maxChoices: s.maxChoices, choices: choiceRows.filter((c) => c.slotId === s.id) }));
   // a slot id the combo no longer has means the owner edited the combo after the till built this cart
   if (chosen.some((c) => !slotRows.some((s) => s.id === c.slotId))) return 'stale_choices';
-  const check = checkComboChoices(slots, chosen, await isSoldOut(tx, branchId, chosen.map((c) => c.variantId), day));
+  const check = checkComboChoices(slots, chosen, checkSoldOut ? await isSoldOut(tx, branchId, chosen.map((c) => c.variantId), day) : new Set<string>());
   if (check !== 'ok') return check;
   const choices = chosen.map((c) => {
     const row = choiceRows.find((r) => r.slotId === c.slotId && r.variantId === c.variantId)!;
@@ -397,7 +398,7 @@ export async function priceCombo(
 }
 type FoodCheck = {
   food: NonNullable<SaleInput['food']>; dining: DiningOption; deviceNumberOk: boolean; serviceModes: string[]; branchId: string; saleDay: string;
-  lines: PricedLine[]; lenient: (code: SaleError, reason: string) => unknown;
+  lines: PricedLine[]; lenient: (code: SaleError, reason: string) => unknown; collecting: boolean;
 };
 
 /** Spec 6.51, 6.55, 6.56: the food block's mode, sold-out items, and pack line, checked before the sale is saved. */
@@ -406,7 +407,7 @@ async function checkFood(tx: Tx, c: FoodCheck): Promise<void> {
   if (!c.serviceModes.includes(c.food.serviceMode)) c.lenient('service_mode_not_allowed', 'service_mode');
   if (!c.deviceNumberOk || (c.food.orderNumber !== undefined && c.food.serviceMode !== 'counter')) refuse('invalid_order_number');
   const ids = [...new Set(c.lines.map((l) => l.variantId))];
-  if ((await isSoldOut(tx, c.branchId, ids, c.saleDay)).size) c.lenient('sold_out', 'sold_out');
+  if (!c.collecting && (await isSoldOut(tx, c.branchId, ids, c.saleDay)).size) c.lenient('sold_out', 'sold_out');
   const [settings] = await tx.select().from(foodSettings);
   const packId = settings?.packVariantId ?? null;
   const flags = await tx.select({ id: variants.id, needsPack: variants.needsPack }).from(variants).where(inArray(variants.id, ids));

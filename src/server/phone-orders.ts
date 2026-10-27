@@ -2,7 +2,7 @@ import 'server-only';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { kitchenOrders, type PendingLine, products, registers, salesChannels, tenants, users, variants, variantUnits } from '@/db/schema';
+import { foodSettings, kitchenOrders, type PendingLine, products, registers, salesChannels, tenants, users, variants, variantUnits } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import { parseQuantity, validSaleQuantity } from '@/lib/decimal';
@@ -56,7 +56,10 @@ export async function createPhoneOrder(db: Db, ctx: Ctx, input: PhoneOrderInput,
 
     // the same item checks as a sale, without prices: those are charged at collection
     const lines: PendingLine[] = [];
+    // the pack line is added at collection from the dining option; one kept here would make the order impossible to collect
+    const [settings] = await tx.select({ packId: foodSettings.packVariantId }).from(foodSettings);
     for (const l of o.lines) {
+      if (l.variantId === settings?.packId) continue;
       const quantity = parseQuantity(l.quantity);
       const [item] = await tx.select({
         isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, allowsFractions: variants.allowsFractions, sellable: variants.sellable,
@@ -79,6 +82,7 @@ export async function createPhoneOrder(db: Db, ctx: Ctx, input: PhoneOrderInput,
         ...(byAmount ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
       });
     }
+    if (!lines.length) return fail('invalid_input');
     if ((await isSoldOut(tx, till.branchId, [...new Set(lines.map((l) => l.variantId))], till.day)).size) return fail('sold_out');
 
     const orderNumber = await nextOrderNumber(tx, ctx.tenantId, till.branchId, till.day);
