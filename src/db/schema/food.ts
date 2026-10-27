@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, date, foreignKey, index, integer, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
-import { id, timestamptz } from './columns';
+import { boolean, check, date, foreignKey, index, integer, numeric, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { createdAt, id, timestamptz } from './columns';
 import { variants } from './catalogue';
 import { users } from './people';
 import { sales } from './selling';
@@ -15,10 +15,13 @@ export const foodSettings = pgTable('food_settings', {
   tenantId: uuid('tenant_id').primaryKey().references(() => tenants.id),
   packVariantId: uuid('pack_variant_id'),
   packFeeMode: text('pack_fee_mode').$type<'per_item' | 'per_order'>().notNull().default('per_order'),
+  keepPotLeftovers: boolean('keep_pot_leftovers').notNull().default(false), // carry leftovers to the next business day instead of wasting them
+  potVarianceLimitBp: integer('pot_variance_limit_bp').notNull().default(1000), // 10%
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 }, (t) => [
   foreignKey({ name: 'food_settings_pack_fk', columns: [t.tenantId, t.packVariantId], foreignColumns: [variants.tenantId, variants.id] }),
   check('food_settings_pack_fee_mode', sql`${t.packFeeMode} in ('per_item', 'per_order')`),
+  check('food_settings_pot_variance_limit', sql`${t.potVarianceLimitBp} between 0 and 10000`),
 ]);
 
 /** Online order numbers: one counter per branch per business date (spec 6.51). */
@@ -85,4 +88,88 @@ export const packingTicks = pgTable('packing_ticks', {
   primaryKey({ name: 'packing_ticks_pk', columns: [t.kitchenOrderId, t.lineNo] }),
   foreignKey({ name: 'packing_ticks_order_fk', columns: [t.tenantId, t.kitchenOrderId], foreignColumns: [kitchenOrders.tenantId, kitchenOrders.id] }),
   foreignKey({ name: 'packing_ticks_packed_by_fk', columns: [t.tenantId, t.packedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+const qty = (name: string) => numeric(name, { precision: 14, scale: 3 });
+
+/** A combo's choice slot, such as "Drink: pick 1" (spec 6.52); its fixed items are ordinary components. */
+export const comboSlots = pgTable('combo_slots', {
+  id: id(),
+  tenantId: tenantId(),
+  comboVariantId: uuid('combo_variant_id').notNull(),
+  name: text('name').notNull(),
+  minChoices: integer('min_choices').notNull(),
+  maxChoices: integer('max_choices').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('combo_slots_tenant_id').on(t.tenantId, t.id),
+  foreignKey({ name: 'combo_slots_combo_fk', columns: [t.tenantId, t.comboVariantId], foreignColumns: [variants.tenantId, variants.id] }).onDelete('cascade'),
+  check('combo_slots_choices', sql`0 <= ${t.minChoices} and ${t.minChoices} <= ${t.maxChoices} and ${t.maxChoices} >= 1`),
+]);
+
+/** One item a customer may pick in a slot, with any upgrade price (spec 6.52). */
+export const comboChoices = pgTable('combo_choices', {
+  id: id(),
+  tenantId: tenantId(),
+  slotId: uuid('slot_id').notNull(),
+  variantId: uuid('variant_id').notNull(),
+  upgradePesewas: integer('upgrade_pesewas').notNull().default(0),
+}, (t) => [
+  unique('combo_choices_slot_variant').on(t.slotId, t.variantId),
+  foreignKey({ name: 'combo_choices_slot_fk', columns: [t.tenantId, t.slotId], foreignColumns: [comboSlots.tenantId, comboSlots.id] }).onDelete('cascade'),
+  foreignKey({ name: 'combo_choices_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  check('combo_choices_upgrade', sql`${t.upgradePesewas} >= 0`),
+]);
+
+/** Pots cooked of a sell-by-amount item on one business day, and the closing count (spec 6.54). */
+export const potRecords = pgTable('pot_records', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  variantId: uuid('variant_id').notNull(),
+  businessDate: date('business_date', { mode: 'string' }).notNull(),
+  cooked: qty('cooked').notNull().default('0'),
+  carriedIn: qty('carried_in').notNull().default('0'),
+  leftover: qty('leftover'),
+  expectedPesewas: integer('expected_pesewas'),
+  actualPesewas: integer('actual_pesewas'),
+  variancePesewas: integer('variance_pesewas'),
+  flagged: boolean('flagged').notNull().default(false),
+  closedBy: uuid('closed_by'),
+  closedAt: timestamptz('closed_at'),
+}, (t) => [
+  unique('pot_records_tenant_id').on(t.tenantId, t.id),
+  unique('pot_records_day').on(t.tenantId, t.branchId, t.variantId, t.businessDate),
+  foreignKey({ name: 'pot_records_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'pot_records_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  foreignKey({ name: 'pot_records_closed_by_fk', columns: [t.tenantId, t.closedBy], foreignColumns: [users.tenantId, users.id] }),
+  check('pot_records_cooked', sql`${t.cooked} >= 0`),
+  check('pot_records_leftover', sql`${t.leftover} >= 0 and ${t.leftover} <= ${t.cooked}`),
+]);
+
+export type WastageReason = 'spoiled' | 'dropped' | 'staff_meal' | 'leftover';
+
+/** Food thrown away or eaten by staff, with its cost when recorded (spec 4.24); never edited. */
+export const wastageEntries = pgTable('wastage_entries', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  variantId: uuid('variant_id').notNull(),
+  businessDate: date('business_date', { mode: 'string' }).notNull(),
+  quantity: qty('quantity').notNull(),
+  reason: text('reason').$type<WastageReason>().notNull(),
+  costPesewas: integer('cost_pesewas').notNull(),
+  potRecordId: uuid('pot_record_id'),
+  note: text('note'),
+  userId: uuid('user_id').notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  foreignKey({ name: 'wastage_entries_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'wastage_entries_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  foreignKey({ name: 'wastage_entries_pot_fk', columns: [t.tenantId, t.potRecordId], foreignColumns: [potRecords.tenantId, potRecords.id] }),
+  foreignKey({ name: 'wastage_entries_user_fk', columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id] }),
+  check('wastage_entries_quantity', sql`${t.quantity} > 0`),
+  check('wastage_entries_reason', sql`${t.reason} in ('spoiled', 'dropped', 'staff_meal', 'leftover')`),
+  check('wastage_entries_cost', sql`${t.costPesewas} >= 0`),
 ]);

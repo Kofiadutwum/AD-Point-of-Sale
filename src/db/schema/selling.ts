@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, date, foreignKey, index, integer, numeric, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
 import { priceLists, variants } from './catalogue';
 import { users } from './people';
@@ -7,6 +7,7 @@ import { branches, registers, tenants } from './tenancy';
 
 export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
 export type SaleStatus = 'pending' | 'completed';
+export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit'];
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -109,6 +110,8 @@ export const saleLines = pgTable('sale_lines', {
   taxPesewas: pesewas('tax_pesewas'),
   totalPesewas: pesewas('total_pesewas'),
   serials: text('serials').array().notNull().default(sql`'{}'`),
+  byAmount: boolean('by_amount').notNull().default(false), // sold by cedi amount; stock moves with pots, not here (spec 6.53)
+  choices: jsonb('choices').$type<SaleLineChoice[]>().notNull().default(sql`'[]'::jsonb`), // combo choices as sold (spec 6.52)
 }, (t) => [
   unique('sale_lines_tenant_id').on(t.tenantId, t.id),
   unique('sale_lines_line_no').on(t.saleId, t.lineNo),

@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { branches, deviceCacheVersions, kitchenOrders, sales, soldOut } from '@/db/schema';
-import { asPlatform } from '@/db/tenant';
+import { branches, comboChoices, comboSlots, deviceCacheVersions, kitchenOrders, potRecords, sales, soldOut, variants, wastageEntries } from '@/db/schema';
+import { asPlatform, withTenant } from '@/db/tenant';
 import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb, dbError } from '../helpers/test-db';
 
@@ -71,4 +71,52 @@ it('marking an item sold out bumps the device cache version', async () => {
   const before = await cacheVersion(a.tenantId);
   await insertSoldOut(a, variantA, '2026-10-26');
   expect(await cacheVersion(a.tenantId)).toBeGreaterThan(before);
+});
+
+describe('menu', () => {
+  const insertSlot = (min: number, max: number) => asPlatform(db, (tx) => tx.insert(comboSlots).values({
+    tenantId: a.tenantId, comboVariantId: variantA, name: 'Drink', minChoices: min, maxChoices: max, sortOrder: 0,
+  }).returning().then((r) => r[0]));
+
+  it('a sell-by-amount variant needs a minimum', async () => {
+    expect(await dbError(asPlatform(db, (tx) => tx.update(variants).set({ sellByAmount: true }).where(eq(variants.id, variantA))))).toMatch(/variants_by_amount/);
+    await asPlatform(db, (tx) => tx.update(variants).set({ sellByAmount: true, minAmountPesewas: 500 }).where(eq(variants.id, variantA)));
+  });
+
+  it('a combo cannot be sold by amount', async () => {
+    expect(await dbError(asPlatform(db, (tx) => tx.update(variants).set({ kind: 'combo', sellByAmount: true, minAmountPesewas: 500 }).where(eq(variants.id, variantA)))))
+      .toMatch(/variants_by_amount/);
+  });
+
+  it('a slot needs max at least 1 and min not above max', async () => {
+    expect(await dbError(insertSlot(2, 1))).toMatch(/combo_slots_choices/);
+    expect(await dbError(insertSlot(0, 0))).toMatch(/combo_slots_choices/);
+    await expect(insertSlot(0, 2)).resolves.toBeDefined();
+  });
+
+  it('a choice appears once per slot', async () => {
+    const slot = await insertSlot(1, 1);
+    const add = () => asPlatform(db, (tx) => tx.insert(comboChoices).values({ tenantId: a.tenantId, slotId: slot.id, variantId: variantA }));
+    await add();
+    expect(await dbError(add())).toMatch(/combo_choices_slot_variant/);
+  });
+
+  it('a leftover cannot exceed the pots cooked', async () => {
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(potRecords).values({
+      tenantId: a.tenantId, branchId: a.branchId, variantId: variantA, businessDate: '2026-10-26', cooked: '1.000', leftover: '2.000',
+    })))).toMatch(/pot_records_leftover/);
+  });
+
+  it('wastage entries are append-only for pos_app', async () => {
+    await asPlatform(db, (tx) => tx.insert(wastageEntries).values({
+      tenantId: a.tenantId, branchId: a.branchId, variantId: variantA, businessDate: '2026-10-26', quantity: '1.000', reason: 'spoiled', costPesewas: 100, userId: a.users.owner.id,
+    }));
+    expect(await dbError(withTenant(db, a.tenantId, (tx) => tx.update(wastageEntries).set({ costPesewas: 0 })))).toMatch(/permission denied/);
+  });
+
+  it('changing a combo slot bumps the device cache version', async () => {
+    const before = await cacheVersion(a.tenantId);
+    await insertSlot(0, 1);
+    expect(await cacheVersion(a.tenantId)).toBeGreaterThan(before);
+  });
 });

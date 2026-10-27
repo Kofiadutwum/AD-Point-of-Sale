@@ -8,7 +8,7 @@ import { branches, tenants } from './tenancy';
 // that points at another shop's data even when a service forgets to check.
 
 export type Tracking = 'none' | 'batch' | 'serial';
-export type VariantKind = 'standard' | 'bundle' | 'recipe';
+export type VariantKind = 'standard' | 'bundle' | 'recipe' | 'combo';
 export type CatalogueStatus = 'active' | 'archived';
 export type PriceListKind = 'retail' | 'wholesale' | 'customer_group' | 'branch';
 
@@ -84,6 +84,9 @@ export const variants = pgTable('variants', {
   scaleItemCode: integer('scale_item_code'),
   sellable: boolean('sellable').notNull().default(true),
   needsPack: boolean('needs_pack').notNull().default(false), // food: takeaway needs a pack for each unit (spec 6.56)
+  sellByAmount: boolean('sell_by_amount').notNull().default(false), // food: rice, stew, waakye sold by cedi amount (spec 6.53)
+  minAmountPesewas: integer('min_amount_pesewas'),
+  valuePerPotPesewas: integer('value_per_pot_pesewas'), // expected sales from one pot (spec 6.54)
   status: text('status').$type<CatalogueStatus>().notNull().default('active'),
   createdAt: createdAt(),
 }, (t) => [
@@ -91,7 +94,9 @@ export const variants = pgTable('variants', {
   unique('variants_sku').on(t.tenantId, t.sku),
   unique('variants_scale_code').on(t.tenantId, t.scaleItemCode),
   foreignKey({ name: 'variants_product_fk', columns: [t.tenantId, t.productId], foreignColumns: [products.tenantId, products.id] }),
-  check('variants_kind', sql`${t.kind} in ('standard', 'bundle', 'recipe')`),
+  check('variants_kind', sql`${t.kind} in ('standard', 'bundle', 'recipe', 'combo')`),
+  check('variants_by_amount', sql`not ${t.sellByAmount} or (coalesce(${t.minAmountPesewas}, 0) >= 1 and ${t.kind} in ('standard', 'recipe'))`),
+  check('variants_value_per_pot', sql`${t.valuePerPotPesewas} > 0`),
   check('variants_status', sql`${t.status} in ('active', 'archived')`),
   check('variants_price', sql`${t.basePricePesewas} >= 0`),
   check('variants_cost', sql`${t.averageCost} >= 0`),

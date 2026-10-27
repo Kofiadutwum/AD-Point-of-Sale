@@ -27,4 +27,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   export_data: 'Export data',
   mark_sold_out: 'Mark items sold out',
   run_kitchen: 'Run the kitchen screen and packing check',
+  record_kitchen_stock: 'Record pots, leftovers, and wastage',
 };

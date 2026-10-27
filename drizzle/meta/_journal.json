@@ -85,6 +85,20 @@
       "when": 1793058962707,
       "tag": "0011_food_counter_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793066732390,
+      "tag": "0012_food_menu",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793066737246,
+      "tag": "0013_food_menu_rls",
+      "breakpoints": true
     }
   ]
 }
