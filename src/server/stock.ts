@@ -279,7 +279,8 @@ export async function lookupStockItem(
 
 /**
  * Spec 6.27, 6.54: takes `qty` of a variant out of stock outside a sale (pots cooked, wastage).
- * A recipe or bundle gives its components; a standard item goes down itself. Batches are not picked here: pot ingredients are bulk stock.
+ * A recipe or bundle gives its components; a standard item goes down itself.
+ * shortcut: batches are not picked here (balance only), fine for bulk pot ingredients; pick earliest-expiry batches if batch-tracked ingredients are used in pots
  */
 export async function deductRecipe(
   tx: Tx, s: { tenantId: string; branchId: string; userId: string }, variantId: string, qty: string,

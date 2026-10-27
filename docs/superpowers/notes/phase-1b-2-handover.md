@@ -11,7 +11,7 @@ Sale lines gain `byAmount?: boolean` and `choices?: Array<{ slotId, variantId }>
 
 ## Stock
 - A combo gives its fixed items, then each chosen item (a chosen recipe gives its ingredients).
-- Pots take one pot recipe per pot (`used_in_production`). The closing count wastes or carries the leftover.
+- Pots take one pot recipe per pot (`used_in_production`). The closing count carries the leftover to the next day, or records it as wastage with its cost without taking the ingredients out again (they left stock when cooked).
 - Only recipe items move stock with pots; a plain by-amount item has no pot recipe.
 
 ## Pages
