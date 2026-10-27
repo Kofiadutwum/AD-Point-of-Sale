@@ -13,7 +13,7 @@ import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
-  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
+  addOnTotal, checkAddOns, checkComboChoices, sameAddOns, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
 } from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
@@ -390,7 +390,8 @@ async function checkCollectedLines(tx: Tx, lines: SaleInput['lines'], pending: P
   const choiceKey = (c: Array<{ slotId: string; variantId: string }> = []) => c.map((x) => `${x.slotId}:${x.variantId}`).sort().join(',');
   const same = (l: SaleInput['lines'][number], p: PendingLine) => l.variantId === p.variantId && l.unitId === p.unitId
     && toMilli(parseQuantity(l.quantity)!) === toMilli(p.quantity) && (l.byAmount === true) === (p.byAmount === true)
-    && (!p.byAmount || l.unitPricePesewas === p.amountPesewas) && choiceKey(l.choices) === choiceKey(p.choices);
+    && (!p.byAmount || l.unitPricePesewas === p.amountPesewas) && choiceKey(l.choices) === choiceKey(p.choices)
+    && sameAddOns(l.addOns, p.addOns) && (l.note?.trim() ?? '') === (p.note ?? '');
   const extra = lines.slice(pending.length);
   if (lines.length < pending.length || !pending.every((p, i) => same(lines[i], p)) || extra.some((l) => l.variantId !== settings?.packId)) refuse('order_changed');
 }

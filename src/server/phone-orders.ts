@@ -6,17 +6,19 @@ import { foodSettings, kitchenOrders, type PendingLine, products, registers, sal
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import { parseQuantity, validSaleQuantity } from '@/lib/decimal';
-import { type DiningOption, phoneCustomer } from '@/lib/food';
+import { checkAddOns, type DiningOption, phoneCustomer } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid } from './products';
-import { nextOrderNumber, priceCombo } from './sales';
+import { loadAddOnGroups, nextOrderNumber, priceCombo } from './sales';
 import { isSoldOut } from './sold-out';
 
 const lineSchema = z.object({
   variantId: z.uuid(), unitId: z.uuid(), quantity: z.string().max(20), byAmount: z.boolean().optional(),
   amountPesewas: z.number().int().min(1).max(2_000_000_000).optional(),
   choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
+  addOns: z.array(z.object({ groupId: z.uuid(), optionId: z.uuid() })).max(30).optional(),
+  note: z.string().trim().max(140).optional(),
 });
 const inputSchema = z.object({
   channelId: z.uuid(), diningOption: z.enum(['takeaway', 'delivery']),
@@ -77,8 +79,12 @@ export async function createPhoneOrder(db: Db, ctx: Ctx, input: PhoneOrderInput,
         if (combo === 'sold_out') return fail('sold_out');
         if (typeof combo !== 'object') return fail('invalid_choices');
       }
+      // the same add-on rules as a sale (spec 4.24); prices are charged at collection
+      if (l.addOns?.length && (byAmount || item.kind === 'combo')) return fail('invalid_choices');
+      if (!byAmount && item.kind !== 'combo' && checkAddOns(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []) !== 'ok') return fail('invalid_choices');
       lines.push({
         variantId: l.variantId, unitId: l.unitId, quantity,
+        ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
         ...(byAmount ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
       });
     }

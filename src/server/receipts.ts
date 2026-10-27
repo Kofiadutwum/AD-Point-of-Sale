@@ -11,7 +11,7 @@ export type ReceiptView = {
   shopName: string; branchName: string; branchAddress: string | null; branchPhone: string | null; taxNumber: string | null; footer: string | null;
   receiptNumber: string; createdAt: Date; timezone: string; cashierName: string; customerName: string | null; customerPhone: string | null;
   status: 'pending' | 'completed'; taxMode: 'inclusive' | 'exclusive';
-  lines: Array<{ name: string; unitName: string; quantity: string; unitPricePesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serials: string[] }>;
+  lines: Array<{ name: string; unitName: string; quantity: string; unitPricePesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serials: string[]; addOns: string[]; note: string | null }>;
   subtotalPesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number;
   payments: Array<{ method: TenderMethod; amountPesewas: number; reference: string | null }>; changeDuePesewas: number; shareCode: string;
 };
@@ -42,7 +42,7 @@ async function loadReceipt(tx: Tx, where: SQL): Promise<(ReceiptView & { id: str
     cashierName: row.cashierName, customerName: row.customerName, customerPhone: row.customerPhone, status: s.status, taxMode: s.taxMode,
     lines: lines.map((l) => ({
       name: l.name, unitName: l.unitName, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: l.discountPesewas,
-      taxPesewas: l.taxPesewas, totalPesewas: l.totalPesewas, serials: l.serials,
+      taxPesewas: l.taxPesewas, totalPesewas: l.totalPesewas, serials: l.serials, addOns: l.addOns.map((a) => a.name), note: l.note,
     })),
     subtotalPesewas: s.subtotalPesewas, discountPesewas: s.discountPesewas, taxPesewas: s.taxPesewas, totalPesewas: s.totalPesewas,
     payments: paid, changeDuePesewas: s.changeDuePesewas, shareCode: s.shareCode,

@@ -2,7 +2,7 @@ import 'server-only';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { branches, type KitchenOrderStatus, kitchenOrders, packingTicks, type PendingLine, products, saleLines, salesChannels, tenants, users, variants } from '@/db/schema';
+import { addOnOptions, branches, type KitchenOrderStatus, kitchenOrders, packingTicks, type PendingLine, products, saleLines, salesChannels, tenants, users, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import type { DiningOption } from '@/lib/food';
@@ -12,7 +12,7 @@ import { type Fail, itemLabel } from './products';
 
 export type KitchenOrderView = {
   id: string; orderNumber: string; status: KitchenOrderStatus; diningOption: DiningOption; needsPacking: boolean;
-  sentAt: Date; readyAt: Date | null; lines: Array<{ lineNo: number; name: string; quantity: string; packed: boolean }>;
+  sentAt: Date; readyAt: Date | null; lines: Array<{ lineNo: number; name: string; quantity: string; packed: boolean; addOns: string[]; note: string | null }>;
   channelName: string | null; customerName: string | null; pickupAt: Date | null; deliveryAddress: string | null; payOnCollect: boolean; paid: boolean;
 };
 
@@ -33,19 +33,24 @@ async function findOrder(tx: Tx, ctx: Ctx, orderId: string) {
 /** Sale lines once paid; an unpaid phone order shows the lines it was taken with, numbered as its sale lines will be. */
 async function linesOf(tx: Tx, orders: Array<{ id: string; saleId: string | null; pendingLines: PendingLine[] | null }>) {
   const saleIds = orders.flatMap((o) => (o.saleId ? [o.saleId] : []));
-  const lines = saleIds.length ? await tx.select({ saleId: saleLines.saleId, lineNo: saleLines.lineNo, name: saleLines.name, quantity: saleLines.quantity })
+  const lines = saleIds.length ? await tx.select({ saleId: saleLines.saleId, lineNo: saleLines.lineNo, name: saleLines.name, quantity: saleLines.quantity, addOns: saleLines.addOns, note: saleLines.note })
     .from(saleLines).where(inArray(saleLines.saleId, saleIds)).orderBy(asc(saleLines.lineNo)) : [];
   const ticks = orders.length ? await tx.select({ orderId: packingTicks.kitchenOrderId, lineNo: packingTicks.lineNo }).from(packingTicks)
     .where(inArray(packingTicks.kitchenOrderId, orders.map((o) => o.id))) : [];
   const pendingIds = [...new Set(orders.flatMap((o) => (o.saleId ? [] : (o.pendingLines ?? []).map((l) => l.variantId))))];
   const names = pendingIds.length ? await tx.select({ id: variants.id, productName: products.name, variantName: variants.name }).from(variants)
     .innerJoin(products, eq(products.id, variants.productId)).where(inArray(variants.id, pendingIds)) : [];
+  const optionIds = [...new Set(orders.flatMap((o) => (o.saleId ? [] : (o.pendingLines ?? []).flatMap((l) => (l.addOns ?? []).map((a) => a.optionId)))))];
+  const optionNames = optionIds.length ? await tx.select({ id: addOnOptions.id, name: addOnOptions.name }).from(addOnOptions).where(inArray(addOnOptions.id, optionIds)) : [];
   return (o: { id: string; saleId: string | null; pendingLines: PendingLine[] | null }) => {
     const rows = o.saleId
-      ? lines.filter((l) => l.saleId === o.saleId).map((l) => ({ lineNo: l.lineNo, name: l.name, quantity: l.quantity }))
+      ? lines.filter((l) => l.saleId === o.saleId).map((l) => ({ lineNo: l.lineNo, name: l.name, quantity: l.quantity, addOns: l.addOns.map((a) => a.name), note: l.note }))
       : (o.pendingLines ?? []).map((p, i) => {
         const n = names.find((x) => x.id === p.variantId);
-        return { lineNo: i + 1, name: n ? itemLabel(n.productName, n.variantName) : 'Item', quantity: p.quantity };
+        return {
+          lineNo: i + 1, name: n ? itemLabel(n.productName, n.variantName) : 'Item', quantity: p.quantity,
+          addOns: (p.addOns ?? []).map((a) => optionNames.find((x) => x.id === a.optionId)?.name ?? 'Add-on'), note: p.note ?? null,
+        };
       });
     return rows.map((l) => ({ ...l, packed: ticks.some((t) => t.orderId === o.id && t.lineNo === l.lineNo) }));
   };
