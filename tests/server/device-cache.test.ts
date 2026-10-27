@@ -6,6 +6,7 @@ import { asPlatform } from '@/db/tenant';
 import { getDeviceCache, getDeviceCacheVersion, readDeviceImage } from '@/server/device-cache';
 import { deregisterDevice, registerDevice, switchCashierWithPin } from '@/server/devices';
 import { listHeldSales, reportHeldSale, resolveHeldSale } from '@/server/held-sales';
+import { saveChannel } from '@/server/channels';
 import { saveComboSlots } from '@/server/combos';
 import { setServiceModes } from '@/server/food-settings';
 import { createProduct } from '@/server/products';
@@ -174,6 +175,15 @@ describe('food', () => {
 
   it('food is null when the kitchen module is off', async () => {
     expect((await getDeviceCache(db, dev(), t0))!.food).toBeNull();
+  });
+
+  it('includes active channels only', async () => {
+    const { owner, token } = await foodDevice(['counter']);
+    const base = { kind: 'delivery_app' as const, priceListId: null, commissionBp: 2000, collectedBy: 'app' as const };
+    const bolt = (await saveChannel(db, owner, { ...base, name: 'Bolt Food', active: true }) as { channelId: string }).channelId;
+    await saveChannel(db, owner, { ...base, name: 'Old app', active: false });
+    expect((await getDeviceCache(db, { deviceToken: token, slug: 'chop-bar' }, at))!.channels)
+      .toEqual([{ id: bolt, name: 'Bolt Food', kind: 'delivery_app', priceListId: null, collectedBy: 'app' }]);
   });
 
   it("leaves table mode out of the till's service modes", async () => {

@@ -29,8 +29,17 @@ const cache: DeviceCache = {
   resolvedHeldSaleIds: [],
   food: null,
   comboSlots: [],
+  channels: [],
 };
 const today = '2026-10-20';
+
+it("prices with the channel's price list", () => {
+  const withBolt: DeviceCache = { ...cache, priceRules: [...cache.priceRules,
+    { id: 'bolt', kind: 'wholesale', branchId: null, startsOn: null, endsOn: null, active: true, items: [{ unitId: 'u-milo', minQuantity: '1.000', pricePesewas: 3000 }] }] };
+  const line: CartLine = { lineId: 'l1', variantId: 'v-milo', unitId: 'u-milo', quantity: '1.000', labelPricePesewas: null };
+  expect(priceCart(withBolt, [line], today).lines[0].unitPricePesewas).toBe(2400); // walk-in: the branch list
+  expect(priceCart(withBolt, [line], today, { priceListId: 'bolt' }).lines[0].unitPricePesewas).toBe(3000);
+});
 const label = (first12: string) => first12 + ean13CheckDigit(first12);
 
 it('finds a barcode, a 12-digit UPC, and a weight scale label', () => {

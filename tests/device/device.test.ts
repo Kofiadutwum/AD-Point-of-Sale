@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { expect, it } from 'vitest';
 import { switchCashier, verifyPinOffline } from '@/device/pin';
-import { checkTenders, formatReceiptNumber, OFFLINE_LIMIT_MS, offlineBlock } from '@/device/sale';
+import { checkTenders, formatReceiptNumber, OFFLINE_LIMIT_MS, offlineBlock, outboxHasChannelOrder } from '@/device/sale';
 import { type DeviceMeta, type OutboxEntry, openDeviceStore } from '@/device/store';
 import type { DeviceCache } from '@/lib/device-contract';
 import { offlineOrderNumber } from '@/lib/food';
@@ -18,12 +18,27 @@ async function cacheWith(pin: string | null, extra: Partial<DeviceCache['shop']>
     shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'inclusive', taxEnabled: false, scaleLayout: null, offlineEnabled: true, canSell: true, businessDayCutoff: '00:00', ...extra },
     register: { id: 'r', name: 'Till 1', registerCode: 'T1', branchId: 'b', branchCode: 'B1', branchName: 'Main' },
     staff: [{ id: 'kofi', name: 'Kofi', permissions: ['make_sale'], pinHash: pin && (await hashSecret(pin)), pinLockedUntil: null }],
-    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [], food: null, comboSlots: [],
+    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [], food: null, comboSlots: [], channels: [],
   };
 }
 const entry = (saleId: string, seq: number): OutboxEntry => ({
   saleId, seq, request: { saleId, receiptNumber: 'x', lines: [], tenders: [], deviceCreatedAt: '' }, totalPesewas: 1,
   status: 'queued', attempts: 0, nextAttemptAt: 0, lastError: null, reported: false,
+});
+
+it('refuses a platform order ID already waiting in the outbox', () => {
+  const bolt = (saleId: string, channelId: string, externalOrderId: string): OutboxEntry => ({
+    ...entry(saleId, 1), request: { ...entry(saleId, 1).request, food: { serviceMode: 'counter', diningOption: 'delivery', channelId, externalOrderId } },
+  });
+  const outbox = [entry('s1', 1), bolt('s2', 'bolt', 'BF-12')];
+  expect(outboxHasChannelOrder(outbox, 'bolt', ' BF-12 ')).toBe(true);
+  expect(outboxHasChannelOrder(outbox, 'chowdeck', 'BF-12')).toBe(false);
+  expect(outboxHasChannelOrder(outbox, 'bolt', 'BF-13')).toBe(false);
+});
+
+it('a channel settlement needs the platform order ID as its reference', () => {
+  expect(checkTenders([{ method: 'channel_settlement', amountPesewas: 500, reference: ' ' }], 500)).toMatchObject({ ok: false });
+  expect(checkTenders([{ method: 'channel_settlement', amountPesewas: 500, reference: 'BF-12' }], 500)).toEqual({ ok: true, changeDuePesewas: 0 });
 });
 
 it('hands out receipt counters in order and never lowers them', async () => {

@@ -1,12 +1,12 @@
 import type { DeviceCache, SaleRequest } from '@/lib/device-contract';
-import type { DeviceMeta } from './store';
+import type { DeviceMeta, OutboxEntry } from './store';
 
 // Offline checks and the sale request the till sends (spec 4.9, 6.8, 6.10).
 
 export const OFFLINE_LIMIT_MS = 72 * 3_600_000;
 const CONNECT = 'Connect to the internet to continue';
 
-export type TenderInput = { method: 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer'; amountPesewas: number; reference: string };
+export type TenderInput = { method: 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'channel_settlement'; amountPesewas: number; reference: string };
 
 /** Why this till may not sell offline right now, or null. */
 export function offlineBlock(cache: DeviceCache | null, meta: DeviceMeta, now: number): string | null {
@@ -19,12 +19,18 @@ export function offlineBlock(cache: DeviceCache | null, meta: DeviceMeta, now: n
 export function checkTenders(tenders: TenderInput[], totalPesewas: number): { ok: true; changeDuePesewas: number } | { ok: false; error: string } {
   if (tenders.length === 0) return { ok: false, error: 'Add a payment.' };
   if (tenders.some((t) => !Number.isSafeInteger(t.amountPesewas) || t.amountPesewas <= 0)) return { ok: false, error: 'Enter each amount in cedis.' };
-  if (tenders.some((t) => t.method !== 'cash' && !t.reference.trim())) return { ok: false, error: 'Enter the reference for MoMo, card, or bank payments.' };
+  if (tenders.some((t) => t.method !== 'cash' && !t.reference.trim())) return { ok: false, error: 'Enter the reference for MoMo, card, bank, or app payments.' };
   const nonCash = tenders.filter((t) => t.method !== 'cash').reduce((s, t) => s + t.amountPesewas, 0);
   if (nonCash > totalPesewas) return { ok: false, error: 'Only cash can give change. Reduce the MoMo, card, or bank amount.' };
   const paid = tenders.reduce((s, t) => s + t.amountPesewas, 0);
   if (paid < totalPesewas) return { ok: false, error: 'Not enough paid yet.' };
   return { ok: true, changeDuePesewas: paid - totalPesewas };
+}
+
+/** A delivery-app order ID already waiting to sync on this till: entering it again would make a second sale (spec 6.57). */
+export function outboxHasChannelOrder(entries: OutboxEntry[], channelId: string, externalOrderId: string): boolean {
+  const id = externalOrderId.trim();
+  return entries.some((e) => e.request.food?.channelId === channelId && e.request.food.externalOrderId?.trim() === id);
 }
 
 /** Spec 6.0: branch-register-counter, e.g. ACC1-T2-000123. */

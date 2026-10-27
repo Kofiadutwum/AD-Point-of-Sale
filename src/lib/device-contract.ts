@@ -1,11 +1,11 @@
 // Shapes shared by the server and the device till. Types only: the browser imports this file.
 import type { CatalogueStatus, Tracking, VariantKind } from '@/db/schema';
 import type { ScaleLayout } from './barcode';
-import type { ComboSlotDef, DiningOption } from './food';
+import type { ChannelKind, ComboSlotDef, DiningOption } from './food';
 import type { Permission } from './permissions';
 import type { PriceRule } from './pricing';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
 
 /** POST /api/[slug]/sales, agreed with Plan 3 (selling). */
 export type SaleRequest = {
@@ -50,6 +50,8 @@ export type DeviceCache = {
   resolvedHeldSaleIds: string[];
   /** Choice slots of every combo (spec 6.52). */
   comboSlots: Array<ComboSlotDef & { comboVariantId: string; name: string; sortOrder: number; choiceNames: Record<string, string> }>;
+  /** Active delivery-app, phone, and WhatsApp channels (spec 6.57). */
+  channels: Array<{ id: string; name: string; kind: ChannelKind; priceListId: string | null; collectedBy: 'app' | 'shop' }>;
   /** Null when the kitchen module is off. Sold-out ids are for businessDate only; a till ignores them on another date. */
   food: {
     serviceModes: Array<'counter' | 'quick'>; packVariantId: string | null; packFeeMode: 'per_item' | 'per_order';

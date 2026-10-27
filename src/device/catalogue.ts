@@ -64,8 +64,11 @@ export function canAdd(
   return validSaleQuantity(found.quantity, p.unit.isBase && p.variant.allowsFractions) ? null : 'invalid_quantity';
 }
 
-function unitPrice(cache: DeviceCache, variant: { basePricePesewas: number }, unit: { id: string; factor: string; pricePesewas: number | null }, quantity: string, today: string) {
-  const list = choosePriceList(cache.priceRules, { cartListId: null, customerListId: null, branchId: cache.register.branchId, today });
+function unitPrice(
+  cache: DeviceCache, variant: { basePricePesewas: number }, unit: { id: string; factor: string; pricePesewas: number | null }, quantity: string, today: string,
+  priceListId: string | null = null,
+) {
+  const list = choosePriceList(cache.priceRules, { cartListId: priceListId, customerListId: null, branchId: cache.register.branchId, today });
   return resolvePrice(list, { unitId: unit.id, quantity, unitPricePesewas: unit.pricePesewas, unitFactor: unit.factor, basePricePesewas: variant.basePricePesewas });
 }
 
@@ -90,7 +93,10 @@ export function comboSlotsOf(cache: DeviceCache, comboVariantId: string) {
   return cache.comboSlots.filter((s) => s.comboVariantId === comboVariantId).sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-export function priceCart(cache: DeviceCache, lines: CartLine[], today: string): { lines: PricedLine[]; totals: CartTotals } {
+/** `priceListId`: a channel's own prices (spec 6.57); walk-in uses the branch or retail list. */
+export function priceCart(
+  cache: DeviceCache, lines: CartLine[], today: string, opts: { priceListId?: string | null } = {},
+): { lines: PricedLine[]; totals: CartTotals } {
   const priced: PricedLine[] = [];
   for (const l of lines) {
     const p = parts(cache, l.variantId, l.unitId);
@@ -99,7 +105,7 @@ export function priceCart(cache: DeviceCache, lines: CartLine[], today: string):
     priced.push({
       ...l, label: labelOf(p.product.name, p.variant.name), unitName: p.unit.name,
       unitPricePesewas: p.variant.sellByAmount && l.amountPesewas != null ? l.amountPesewas
-        : unitPrice(cache, p.variant, p.unit, l.quantity, today) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0),
+        : unitPrice(cache, p.variant, p.unit, l.quantity, today, opts.priceListId ?? null) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0),
       taxRateBp: rule?.rateBp ?? 0,
     });
   }

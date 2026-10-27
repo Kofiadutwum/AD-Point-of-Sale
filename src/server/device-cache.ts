@@ -2,7 +2,7 @@ import 'server-only';
 import { and, arrayContains, asc, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
-  barcodes, branches, comboChoices, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
+  barcodes, branches, comboChoices, salesChannels, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate, todayIn } from '@/lib/dates';
@@ -78,6 +78,9 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       barcodes: await tx.select({ code: barcodes.code, variantId: barcodes.variantId, unitId: barcodes.unitId }).from(barcodes),
       resolvedHeldSaleIds: resolved.map((r) => r.saleId),
       comboSlots: await cachedComboSlots(tx),
+      channels: await tx.select({
+        id: salesChannels.id, name: salesChannels.name, kind: salesChannels.kind, priceListId: salesChannels.priceListId, collectedBy: salesChannels.collectedBy,
+      }).from(salesChannels).where(eq(salesChannels.active, true)).orderBy(asc(salesChannels.name)),
       food: shop.t.modules.includes('kitchen') ? {
         // table mode waits for open tickets (Phase 1b tickets plan)
         serviceModes: till.b.serviceModes.filter((m): m is 'counter' | 'quick' => m === 'counter' || m === 'quick'),
