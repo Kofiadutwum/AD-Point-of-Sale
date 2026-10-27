@@ -14,5 +14,7 @@ export default defineConfig({
     // PGlite start-up plus argon2 hashing; the first beforeEach of each file also migrates the template database
     testTimeout: 30000,
     hookTimeout: 60000,
+    // each file runs its own PGlite database; more workers than half the cores starve them and tests time out
+    maxWorkers: 4,
   },
 });
