@@ -1,3 +1,4 @@
+import { normaliseGhanaPhone } from './contact';
 import { divHalfUp, fromMilli, toMilli } from './decimal';
 import { pesewasTimesQty } from './money';
 
@@ -82,4 +83,14 @@ export function splitComboNet(netPesewas: number, parts: Array<{ key: string; we
   const largest = total > 0 ? parts.reduce((best, p) => (p.weightPesewas > best.weightPesewas ? p : best), parts[0]) : parts[0];
   if (largest) shares.set(largest.key, shares.get(largest.key)! + netPesewas - [...shares.values()].reduce((a, b) => a + b, 0));
   return shares;
+}
+
+/** Spec 6.57: a phone or WhatsApp customer needs a name, a Ghana phone, and a pickup time or a delivery address; null when any is missing. */
+export function phoneCustomer(i: { customer?: { name: string; phone: string }; pickupAt?: string; deliveryAddress?: string }):
+  { name: string; phone: string; pickupAt: Date | null; deliveryAddress: string | null } | null {
+  const name = i.customer?.name.trim() ?? '';
+  const phone = i.customer ? normaliseGhanaPhone(i.customer.phone) : null;
+  const deliveryAddress = i.deliveryAddress?.trim() || null;
+  if (name.length < 1 || name.length > 80 || !phone || (!i.pickupAt && !deliveryAddress) || (deliveryAddress?.length ?? 0) > 200) return null;
+  return { name, phone, pickupAt: i.pickupAt ? new Date(i.pickupAt) : null, deliveryAddress };
 }

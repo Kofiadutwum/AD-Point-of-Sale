@@ -10,11 +10,10 @@ import {
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { calculateCartTotals } from '@/lib/cart-totals';
-import { normaliseGhanaPhone } from '@/lib/contact';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
-  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount,
+  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
 } from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
@@ -27,7 +26,7 @@ import { redeemStoreCredit } from './customers';
 import { foodEnabled } from './food-settings';
 import { loadPriceRules } from './price-lists';
 import { type Fail, fail, isUuid, itemLabel } from './products';
-import type { SaleLineChoice } from '@/db/schema';
+import type { PendingLine, SaleLineChoice } from '@/db/schema';
 import { isSoldOut } from './sold-out';
 import { type DeductProblems, deductStockForLine } from './stock';
 
@@ -53,7 +52,7 @@ export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cash
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
   | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
   | 'unknown_channel' | 'channel_not_allowed' | 'external_order_id_required' | 'channel_order_exists' | 'channel_settlement_required'
-  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed';
+  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
 } | { ok: false; error: SaleError };
@@ -161,7 +160,14 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
       const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
       const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
-      const order = s.food?.channelId ? await checkChannel(tx, s.food, { ctxPermissions: ctx.permissions, cashierPermissions, lenient }) : null;
+      // collecting a phone order: its channel, customer, and lines come from the order taken on the phone (spec 6.57)
+      const collecting = s.food?.kitchenOrderId ? await openPhoneOrder(tx, s.food, reg.branchId) : null;
+      if (collecting) await checkCollectedLines(tx, s.lines, collecting.pendingLines!);
+      const channelFood = collecting ? {
+        ...s.food!, customer: { name: collecting.customerName!, phone: collecting.customerPhone! },
+        pickupAt: collecting.pickupAt?.toISOString(), deliveryAddress: collecting.deliveryAddress ?? undefined,
+      } : s.food;
+      const order = channelFood?.channelId ? await checkChannel(tx, channelFood, { ctxPermissions: ctx.permissions, cashierPermissions, lenient }) : null;
       const channel = order?.channel ?? null;
       const list = choosePriceList(await loadPriceRules(tx), { cartListId: channel?.priceListId ?? null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
 
@@ -270,12 +276,12 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         else if (!shop.allowNegativeStock) refuse('not_enough_stock');
       }
       let orderNumber: string | null = null;
-      if (s.food?.serviceMode === 'counter') {
-        // spec 6.51: one counter per branch per business date; the upsert's row lock keeps two tills from sharing a number
-        orderNumber = deviceNumber ?? formatOrderNumber((await tx.insert(branchOrderCounters)
-          .values({ tenantId: ctx.tenantId, branchId: reg.branchId, businessDate: kitchenDay, last: 1 })
-          .onConflictDoUpdate({ target: [branchOrderCounters.tenantId, branchOrderCounters.branchId, branchOrderCounters.businessDate], set: { last: sql`${branchOrderCounters.last} + 1` } })
-          .returning({ last: branchOrderCounters.last }))[0].last);
+      if (collecting) {
+        orderNumber = collecting.orderNumber; // already in the kitchen under its number: it is paid, not sent again
+        await tx.update(kitchenOrders).set({ saleId: s.saleId }).where(eq(kitchenOrders.id, collecting.id));
+        await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
+      } else if (s.food?.serviceMode === 'counter') {
+        orderNumber = deviceNumber ?? await nextOrderNumber(tx, ctx.tenantId, reg.branchId, kitchenDay);
         await tx.insert(kitchenOrders).values({
           tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: kitchenDay, diningOption: dining!,
           needsPacking: needsPacking(dining!, channel !== null), sentAt: now,
@@ -326,11 +332,36 @@ async function checkChannel(tx: Tx, food: NonNullable<SaleInput['food']>, c: {
     if (dup) refuse('channel_order_exists');
     return { channel, externalOrderId, customer: null, pickupAt: null, deliveryAddress: null };
   }
-  const name = food.customer?.name.trim() ?? '';
-  const phone = food.customer ? normaliseGhanaPhone(food.customer.phone) : null;
-  const deliveryAddress = food.deliveryAddress?.trim() || null;
-  if (name.length < 1 || name.length > 80 || !phone || (!food.pickupAt && !deliveryAddress) || (deliveryAddress?.length ?? 0) > 200) refuse('customer_details_required');
-  return { channel, externalOrderId: null, customer: { name, phone: phone! }, pickupAt: food.pickupAt ? new Date(food.pickupAt) : null, deliveryAddress };
+  const who = phoneCustomer(food);
+  if (!who) return refuse('customer_details_required');
+  return { channel, externalOrderId: null, customer: { name: who.name, phone: who.phone }, pickupAt: who.pickupAt, deliveryAddress: who.deliveryAddress };
+}
+
+/** Spec 6.51: the next order number of a branch's business date; the upsert's row lock keeps two tills from sharing a number. */
+export async function nextOrderNumber(tx: Tx, tenantId: string, branchId: string, day: string): Promise<string> {
+  const [row] = await tx.insert(branchOrderCounters).values({ tenantId, branchId, businessDate: day, last: 1 })
+    .onConflictDoUpdate({ target: [branchOrderCounters.tenantId, branchOrderCounters.branchId, branchOrderCounters.businessDate], set: { last: sql`${branchOrderCounters.last} + 1` } })
+    .returning({ last: branchOrderCounters.last });
+  return formatOrderNumber(row.last);
+}
+
+/** The unpaid phone order being collected, locked; anything else (paid, cancelled, another branch) is not open. */
+async function openPhoneOrder(tx: Tx, food: NonNullable<SaleInput['food']>, branchId: string) {
+  const [o] = await tx.select().from(kitchenOrders).where(eq(kitchenOrders.id, food.kitchenOrderId!)).for('update');
+  if (!o || !o.payOnCollect || o.saleId || !['preparing', 'ready'].includes(o.status) || o.branchId !== branchId) return refuse('order_not_open');
+  if (food.channelId !== o.channelId || food.diningOption !== o.diningOption || food.serviceMode !== 'counter') return refuse('order_changed');
+  return o;
+}
+
+/** The order's lines first, in order, then only pack lines: the cashier cannot add or drop items, and packing ticks keep their line numbers. */
+async function checkCollectedLines(tx: Tx, lines: SaleInput['lines'], pending: PendingLine[]): Promise<void> {
+  const [settings] = await tx.select({ packId: foodSettings.packVariantId }).from(foodSettings);
+  const choiceKey = (c: Array<{ slotId: string; variantId: string }> = []) => c.map((x) => `${x.slotId}:${x.variantId}`).sort().join(',');
+  const same = (l: SaleInput['lines'][number], p: PendingLine) => l.variantId === p.variantId && l.unitId === p.unitId
+    && toMilli(parseQuantity(l.quantity)!) === toMilli(p.quantity) && (l.byAmount === true) === (p.byAmount === true)
+    && (!p.byAmount || l.unitPricePesewas === p.amountPesewas) && choiceKey(l.choices) === choiceKey(p.choices);
+  const extra = lines.slice(pending.length);
+  if (lines.length < pending.length || !pending.every((p, i) => same(lines[i], p)) || extra.some((l) => l.variantId !== settings?.packId)) refuse('order_changed');
 }
 
 /** Spec 6.52: the combo slots checked against the choices sent; upgrades add to the price; choices are stored as sold. */
@@ -345,7 +376,7 @@ async function choicesAsSent(tx: Tx, chosen: Array<{ slotId: string; variantId: 
   }) };
 }
 
-async function priceCombo(
+export async function priceCombo(
   tx: Tx, comboVariantId: string, chosen: Array<{ slotId: string; variantId: string }>, branchId: string, day: string,
 ): Promise<'invalid_choices' | 'stale_choices' | 'sold_out' | { upgrades: number; choices: SaleLineChoice[] }> {
   const slotRows = await tx.select().from(comboSlots).where(eq(comboSlots.comboVariantId, comboVariantId));

@@ -2,17 +2,18 @@ import 'server-only';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { branches, type KitchenOrderStatus, kitchenOrders, packingTicks, saleLines, tenants, users } from '@/db/schema';
+import { branches, type KitchenOrderStatus, kitchenOrders, packingTicks, type PendingLine, products, saleLines, salesChannels, tenants, users, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import type { DiningOption } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
-import type { Fail } from './products';
+import { type Fail, itemLabel } from './products';
 
 export type KitchenOrderView = {
   id: string; orderNumber: string; status: KitchenOrderStatus; diningOption: DiningOption; needsPacking: boolean;
   sentAt: Date; readyAt: Date | null; lines: Array<{ lineNo: number; name: string; quantity: string; packed: boolean }>;
+  channelName: string | null; customerName: string | null; pickupAt: Date | null; deliveryAddress: string | null; payOnCollect: boolean; paid: boolean;
 };
 
 const isUuid = (value: string) => z.uuid().safeParse(value).success;
@@ -29,15 +30,25 @@ async function findOrder(tx: Tx, ctx: Ctx, orderId: string) {
   return order && (await myBranches(tx, ctx)).includes(order.branchId) ? order : undefined;
 }
 
-async function linesOf(tx: Tx, orders: Array<{ id: string; saleId: string | null }>) {
+/** Sale lines once paid; an unpaid phone order shows the lines it was taken with, numbered as its sale lines will be. */
+async function linesOf(tx: Tx, orders: Array<{ id: string; saleId: string | null; pendingLines: PendingLine[] | null }>) {
   const saleIds = orders.flatMap((o) => (o.saleId ? [o.saleId] : []));
   const lines = saleIds.length ? await tx.select({ saleId: saleLines.saleId, lineNo: saleLines.lineNo, name: saleLines.name, quantity: saleLines.quantity })
     .from(saleLines).where(inArray(saleLines.saleId, saleIds)).orderBy(asc(saleLines.lineNo)) : [];
   const ticks = orders.length ? await tx.select({ orderId: packingTicks.kitchenOrderId, lineNo: packingTicks.lineNo }).from(packingTicks)
     .where(inArray(packingTicks.kitchenOrderId, orders.map((o) => o.id))) : [];
-  return (o: { id: string; saleId: string | null }) => lines.filter((l) => l.saleId === o.saleId).map((l) => ({
-    lineNo: l.lineNo, name: l.name, quantity: l.quantity, packed: ticks.some((t) => t.orderId === o.id && t.lineNo === l.lineNo),
-  }));
+  const pendingIds = [...new Set(orders.flatMap((o) => (o.saleId ? [] : (o.pendingLines ?? []).map((l) => l.variantId))))];
+  const names = pendingIds.length ? await tx.select({ id: variants.id, productName: products.name, variantName: variants.name }).from(variants)
+    .innerJoin(products, eq(products.id, variants.productId)).where(inArray(variants.id, pendingIds)) : [];
+  return (o: { id: string; saleId: string | null; pendingLines: PendingLine[] | null }) => {
+    const rows = o.saleId
+      ? lines.filter((l) => l.saleId === o.saleId).map((l) => ({ lineNo: l.lineNo, name: l.name, quantity: l.quantity }))
+      : (o.pendingLines ?? []).map((p, i) => {
+        const n = names.find((x) => x.id === p.variantId);
+        return { lineNo: i + 1, name: n ? itemLabel(n.productName, n.variantName) : 'Item', quantity: p.quantity };
+      });
+    return rows.map((l) => ({ ...l, packed: ticks.some((t) => t.orderId === o.id && t.lineNo === l.lineNo) }));
+  };
 }
 
 /** Spec 6.51: today's preparing and ready orders at a branch, oldest first, with their lines and packing ticks. */
@@ -51,9 +62,13 @@ export async function listKitchenOrders(db: Db, ctx: Ctx, branchId: string, now:
       inArray(kitchenOrders.status, ['preparing', 'ready']),
     )).orderBy(asc(kitchenOrders.sentAt), asc(kitchenOrders.orderNumber));
     const lines = await linesOf(tx, orders);
+    const channelIds = [...new Set(orders.flatMap((o) => (o.channelId ? [o.channelId] : [])))];
+    const channels = channelIds.length ? await tx.select({ id: salesChannels.id, name: salesChannels.name }).from(salesChannels).where(inArray(salesChannels.id, channelIds)) : [];
     return { ok: true, orders: orders.map((o) => ({
       id: o.id, orderNumber: o.orderNumber, status: o.status, diningOption: o.diningOption, needsPacking: o.needsPacking,
       sentAt: o.sentAt, readyAt: o.readyAt, lines: lines(o),
+      channelName: channels.find((c) => c.id === o.channelId)?.name ?? null, customerName: o.customerName, pickupAt: o.pickupAt,
+      deliveryAddress: o.deliveryAddress, payOnCollect: o.payOnCollect, paid: o.saleId !== null,
     })) } as const;
   });
 }
@@ -94,12 +109,13 @@ export async function tickPackedLine(
 /** Eat in: collected. Takeaway or delivery: every line packed, and who took it (customer, or rider and app) recorded. */
 export async function handOverOrder(
   db: Db, ctx: Ctx, input: { orderId: string; handedTo?: string }, now: Date,
-): Promise<{ ok: true } | Fail<'not_found' | 'not_packed' | 'wrong_status' | 'invalid_input'>> {
+): Promise<{ ok: true } | Fail<'not_found' | 'not_packed' | 'wrong_status' | 'invalid_input' | 'not_paid'>> {
   assertPermission(ctx, 'run_kitchen');
   return withTenant(db, ctx.tenantId, async (tx) => {
     const order = await findOrder(tx, ctx, input.orderId);
     if (!order) return { ok: false, error: 'not_found' } as const;
     if (!['preparing', 'ready'].includes(order.status)) return { ok: false, error: 'wrong_status' } as const;
+    if (order.payOnCollect && !order.saleId) return { ok: false, error: 'not_paid' } as const; // a phone order leaves only once paid
     const handedTo = typeof input.handedTo === 'string' ? input.handedTo.trim() : '';
     if (order.needsPacking) {
       if (!(await linesOf(tx, [order]))(order).every((l) => l.packed)) return { ok: false, error: 'not_packed' } as const;
