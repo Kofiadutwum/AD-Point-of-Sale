@@ -2,7 +2,7 @@ import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { type KitchenOrderView, kitchenBranches, listKitchenOrders } from '@/server/kitchen';
 import { pageCtx } from '../page-ctx';
-import { handOverAction, packAction, readyAction } from './actions';
+import { cancelPhoneOrderAction, handOverAction, packAction, readyAction } from './actions';
 import { AutoRefresh } from './auto-refresh';
 
 const DINING = { eat_in: 'Eat in', takeaway: 'Takeaway', delivery: 'Delivery' } as const;
@@ -34,7 +34,7 @@ export default async function KitchenPage({ params, searchParams }: { params: Pr
             <h2 id={`col-${status}`} className="mb-2 text-xl font-semibold">{status === 'preparing' ? 'Preparing' : 'Ready'}</h2>
             {orders.filter((o) => o.status === status).length === 0 && <p className="text-sm text-gray-600">No orders.</p>}
             <ul className="flex flex-col gap-3">
-              {orders.filter((o) => o.status === status).map((o) => <OrderCard key={o.id} slug={slug} order={o} now={now} />)}
+              {orders.filter((o) => o.status === status).map((o) => <OrderCard key={o.id} slug={slug} order={o} now={now} canCancel={ctx.permissions.includes('enter_channel_orders')} />)}
             </ul>
           </section>
         ))}
@@ -43,11 +43,19 @@ export default async function KitchenPage({ params, searchParams }: { params: Pr
   );
 }
 
-function OrderCard({ slug, order: o, now }: { slug: string; order: KitchenOrderView; now: Date }) {
+function OrderCard({ slug, order: o, now, canCancel }: { slug: string; order: KitchenOrderView; now: Date; canCancel: boolean }) {
   const waiting = Math.max(0, Math.round((now.getTime() - o.sentAt.getTime()) / 60_000));
   return (
     <li className="rounded border p-3">
       <p className="flex items-baseline justify-between"><span className="text-3xl font-bold">{o.orderNumber}</span><span className="text-sm">{DINING[o.diningOption]} · {waiting} min</span></p>
+      {(o.channelName || o.customerName) && (
+        <p className="text-sm">
+          {o.channelName}{o.customerName ? ` · ${o.customerName}` : ''}
+          {o.pickupAt ? ` · pickup ${o.pickupAt.toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Accra' })}` : ''}
+          {o.deliveryAddress ? ` · ${o.deliveryAddress}` : ''}
+        </p>
+      )}
+      {o.payOnCollect && !o.paid && <p className="text-sm font-semibold text-red-700">Not paid: take payment at the till when collected</p>}
       <ul className="my-2 text-sm">
         {o.lines.map((l) => (
           <li key={l.lineNo} className="flex items-center justify-between gap-2">
@@ -59,7 +67,9 @@ function OrderCard({ slug, order: o, now }: { slug: string; order: KitchenOrderV
         ))}
       </ul>
       {o.status === 'preparing' && <ActionForm action={readyAction.bind(null, slug, o.id)} submitLabel="Ready">{null}</ActionForm>}
-      {o.needsPacking
+      {o.payOnCollect && !o.paid ? (
+        canCancel && <ActionForm action={cancelPhoneOrderAction.bind(null, slug, o.id)} submitLabel="Cancel order"><Field label="Why (e.g. customer did not come)" name="reason" maxLength={200} /></ActionForm>
+      ) : o.needsPacking
         ? <ActionForm action={handOverAction.bind(null, slug, o.id)} submitLabel="Hand over"><Field label="Handed to (customer, or rider and app)" name="handedTo" maxLength={80} /></ActionForm>
         : <ActionForm action={handOverAction.bind(null, slug, o.id)} submitLabel="Collected">{null}</ActionForm>}
     </li>
