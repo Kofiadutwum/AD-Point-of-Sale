@@ -1,10 +1,15 @@
 'use client';
 import { useMemo, useState } from 'react';
-import { canAdd, type CartLine, findByCode, priceCart, searchCatalogue } from '@/device/catalogue';
+import { canAdd, type CartLine, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import type { TenderInput } from '@/device/sale';
-import { todayIn } from '@/lib/dates';
+import { businessDate, todayIn } from '@/lib/dates';
+import type { DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
+import { markAvailableAction, markSoldOutAction } from '../actions';
 import { type Receipt, useDevice } from './use-device';
+
+const DINING: Array<{ value: DiningOption; label: string }> = [{ value: 'eat_in', label: 'Eat in' }, { value: 'takeaway', label: 'Takeaway' }, { value: 'delivery', label: 'Delivery' }];
+const MODE_LABELS = { counter: 'Counter', quick: 'Quick serve' } as const;
 
 const METHODS: Array<{ value: TenderInput['method']; label: string }> = [
   { value: 'cash', label: 'Cash' }, { value: 'momo_manual', label: 'MoMo' }, { value: 'card_terminal', label: 'Card' }, { value: 'bank_transfer', label: 'Bank' },
@@ -99,19 +104,42 @@ function PinPanel({ d }: { d: Device }) {
 function Selling({ d, slug }: { d: Device; slug: string }) {
   const cache = d.cache!;
   const today = todayIn(cache.shop.timezone, new Date());
+  const day = businessDate(cache.shop.timezone, cache.shop.businessDayCutoff, new Date());
+  const modes = cache.food?.serviceModes ?? [];
   const [lines, setLines] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [tenders, setTenders] = useState<Array<{ method: TenderInput['method']; amount: string; reference: string }>>([{ method: 'cash', amount: '', reference: '' }]);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
-  const priced = useMemo(() => priceCart(cache, lines, today), [cache, lines, today]);
+  const [modeChoice, setModeChoice] = useState<'counter' | 'quick' | null>(() => {
+    try { return sessionStorage.getItem(`pos-mode-${slug}`) as 'counter' | 'quick' | null; } catch { return null; }
+  });
+  const [dining, setDining] = useState<DiningOption>('eat_in');
+  const mode = modeChoice && modes.includes(modeChoice) ? modeChoice : (modes[0] ?? null);
+  const pickMode = (m: 'counter' | 'quick') => {
+    setModeChoice(m);
+    try { sessionStorage.setItem(`pos-mode-${slug}`, m); } catch { /* private mode: falls back to the first mode */ }
+  };
+  // the pack line follows the cart and the dining option (spec 6.56); quick serve is always eat in
+  const cart = useMemo(() => (mode ? withPackLine(cache, lines, mode === 'quick' ? 'eat_in' : dining) : lines), [cache, lines, mode, dining]);
+  const priced = useMemo(() => priceCart(cache, cart, today), [cache, cart, today]);
   const hits = useMemo(() => searchCatalogue(cache, query, today), [cache, query, today]);
+  const soldOutToday = (variantId: string) => cache.food?.businessDate === day && cache.food.soldOutVariantIds.includes(variantId);
+  const staffPermissions = cache.staff.find((s) => s.id === d.cashier?.staffId)?.permissions ?? [];
 
   if (receipt) return <ReceiptView receipt={receipt} shop={cache.shop.name} register={cache.register.name} onNew={() => setReceipt(null)} />;
 
+  const toggleSoldOut = async (variantId: string) => {
+    if (!d.reachable) return setMessage('Connect to the internet to mark sold out');
+    const r = soldOutToday(variantId) ? await markAvailableAction(slug, variantId) : await markSoldOutAction(slug, variantId);
+    if (!r.ok) return setMessage(r.error);
+    setMessage(null);
+    await d.refresh();
+  };
+
   const add = (found: { variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null }) => {
-    const problem = canAdd(cache, found);
+    const problem = canAdd(cache, found, day);
     if (problem) return setMessage(ADD_ERRORS[problem]);
     setMessage(null);
     setQuery('');
@@ -136,17 +164,39 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
   const pay = async () => {
     const parsed = tenders.map((t) => ({ method: t.method, amountPesewas: parseCedis(t.amount) ?? -1, reference: t.reference }));
     setBusy(true);
-    const r = await d.completeSale(priced.lines, priced.totals, parsed);
+    const r = await d.completeSale(priced.lines, priced.totals, parsed, mode ? { serviceMode: mode, diningOption: dining } : undefined);
     setBusy(false);
     if (!r.ok) return setMessage(r.error);
     setReceipt(r.receipt);
     setLines([]);
+    setDining('eat_in');
     setTenders([{ method: 'cash', amount: '', reference: '' }]);
     setMessage(null);
   };
 
   return (
     <section className="flex flex-col gap-4">
+      {mode && (
+        <div className="flex flex-wrap items-center gap-2">
+          {modes.length > 1 && (
+            <div role="group" aria-label="Service mode" className="flex gap-1">
+              {modes.map((m) => (
+                <button key={m} type="button" aria-pressed={mode === m} onClick={() => pickMode(m)}
+                  className={`${btn} ${mode === m ? 'bg-blue-800 text-white' : ''}`}>{MODE_LABELS[m]}</button>
+              ))}
+            </div>
+          )}
+          {mode === 'counter' && (
+            <div role="group" aria-label="Dining option" className="flex gap-1">
+              {DINING.map((o) => (
+                <button key={o.value} type="button" aria-pressed={dining === o.value} onClick={() => setDining(o.value)}
+                  className={`${btn} ${dining === o.value ? 'bg-gray-900 text-white' : ''}`}>{o.label}</button>
+              ))}
+            </div>
+          )}
+          {d.reachable && staffPermissions.includes('run_kitchen') && <a href={`/${slug}/app/kitchen`} className="ml-auto text-sm text-blue-800 underline">Kitchen</a>}
+        </div>
+      )}
       <form onSubmit={scan} className="flex gap-2">
         <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Scan a barcode or type a name"
           className="flex-1 rounded border border-gray-400 px-3 py-2" aria-label="Scan or search" />
@@ -154,17 +204,23 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
       </form>
       {message && <p role="alert" className="text-sm text-red-700">{message}</p>}
       {query && hits.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {hits.map((h) => (
-            <li key={h.variantId}>
-              <button type="button" className={`${btn} flex w-full items-center gap-3 text-left`}
-                onClick={() => add({ variantId: h.variantId, unitId: h.unitId, quantity: '1.000', labelPricePesewas: null })}>
-                {h.imageId && <img src={`/api/${slug}/device/images/${h.imageId}`} alt="" className="h-10 w-10 object-cover" />}
-                <span className="flex-1">{h.label} ({h.unitName})</span>
-                <span>{formatCedis(h.pricePesewas)}</span>
-              </button>
-            </li>
-          ))}
+        <ul className={mode === 'quick' ? 'grid grid-cols-2 gap-2' : 'flex flex-col gap-1'}>
+          {hits.map((h) => {
+            const out = soldOutToday(h.variantId);
+            return (
+              <li key={h.variantId} className="flex gap-1">
+                <button type="button" aria-disabled={out} className={`${btn} flex flex-1 items-center gap-3 text-left ${mode === 'quick' ? 'min-h-16 text-base' : ''} ${out ? 'opacity-50' : ''}`}
+                  onClick={() => add({ variantId: h.variantId, unitId: h.unitId, quantity: '1.000', labelPricePesewas: null })}>
+                  {h.imageId && <img src={`/api/${slug}/device/images/${h.imageId}`} alt="" className="h-10 w-10 object-cover" />}
+                  <span className="flex-1">{h.label} ({h.unitName}){out && <span className="block text-xs text-red-700">Sold out today</span>}</span>
+                  <span>{formatCedis(h.pricePesewas)}</span>
+                </button>
+                {cache.food && staffPermissions.includes('mark_sold_out') && (
+                  <button type="button" className={`${btn} text-xs`} onClick={() => toggleSoldOut(h.variantId)}>{out ? 'Available' : 'Sold out'}</button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       <table className="w-full text-sm">
@@ -173,12 +229,14 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
             <tr key={l.lineId} className="border-b">
               <td className="py-2">{l.label} <span className="text-gray-600">({l.unitName})</span></td>
               <td>
-                {l.labelPricePesewas === null
+                {l.labelPricePesewas === null && l.lineId !== 'pack'
                   ? <input type="number" step="any" min="0" value={Number(l.quantity)} onChange={(e) => setQty(l.lineId, e.target.value)} className="w-20 rounded border px-2 py-1" aria-label={`Quantity of ${l.label}`} />
                   : l.quantity}
               </td>
               <td className="text-right">{formatCedis(priced.totals.lines[i].totalPesewas)}</td>
-              <td className="text-right"><button type="button" className="px-2 text-red-700" onClick={() => setQty(l.lineId, '0')} aria-label={`Remove ${l.label}`}>✕</button></td>
+              <td className="text-right">
+                {l.lineId !== 'pack' && <button type="button" className="px-2 text-red-700" onClick={() => setQty(l.lineId, '0')} aria-label={`Remove ${l.label}`}>✕</button>}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -215,6 +273,7 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
   return (
     <section className="flex max-w-sm flex-col gap-2 text-sm">
       <h2 className="text-lg font-semibold">{shop}</h2>
+      {receipt.orderNumber && <p className="text-center"><span className="block text-xs">Order number</span><span className="text-5xl font-extrabold">{receipt.orderNumber}</span></p>}
       <p>{register} · Receipt {receipt.receiptNumber}</p>
       <p>{receipt.at.toLocaleString()} · Cashier {receipt.cashier}</p>
       {receipt.pending && <p className="rounded bg-amber-100 p-2 font-semibold">Offline – pending sync</p>}
@@ -229,6 +288,15 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
         <p key={i} className="flex justify-between"><span>{METHODS.find((m) => m.value === t.method)?.label}{t.reference ? ` (${t.reference})` : ''}</span><span>{formatCedis(t.amountPesewas)}</span></p>
       ))}
       <p className="flex justify-between"><span>Change</span><span>{formatCedis(receipt.changeDuePesewas)}</span></p>
+      {receipt.serviceMode === 'counter' && receipt.orderNumber && (
+        // kitchen slip: printed after the receipt, on its own page (spec 6.51)
+        <div className="mt-4 border-t-2 border-dashed pt-3 break-before-page">
+          <p className="text-base font-semibold">Kitchen</p>
+          <p className="text-4xl font-extrabold">{receipt.orderNumber}</p>
+          <p>{DINING.find((o) => o.value === receipt.diningOption)?.label} · {receipt.at.toLocaleTimeString()}</p>
+          <ul className="mt-1">{receipt.lines.map((l) => <li key={l.lineId}>{Number(l.quantity)} × {l.label}</li>)}</ul>
+        </div>
+      )}
       <div className="flex gap-2 print:hidden">
         <button type="button" className={btn} onClick={() => window.print()}>Print</button>
         <button type="button" className={primary} onClick={onNew}>New sale</button>

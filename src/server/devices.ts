@@ -112,3 +112,9 @@ export async function switchCashierWithPin(
   const session = await createSession(db, { tenantId: device.tenantId, userId: outcome.userId, kind: 'pin', registerId: device.registerId }, now);
   return { ok: true, ...session };
 }
+
+/** The branch of the till a PIN session was opened on. */
+export async function registerBranch(db: Db, ctx: Ctx): Promise<string> {
+  const [reg] = await withTenant(db, ctx.tenantId, (tx) => tx.select({ branchId: registers.branchId }).from(registers).where(eq(registers.id, ctx.registerId!)));
+  return reg?.branchId ?? '';
+}

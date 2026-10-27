@@ -7,12 +7,16 @@ import { buildSaleRequest, checkTenders, formatReceiptNumber, offlineBlock, type
 import { type DeviceMeta, type OutboxEntry, openDeviceStore } from '@/device/store';
 import { retryHeld as retryHeldOnDevice, sendSaleNow, type SyncDeps, syncOutbox } from '@/device/sync';
 import type { CartTotals } from '@/lib/cart-totals';
+import { businessDate } from '@/lib/dates';
 import type { DeviceCache } from '@/lib/device-contract';
+import { type DiningOption, offlineOrderNumber } from '@/lib/food';
 
 export type Receipt = {
   saleId: string; receiptNumber: string; at: Date; cashier: string; lines: PricedLine[]; totals: CartTotals;
   tenders: TenderInput[]; changeDuePesewas: number; pending: boolean;
+  orderNumber: string | null; serviceMode: 'counter' | 'quick' | null; diningOption: DiningOption | null;
 };
+export type FoodChoice = { serviceMode: 'counter' | 'quick'; diningOption: DiningOption };
 
 const TICK_MS = 60_000;
 
@@ -84,7 +88,7 @@ export function useDevice(slug: string) {
     return r;
   }, [deps, setCashier, tick]);
 
-  const completeSale = useCallback(async (lines: PricedLine[], totals: CartTotals, tenders: TenderInput[]):
+  const completeSale = useCallback(async (lines: PricedLine[], totals: CartTotals, tenders: TenderInput[], foodChoice?: FoodChoice):
     Promise<{ ok: true; receipt: Receipt } | { ok: false; error: string }> => {
     if (!cache || !meta || !cashier) return { ok: false, error: 'Switch in with your PIN first.' };
     if (!cache.staff.find((s) => s.id === cashier.staffId)?.permissions.includes('make_sale')) return { ok: false, error: 'You are not set up to sell on this till.' };
@@ -101,16 +105,39 @@ export function useDevice(slug: string) {
     const receiptNumber = formatReceiptNumber(cache.register.branchCode, cache.register.registerCode, counter);
     const saleId = crypto.randomUUID();
     const online = reachable && cashier.serverSession;
+    const food = cache.food && foodChoice
+      ? { serviceMode: foodChoice.serviceMode, diningOption: foodChoice.serviceMode === 'quick' ? 'eat_in' as const : foodChoice.diningOption }
+      : undefined;
+    const counterOrder = food?.serviceMode === 'counter';
+    // spec 6.51: offline, the till gives its own register-prefixed number, so two tills never print the same one
+    const deviceNumber = async () => offlineOrderNumber(cache.register.registerCode,
+      await store.takeOrderNumber(businessDate(cache.shop.timezone, cache.shop.businessDayCutoff, now)));
+    const offlineNumber = counterOrder && !online ? await deviceNumber() : undefined;
     const request = buildSaleRequest({
       saleId, receiptNumber, cashierId: cashier.staffId, lines, tenders, tenderIds: tenders.map(() => crypto.randomUUID()), now, fromOfflineOutbox: !online,
+      food: food && { ...food, ...(offlineNumber ? { orderNumber: offlineNumber } : {}) },
     });
-    await store.addSale({ saleId, seq: counter, request, totalPesewas: totals.totalPesewas, status: 'queued', attempts: 0, nextAttemptAt: 0, lastError: null, reported: false });
-    const receipt: Receipt = { saleId, receiptNumber, at: now, cashier: cashier.name, lines, totals, tenders, changeDuePesewas: paid.changeDuePesewas, pending: true };
+    const entry = { saleId, seq: counter, request, totalPesewas: totals.totalPesewas, status: 'queued' as const, attempts: 0, nextAttemptAt: 0, lastError: null, reported: false };
+    await store.addSale(entry);
+    const receipt: Receipt = {
+      saleId, receiptNumber, at: now, cashier: cashier.name, lines, totals, tenders, changeDuePesewas: paid.changeDuePesewas, pending: true,
+      orderNumber: offlineNumber ?? null, serviceMode: food?.serviceMode ?? null, diningOption: food?.diningOption ?? null,
+    };
     if (online) {
       const r = await sendSaleNow(deps, saleId);
+      if (r.result === 'rejected') { await reload(); return { ok: false, error: `The server refused this sale (${r.error.replaceAll('_', ' ')}). Check the cart and try again.` }; }
+      if (r.result === 'sent') {
+        await reload();
+        return { ok: true, receipt: { ...receipt, pending: false, changeDuePesewas: r.response.changeDuePesewas, orderNumber: r.response.orderNumber } };
+      }
+      // the server may or may not have it: print our own number and send it with the retry, so the board shows what the customer holds
+      if (counterOrder) {
+        const orderNumber = await deviceNumber();
+        const queued = (await store.listOutbox()).find((o) => o.saleId === saleId);
+        if (queued) await store.putOutbox({ ...queued, request: { ...queued.request, food: { ...food!, orderNumber } } });
+        receipt.orderNumber = orderNumber;
+      }
       await reload();
-      if (r.result === 'rejected') return { ok: false, error: `The server refused this sale (${r.error.replaceAll('_', ' ')}). Check the cart and try again.` };
-      if (r.result === 'sent') return { ok: true, receipt: { ...receipt, pending: false, changeDuePesewas: r.response.changeDuePesewas } };
       setReachable(false);
       setNeedsPin(r.needsPin);
       return { ok: true, receipt };
@@ -125,7 +152,9 @@ export function useDevice(slug: string) {
     await tick(false);
   }, [store, tick]);
 
-  return { loaded, cache, meta, outbox, reachable, needsPin, cashier, setCashier, switchCashier, completeSale, retryHeld };
+  const refresh = useCallback(() => tick(true), [tick]);
+
+  return { loaded, cache, meta, outbox, reachable, needsPin, cashier, setCashier, switchCashier, completeSale, retryHeld, refresh };
 }
 
 /** Puts every main product photo in the service worker's image cache so the till shows them offline. */
