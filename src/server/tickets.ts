@@ -122,12 +122,18 @@ export async function listOpenTickets(db: Db, ctx: Ctx, branchId: string): Promi
 export async function listTicketItems(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; unitId: string; label: string }>> {
   assertPermission(ctx, 'take_orders');
   // shortcut: combos and sell-by-amount items are not offered on tickets yet; sell them at the counter till
-  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, unitId: variantUnits.id, productName: products.name, variantName: variants.name })
-    .from(variants).innerJoin(products, eq(products.id, variants.productId))
-    .innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
-    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe']),
-      eq(variants.sellByAmount, false), ne(products.tracking, 'serial')))
-    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, unitId: v.unitId, label: itemLabel(v.productName, v.variantName) })));
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const [settings] = await tx.select({ packId: foodSettings.packVariantId }).from(foodSettings);
+    const rows = await tx.select({ variantId: variants.id, unitId: variantUnits.id, productName: products.name, variantName: variants.name })
+      .from(variants).innerJoin(products, eq(products.id, variants.productId))
+      .innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
+      .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe']),
+        eq(variants.sellByAmount, false), ne(products.tracking, 'serial')))
+      .orderBy(asc(products.name), asc(variants.name));
+    return rows
+      .filter((v) => v.variantId !== settings?.packId) // the takeaway pack is added when the ticket is paid, never by hand
+      .map((v) => ({ variantId: v.variantId, unitId: v.unitId, label: itemLabel(v.productName, v.variantName) }));
+  });
 }
 
 /** The branch whose tables and tickets this user works with now. */

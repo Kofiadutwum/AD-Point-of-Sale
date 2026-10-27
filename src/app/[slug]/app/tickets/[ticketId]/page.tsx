@@ -11,7 +11,7 @@ import {
   addLineAction, cancelAction, moveAction, payAction, printBillAction, removeLineAction, sendAction, voidAction,
 } from './actions';
 
-const KITCHEN = { new: 'Not sent', sent: 'In the kitchen', ready: 'Ready', void: 'Voided' } as const;
+const KITCHEN = { new: 'Not sent', sent: 'Sent', ready: 'Ready', void: 'Voided' } as const;
 const STATION = { kitchen: 'Kitchen', bar: 'Bar', grill: 'Grill' } as const;
 
 /** Spec 6.37: a table or named ticket: add items, send them to the kitchen, void, move, print the bill, and take payment. */

@@ -37,7 +37,7 @@ export default async function FoodSettingsPage({ params }: { params: Promise<{ s
             <ActionForm action={saveModesAction.bind(null, slug, b.id)} submitLabel="Save service modes">
               <Check name="modes" value="counter" label="Counter (pay first, collect by number)" defaultChecked={b.serviceModes.includes('counter')} />
               <Check name="modes" value="quick" label="Quick serve (pay and go)" defaultChecked={b.serviceModes.includes('quick')} />
-              <Check name="modes" value="table" label="Table — needs open tickets, coming later" disabled defaultChecked={b.serviceModes.includes('table')} />
+              <Check name="modes" value="table" label="Table (waiter tickets, pay at the end)" defaultChecked={b.serviceModes.includes('table')} />
             </ActionForm>
             {ctx.permissions.includes('manage_devices') && <ActionForm action={boardLinkAction.bind(null, slug, b.id)} submitLabel="Create board link">{null}</ActionForm>}
           </div>
