@@ -3,12 +3,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PricedLine } from '@/device/catalogue';
 import { type ActiveCashier, switchCashier as switchCashierOnDevice } from '@/device/pin';
 import { refreshCache, REFRESH_EVERY_MS } from '@/device/refresh';
-import { buildSaleRequest, checkTenders, formatReceiptNumber, offlineBlock, type TenderInput } from '@/device/sale';
+import { buildSaleRequest, checkTenders, formatReceiptNumber, offlineBlock, outboxHasChannelOrder, type TenderInput } from '@/device/sale';
 import { type DeviceMeta, type OutboxEntry, openDeviceStore } from '@/device/store';
 import { retryHeld as retryHeldOnDevice, sendSaleNow, type SyncDeps, syncOutbox } from '@/device/sync';
 import type { CartTotals } from '@/lib/cart-totals';
 import { businessDate } from '@/lib/dates';
-import type { DeviceCache } from '@/lib/device-contract';
+import type { DeviceCache, SaleRequest } from '@/lib/device-contract';
 import { type DiningOption, offlineOrderNumber } from '@/lib/food';
 
 export type Receipt = {
@@ -16,7 +16,9 @@ export type Receipt = {
   tenders: TenderInput[]; changeDuePesewas: number; pending: boolean;
   orderNumber: string | null; serviceMode: 'counter' | 'quick' | null; diningOption: DiningOption | null;
 };
-export type FoodChoice = { serviceMode: 'counter' | 'quick'; diningOption: DiningOption };
+/** The food block the cashier chose; channel fields are set for delivery-app and phone orders (spec 6.57). */
+export type FoodChoice = { serviceMode: 'counter' | 'quick'; diningOption: DiningOption } & Pick<NonNullable<SaleRequest['food']>,
+  'channelId' | 'externalOrderId' | 'customer' | 'pickupAt' | 'deliveryAddress' | 'kitchenOrderId'>;
 
 const TICK_MS = 60_000;
 
@@ -100,13 +102,21 @@ export function useDevice(slug: string) {
     }
     const paid = checkTenders(tenders, totals.totalPesewas);
     if (!paid.ok) return paid;
+    if (foodChoice?.channelId) {
+      if (!cache.staff.find((s) => s.id === cashier.staffId)?.permissions.includes('enter_channel_orders')) return { ok: false, error: 'You are not set up to enter channel orders.' };
+      if (foodChoice.kitchenOrderId && !reachable) return { ok: false, error: 'Connect to the internet to collect a phone order.' };
+      // the server refuses a second sale for one platform order; offline, this till checks its own waiting sales
+      if (foodChoice.externalOrderId && outboxHasChannelOrder(await store.listOutbox(), foodChoice.channelId, foodChoice.externalOrderId)) {
+        return { ok: false, error: 'This app order is already waiting to send from this till.' };
+      }
+    }
     const now = new Date();
     const counter = await store.takeReceiptCounter();
     const receiptNumber = formatReceiptNumber(cache.register.branchCode, cache.register.registerCode, counter);
     const saleId = crypto.randomUUID();
     const online = reachable && cashier.serverSession;
     const food = cache.food && foodChoice
-      ? { serviceMode: foodChoice.serviceMode, diningOption: foodChoice.serviceMode === 'quick' ? 'eat_in' as const : foodChoice.diningOption }
+      ? { ...foodChoice, diningOption: foodChoice.serviceMode === 'quick' ? 'eat_in' as const : foodChoice.diningOption }
       : undefined;
     const counterOrder = food?.serviceMode === 'counter';
     // spec 6.51: offline, the till gives its own register-prefixed number, so two tills never print the same one

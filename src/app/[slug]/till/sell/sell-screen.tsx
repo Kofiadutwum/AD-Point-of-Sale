@@ -5,8 +5,8 @@ import type { TenderInput } from '@/device/sale';
 import { businessDate, todayIn } from '@/lib/dates';
 import type { ComboChoice, DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
-import { markAvailableAction, markSoldOutAction } from '../actions';
-import { type Receipt, useDevice } from './use-device';
+import { type CollectableOrder, createPhoneOrderAction, findPhoneOrderAction, markAvailableAction, markSoldOutAction } from '../actions';
+import { type FoodChoice, type Receipt, useDevice } from './use-device';
 
 const DINING: Array<{ value: DiningOption; label: string }> = [{ value: 'eat_in', label: 'Eat in' }, { value: 'takeaway', label: 'Takeaway' }, { value: 'delivery', label: 'Delivery' }];
 const MODE_LABELS = { counter: 'Counter', quick: 'Quick serve' } as const;
@@ -18,6 +18,7 @@ const ADD_ERRORS = {
   unavailable: 'Product unavailable', serial_item: 'Sell serial items on the online sell page.', invalid_quantity: 'Enter a valid quantity', sold_out: 'Sold out today',
   amount_required: 'Type the amount to sell', below_minimum_amount: 'Below the minimum amount', invalid_choices: 'Pick the combo choices first',
 } as const;
+const EMPTY_ORDER = { externalOrderId: '', name: '', phone: '', pickup: '', address: '' };
 const btn = 'rounded border px-3 py-2';
 const primary = 'rounded bg-blue-800 px-4 py-2 text-white disabled:opacity-50';
 
@@ -123,15 +124,75 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     try { sessionStorage.setItem(`pos-mode-${slug}`, m); } catch { /* private mode: falls back to the first mode */ }
   };
   // the pack line follows the cart and the dining option (spec 6.56); quick serve is always eat in
+  const staffPermissions = cache.staff.find((s) => s.id === d.cashier?.staffId)?.permissions ?? [];
+  // spec 6.57: delivery apps, phone, and WhatsApp are counter orders with their own prices
+  const channels = cache.food && staffPermissions.includes('enter_channel_orders') ? cache.channels : [];
+  const [channelId, setChannelId] = useState('');
+  const channel = mode === 'counter' ? channels.find((c) => c.id === channelId) ?? null : null;
+  const appCollects = channel?.kind === 'delivery_app' && channel.collectedBy === 'app';
+  const [order, setOrder] = useState(EMPTY_ORDER);
+  const [collecting, setCollecting] = useState<(CollectableOrder & { orderNumber: string }) | null>(null);
+  const [collectNumber, setCollectNumber] = useState('');
+  const [slip, setSlip] = useState<{ orderNumber: string; lines: Array<{ lineId: string; label: string; quantity: string }> } | null>(null);
   const cart = useMemo(() => (mode ? withPackLine(cache, lines, mode === 'quick' ? 'eat_in' : dining) : lines), [cache, lines, mode, dining]);
-  const priced = useMemo(() => priceCart(cache, cart, today), [cache, cart, today]);
+  const priced = useMemo(() => priceCart(cache, cart, today, { priceListId: channel?.priceListId ?? null }), [cache, cart, today, channel]);
   const hits = useMemo(() => searchCatalogue(cache, query, today), [cache, query, today]);
   const soldOutToday = (variantId: string) => cache.food?.businessDate === day && cache.food.soldOutVariantIds.includes(variantId);
-  const staffPermissions = cache.staff.find((s) => s.id === d.cashier?.staffId)?.permissions ?? [];
   // a by-amount item opens the amount pad; a combo walks through its slots (spec 6.52, 6.53)
   const [pending, setPending] = useState<{ variantId: string; unitId: string; mode: 'amount' | 'combo' } | null>(null);
 
   if (receipt) return <ReceiptView receipt={receipt} shop={cache.shop.name} register={cache.register.name} onNew={() => setReceipt(null)} />;
+  if (slip) return <PhoneSlip slip={slip} customer={order.name} onNew={() => { setSlip(null); setOrder(EMPTY_ORDER); setChannelId(''); }} />;
+
+  const resetChannel = () => { setChannelId(''); setOrder(EMPTY_ORDER); setCollecting(null); setCollectNumber(''); };
+  const pickChannel = (id: string) => {
+    setChannelId(id);
+    if (id && dining === 'eat_in') setDining('takeaway'); // channel orders are takeaway or delivery
+  };
+  // shortcut: a pickup time is read as Ghana time (UTC+0); use the shop timezone when other countries join
+  const pickupAt = order.pickup ? `${day}T${order.pickup}:00Z` : undefined;
+  const channelFood = (): Partial<FoodChoice> => {
+    if (!channel) return {};
+    if (collecting) return { channelId: channel.id, kitchenOrderId: collecting.kitchenOrderId };
+    if (channel.kind === 'delivery_app') return { channelId: channel.id, externalOrderId: order.externalOrderId.trim() };
+    return {
+      channelId: channel.id, customer: { name: order.name, phone: order.phone },
+      ...(pickupAt ? { pickupAt } : {}), ...(order.address.trim() ? { deliveryAddress: order.address.trim() } : {}),
+    };
+  };
+  const payLater = async () => {
+    if (!channel || channel.kind === 'delivery_app') return;
+    if (!d.reachable) return setMessage('Connect to the internet to send an unpaid order.');
+    setBusy(true);
+    const r = await createPhoneOrderAction(slug, {
+      channelId: channel.id, diningOption: dining === 'delivery' ? 'delivery' : 'takeaway', customer: { name: order.name, phone: order.phone },
+      ...(pickupAt ? { pickupAt } : {}), ...(order.address.trim() ? { deliveryAddress: order.address.trim() } : {}),
+      lines: lines.map((l) => ({
+        variantId: l.variantId, unitId: l.unitId, quantity: l.quantity,
+        ...(l.amountPesewas != null ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
+      })),
+    });
+    setBusy(false);
+    if (!r.ok) return setMessage(r.error);
+    setSlip({ orderNumber: r.orderNumber, lines: priced.lines.filter((l) => l.lineId !== 'pack') });
+    setLines([]);
+    setMessage(null);
+  };
+  const collect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const r = await findPhoneOrderAction(slug, collectNumber.trim());
+    if (!r.ok) return setMessage(r.error);
+    if (!channels.some((c) => c.id === r.order.channelId)) return setMessage('That order’s channel is no longer in use.');
+    setCollecting({ ...r.order, orderNumber: collectNumber.trim() });
+    setChannelId(r.order.channelId);
+    setDining(r.order.diningOption);
+    // the order's lines, locked: the cashier takes payment for exactly what was ordered, at today's prices
+    setLines(r.order.lines.map((p) => ({
+      lineId: crypto.randomUUID(), variantId: p.variantId, unitId: p.unitId, quantity: p.quantity, labelPricePesewas: null,
+      amountPesewas: p.byAmount ? p.amountPesewas ?? null : null, ...(p.choices?.length ? { choices: p.choices } : {}),
+    })));
+    setMessage(null);
+  };
 
   const toggleSoldOut = async (variantId: string) => {
     if (!d.reachable) return setMessage('Connect to the internet to mark sold out');
@@ -170,15 +231,20 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     else setMessage(hits.length ? 'Pick the item below.' : 'Product not found');
   };
   const pay = async () => {
-    const parsed = tenders.map((t) => ({ method: t.method, amountPesewas: parseCedis(t.amount) ?? -1, reference: t.reference }));
+    if (channel?.kind === 'delivery_app' && !order.externalOrderId.trim()) return setMessage('Enter the app order ID.');
+    // an app that collects the money pays later: one settlement for the total, its reference the platform order ID (spec 6.57)
+    const parsed: TenderInput[] = appCollects
+      ? [{ method: 'channel_settlement', amountPesewas: priced.totals.totalPesewas, reference: order.externalOrderId.trim() }]
+      : tenders.map((t) => ({ method: t.method, amountPesewas: parseCedis(t.amount) ?? -1, reference: t.reference }));
     setBusy(true);
-    const r = await d.completeSale(priced.lines, priced.totals, parsed, mode ? { serviceMode: mode, diningOption: dining } : undefined);
+    const r = await d.completeSale(priced.lines, priced.totals, parsed, mode ? { serviceMode: mode, diningOption: dining, ...channelFood() } : undefined);
     setBusy(false);
     if (!r.ok) return setMessage(r.error);
     setReceipt(r.receipt);
     setLines([]);
     setDining('eat_in');
     setTenders([{ method: 'cash', amount: '', reference: '' }]);
+    resetChannel();
     setMessage(null);
   };
 
@@ -196,11 +262,19 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
           )}
           {mode === 'counter' && (
             <div role="group" aria-label="Dining option" className="flex gap-1">
-              {DINING.map((o) => (
-                <button key={o.value} type="button" aria-pressed={dining === o.value} onClick={() => setDining(o.value)}
+              {DINING.filter((o) => !channel || o.value !== 'eat_in').map((o) => (
+                <button key={o.value} type="button" aria-pressed={dining === o.value} disabled={!!collecting} onClick={() => setDining(o.value)}
                   className={`${btn} ${dining === o.value ? 'bg-gray-900 text-white' : ''}`}>{o.label}</button>
               ))}
             </div>
+          )}
+          {mode === 'counter' && channels.length > 0 && (
+            <label className="flex items-center gap-1 text-sm">Channel
+              <select value={channelId} disabled={!!collecting} onChange={(e) => pickChannel(e.target.value)} className="rounded border px-2 py-2">
+                <option value="">Walk-in</option>
+                {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </label>
           )}
           {d.reachable && staffPermissions.includes('run_kitchen') && <a href={`/${slug}/app/kitchen`} className="ml-auto text-sm text-blue-800 underline">Kitchen</a>}
         </div>
@@ -213,11 +287,36 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         <ComboPicker key={pending.variantId} slots={comboSlotsOf(cache, pending.variantId)} hidden={(id) => soldOutToday(id)} onCancel={() => setPending(null)}
           onAdd={(choices) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, choices })} />
       )}
-      <form onSubmit={scan} className="flex gap-2">
-        <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Scan a barcode or type a name"
-          className="flex-1 rounded border border-gray-400 px-3 py-2" aria-label="Scan or search" />
-        <button type="submit" className={btn}>Add</button>
-      </form>
+      {mode === 'counter' && !collecting && channels.some((c) => c.kind !== 'delivery_app') && (
+        <form onSubmit={collect} className="flex gap-2 text-sm">
+          <input value={collectNumber} onChange={(e) => setCollectNumber(e.target.value)} placeholder="Order number" aria-label="Phone order number" className="w-32 rounded border px-2 py-2" />
+          <button type="submit" className={btn} disabled={!collectNumber.trim() || !d.reachable}>Collect phone order</button>
+        </form>
+      )}
+      {collecting && (
+        <p role="status" className="flex items-center gap-2 rounded bg-blue-50 p-2 text-sm">
+          <span className="flex-1">Collecting order {collecting.orderNumber} for {collecting.customerName}. Items cannot be changed.</span>
+          <button type="button" className={btn} onClick={() => { resetChannel(); setLines([]); }}>Cancel</button>
+        </p>
+      )}
+      {channel && !collecting && (channel.kind === 'delivery_app' ? (
+        <input value={order.externalOrderId} onChange={(e) => setOrder({ ...order, externalOrderId: e.target.value })} maxLength={64} required
+          placeholder={`${channel.name} order ID`} aria-label="App order ID" className="rounded border border-gray-400 px-3 py-2" />
+      ) : (
+        <div className="grid gap-2 text-sm sm:grid-cols-2">
+          <input value={order.name} onChange={(e) => setOrder({ ...order, name: e.target.value })} maxLength={80} placeholder="Customer name" aria-label="Customer name" className="rounded border px-2 py-2" />
+          <input value={order.phone} onChange={(e) => setOrder({ ...order, phone: e.target.value })} inputMode="tel" placeholder="Phone, e.g. 024 123 4567" aria-label="Customer phone" className="rounded border px-2 py-2" />
+          <label className="flex items-center gap-2">Pickup time<input type="time" value={order.pickup} onChange={(e) => setOrder({ ...order, pickup: e.target.value })} className="rounded border px-2 py-2" /></label>
+          <input value={order.address} onChange={(e) => setOrder({ ...order, address: e.target.value })} maxLength={200} placeholder="Or delivery address / GhanaPostGPS" aria-label="Delivery address" className="rounded border px-2 py-2" />
+        </div>
+      ))}
+      {!collecting && (
+        <form onSubmit={scan} className="flex gap-2">
+          <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Scan a barcode or type a name"
+            className="flex-1 rounded border border-gray-400 px-3 py-2" aria-label="Scan or search" />
+          <button type="submit" className={btn}>Add</button>
+        </form>
+      )}
       {message && <p role="alert" className="text-sm text-red-700">{message}</p>}
       {query && hits.length > 0 && (
         <ul className={mode === 'quick' ? 'grid grid-cols-2 gap-2' : 'flex flex-col gap-1'}>
@@ -245,13 +344,13 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
             <tr key={l.lineId} className="border-b">
               <td className="py-2">{l.label} <span className="text-gray-600">({l.unitName})</span></td>
               <td>
-                {l.labelPricePesewas === null && l.lineId !== 'pack' && l.amountPesewas == null
+                {l.labelPricePesewas === null && l.lineId !== 'pack' && l.amountPesewas == null && !collecting
                   ? <input type="number" step="any" min="0" value={Number(l.quantity)} onChange={(e) => setQty(l.lineId, e.target.value)} className="w-20 rounded border px-2 py-1" aria-label={`Quantity of ${l.label}`} />
                   : l.quantity}
               </td>
               <td className="text-right">{formatCedis(priced.totals.lines[i].totalPesewas)}</td>
               <td className="text-right">
-                {l.lineId !== 'pack' && <button type="button" className="px-2 text-red-700" onClick={() => setQty(l.lineId, '0')} aria-label={`Remove ${l.label}`}>✕</button>}
+                {l.lineId !== 'pack' && !collecting && <button type="button" className="px-2 text-red-700" onClick={() => setQty(l.lineId, '0')} aria-label={`Remove ${l.label}`}>✕</button>}
               </td>
             </tr>
           ))}
@@ -262,6 +361,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         <dt>Tax</dt><dd className="text-right">{formatCedis(priced.totals.taxPesewas)}</dd>
         <dt className="text-lg font-semibold">Total</dt><dd className="text-right text-lg font-semibold">{formatCedis(priced.totals.totalPesewas)}</dd>
       </dl>
+      {appCollects ? <p className="text-sm">Paid by the app: {channel!.name} pays the shop later.</p> : (
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1 text-sm">Payment{d.reachable ? '' : ' (offline: cash and manually confirmed payments only)'}</legend>
         {tenders.map((t, i) => (
@@ -280,7 +380,13 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         ))}
         <button type="button" className={`${btn} self-start text-sm`} onClick={() => setTenders((ts) => [...ts, { method: 'cash', amount: '', reference: '' }])}>Split payment</button>
       </fieldset>
-      <button type="button" disabled={busy || priced.lines.length === 0} onClick={pay} className={primary}>{busy ? 'Saving…' : 'Complete sale'}</button>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={busy || priced.lines.length === 0} onClick={pay} className={primary}>{busy ? 'Saving…' : appCollects ? 'Send order' : 'Complete sale'}</button>
+        {channel && channel.kind !== 'delivery_app' && !collecting && (
+          <button type="button" disabled={busy || lines.length === 0 || !d.reachable} onClick={payLater} className={btn}>Pay on collection</button>
+        )}
+      </div>
     </section>
   );
 }
@@ -357,7 +463,7 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
       <p className="flex justify-between"><span>Tax</span><span>{formatCedis(receipt.totals.taxPesewas)}</span></p>
       <p className="flex justify-between font-semibold"><span>Total</span><span>{formatCedis(receipt.totals.totalPesewas)}</span></p>
       {receipt.tenders.map((t, i) => (
-        <p key={i} className="flex justify-between"><span>{METHODS.find((m) => m.value === t.method)?.label}{t.reference ? ` (${t.reference})` : ''}</span><span>{formatCedis(t.amountPesewas)}</span></p>
+        <p key={i} className="flex justify-between"><span>{METHODS.find((m) => m.value === t.method)?.label ?? 'Paid through delivery app'}{t.reference ? ` (${t.reference})` : ''}</span><span>{formatCedis(t.amountPesewas)}</span></p>
       ))}
       <p className="flex justify-between"><span>Change</span><span>{formatCedis(receipt.changeDuePesewas)}</span></p>
       {receipt.serviceMode === 'counter' && receipt.orderNumber && (
@@ -372,6 +478,22 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
       <div className="flex gap-2 print:hidden">
         <button type="button" className={btn} onClick={() => window.print()}>Print</button>
         <button type="button" className={primary} onClick={onNew}>New sale</button>
+      </div>
+    </section>
+  );
+}
+
+/** The kitchen slip of an unpaid phone order: its number is what the customer gives when collecting (spec 6.57). */
+function PhoneSlip({ slip, customer, onNew }: { slip: { orderNumber: string; lines: Array<{ lineId: string; label: string; quantity: string }> }; customer: string; onNew: () => void }) {
+  return (
+    <section className="flex max-w-sm flex-col gap-2 text-sm">
+      <p className="text-base font-semibold">Kitchen · not paid</p>
+      <p className="text-5xl font-extrabold">{slip.orderNumber}</p>
+      <p>{customer} pays when collecting.</p>
+      <ul>{slip.lines.map((l) => <li key={l.lineId}>{Number(l.quantity)} × {l.label}</li>)}</ul>
+      <div className="flex gap-2 print:hidden">
+        <button type="button" className={btn} onClick={() => window.print()}>Print</button>
+        <button type="button" className={primary} onClick={onNew}>New order</button>
       </div>
     </section>
   );

@@ -6,6 +6,8 @@ import { getDb } from '@/db/client';
 import { cookieOptions, DEVICE_COOKIE, SESSION_COOKIE } from '@/lib/cookies';
 import { AccessError, requireContext } from '@/server/context';
 import { type PinError, registerBranch, switchCashierWithPin } from '@/server/devices';
+import type { DiningOption } from '@/lib/food';
+import { createPhoneOrder, findPhoneOrder, type PhoneOrderInput } from '@/server/phone-orders';
 import { markAvailable, markSoldOut } from '@/server/sold-out';
 
 const MESSAGES: Record<PinError, string> = {
@@ -54,4 +56,41 @@ export async function markSoldOutAction(slug: string, variantId: string) {
 
 export async function markAvailableAction(slug: string, variantId: string) {
   return soldOutChange(slug, variantId, false);
+}
+
+const PHONE_MESSAGES: Record<string, string> = {
+  invalid_input: 'Check the order and try again.', no_register: 'Take phone orders from a till.', unknown_channel: 'Pick the phone or WhatsApp channel.',
+  customer_details_required: 'Enter the name, a Ghana phone number, and a pickup time or address.', unknown_item: 'An item is no longer in the catalogue.',
+  not_sellable: 'An item cannot be sold.', invalid_quantity: 'Check the quantities and amounts.', invalid_choices: 'Pick the combo choices again.',
+  sold_out: 'An item is sold out today.',
+};
+
+async function channelCtx(slug: string) {
+  try {
+    return await requireContext(getDb(), { slug, sessionToken: (await cookies()).get(SESSION_COOKIE)?.value, permission: 'enter_channel_orders' }, new Date());
+  } catch (e) {
+    if (e instanceof AccessError) return null;
+    throw e;
+  }
+}
+
+/** Spec 6.57: a phone or WhatsApp order sent to the kitchen now and paid when collected. Online only. */
+export async function createPhoneOrderAction(slug: string, input: PhoneOrderInput): Promise<{ ok: true; orderNumber: string } | { ok: false; error: string }> {
+  const ctx = await channelCtx(slug);
+  if (!ctx) return { ok: false, error: 'Switch in with your PIN to take phone orders.' };
+  const r = await createPhoneOrder(getDb(), ctx, input, new Date());
+  return r.ok ? { ok: true, orderNumber: r.orderNumber } : { ok: false, error: PHONE_MESSAGES[r.error] ?? 'Something went wrong. Try again.' };
+}
+
+export type CollectableOrder = {
+  kitchenOrderId: string; channelId: string; diningOption: DiningOption; customerName: string;
+  lines: Array<{ variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }> }>;
+};
+
+/** Today's unpaid phone order with this number, to load into a locked cart for payment. */
+export async function findPhoneOrderAction(slug: string, orderNumber: string): Promise<{ ok: true; order: CollectableOrder } | { ok: false; error: string }> {
+  const ctx = await channelCtx(slug);
+  if (!ctx) return { ok: false, error: 'Switch in with your PIN to collect phone orders.' };
+  const order = await findPhoneOrder(getDb(), ctx, orderNumber, new Date());
+  return order ? { ok: true, order } : { ok: false, error: 'No unpaid phone order with that number today.' };
 }
