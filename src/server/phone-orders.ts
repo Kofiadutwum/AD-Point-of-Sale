@@ -5,13 +5,11 @@ import type { Db, Tx } from '@/db/client';
 import { foodSettings, kitchenOrders, type PendingLine, products, registers, salesChannels, tenants, users, variants, variantUnits } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
-import { parseQuantity, validSaleQuantity } from '@/lib/decimal';
-import { checkAddOns, type DiningOption, phoneCustomer } from '@/lib/food';
+import { type DiningOption, phoneCustomer } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid } from './products';
-import { loadAddOnGroups, nextOrderNumber, priceCombo } from './sales';
-import { isSoldOut } from './sold-out';
+import { checkOrderLine, nextOrderNumber } from './sales';
 
 const lineSchema = z.object({
   variantId: z.uuid(), unitId: z.uuid(), quantity: z.string().max(20), byAmount: z.boolean().optional(),
@@ -62,34 +60,11 @@ export async function createPhoneOrder(db: Db, ctx: Ctx, input: PhoneOrderInput,
     const [settings] = await tx.select({ packId: foodSettings.packVariantId }).from(foodSettings);
     for (const l of o.lines) {
       if (l.variantId === settings?.packId) continue;
-      const quantity = parseQuantity(l.quantity);
-      const [item] = await tx.select({
-        isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, allowsFractions: variants.allowsFractions, sellable: variants.sellable,
-        variantStatus: variants.status, productStatus: products.status, kind: variants.kind, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
-      }).from(variantUnits).innerJoin(variants, eq(variants.id, variantUnits.variantId)).innerJoin(products, eq(products.id, variants.productId))
-        .where(and(eq(variantUnits.id, l.unitId), eq(variantUnits.variantId, l.variantId)));
-      if (!item) return fail('unknown_item');
-      if (!item.sellable || !item.unitSellable || item.variantStatus === 'archived' || item.productStatus === 'archived') return fail('not_sellable');
-      if (!quantity || !validSaleQuantity(quantity, item.isBase && item.allowsFractions)) return fail('invalid_quantity');
-      const byAmount = l.byAmount === true;
-      if (item.sellByAmount !== byAmount || (byAmount && (quantity !== '1.000' || (l.amountPesewas ?? 0) < (item.minAmount ?? 1)))) return fail('invalid_quantity');
-      if (item.kind !== 'combo' && l.choices?.length) return fail('invalid_choices');
-      if (item.kind === 'combo') {
-        const combo = await priceCombo(tx, l.variantId, l.choices ?? [], till.branchId, till.day);
-        if (combo === 'sold_out') return fail('sold_out');
-        if (typeof combo !== 'object') return fail('invalid_choices');
-      }
-      // the same add-on rules as a sale (spec 4.24); prices are charged at collection
-      if (l.addOns?.length && (byAmount || item.kind === 'combo')) return fail('invalid_add_ons');
-      if (!byAmount && item.kind !== 'combo' && checkAddOns(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []) !== 'ok') return fail('invalid_add_ons');
-      lines.push({
-        variantId: l.variantId, unitId: l.unitId, quantity,
-        ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
-        ...(byAmount ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
-      });
+      const line = await checkOrderLine(tx, l, till.branchId, till.day);
+      if (typeof line === 'string') return fail(line);
+      lines.push(line);
     }
     if (!lines.length) return fail('invalid_input');
-    if ((await isSoldOut(tx, till.branchId, [...new Set(lines.map((l) => l.variantId))], till.day)).size) return fail('sold_out');
 
     const orderNumber = await nextOrderNumber(tx, ctx.tenantId, till.branchId, till.day);
     const [row] = await tx.insert(kitchenOrders).values({

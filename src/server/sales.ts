@@ -313,6 +313,42 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
 
 type PricedLine = { variantId: string; quantity: string };
 
+export type OrderLineInput = {
+  variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number;
+  choices?: Array<{ slotId: string; variantId: string }>; addOns?: Array<{ groupId: string; optionId: string }>; note?: string;
+};
+export type OrderLineError = 'unknown_item' | 'not_sellable' | 'invalid_quantity' | 'invalid_choices' | 'invalid_add_ons' | 'sold_out';
+
+/** Spec 6.37, 6.57: a line ordered now and paid later (phone order, table ticket): a sale's item checks without prices. */
+export async function checkOrderLine(tx: Tx, l: OrderLineInput, branchId: string, day: string): Promise<PendingLine | OrderLineError> {
+  const quantity = parseQuantity(l.quantity);
+  const [item] = await tx.select({
+    isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, allowsFractions: variants.allowsFractions, sellable: variants.sellable,
+    variantStatus: variants.status, productStatus: products.status, kind: variants.kind, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
+  }).from(variantUnits).innerJoin(variants, eq(variants.id, variantUnits.variantId)).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(eq(variantUnits.id, l.unitId), eq(variantUnits.variantId, l.variantId)));
+  if (!item) return 'unknown_item';
+  if (!item.sellable || !item.unitSellable || item.variantStatus === 'archived' || item.productStatus === 'archived') return 'not_sellable';
+  if (!quantity || !validSaleQuantity(quantity, item.isBase && item.allowsFractions)) return 'invalid_quantity';
+  const byAmount = l.byAmount === true;
+  if (item.sellByAmount !== byAmount || (byAmount && (quantity !== '1.000' || (l.amountPesewas ?? 0) < (item.minAmount ?? 1)))) return 'invalid_quantity';
+  if (item.kind !== 'combo' && l.choices?.length) return 'invalid_choices';
+  if (item.kind === 'combo') {
+    const combo = await priceCombo(tx, l.variantId, l.choices ?? [], branchId, day);
+    if (combo === 'sold_out') return 'sold_out';
+    if (typeof combo !== 'object') return 'invalid_choices';
+  }
+  if (l.addOns?.length && (byAmount || item.kind === 'combo')) return 'invalid_add_ons';
+  if (!byAmount && item.kind !== 'combo' && checkAddOns(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []) !== 'ok') return 'invalid_add_ons';
+  if ((await isSoldOut(tx, branchId, [l.variantId], day)).size) return 'sold_out';
+  const note = l.note?.trim();
+  return {
+    variantId: l.variantId, unitId: l.unitId, quantity,
+    ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(note ? { note } : {}),
+    ...(byAmount ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
+  };
+}
+
 /** The item's add-on groups in order, with every option (active or not) and its name (spec 4.24). */
 export async function loadAddOnGroups(tx: Tx, variantId: string) {
   const groups = await tx.select({ id: addOnGroups.id, name: addOnGroups.name, minChoices: addOnGroups.minChoices, maxChoices: addOnGroups.maxChoices })

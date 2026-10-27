@@ -1,16 +1,23 @@
 import 'server-only';
-import { and, asc, count, eq, inArray, ne } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  addOnOptions, branches, diningTables, type KitchenStation, products, registers, ticketLines, tickets, type TicketLineStatus, type TicketStatus, users, variants,
+  addOnOptions, branches, diningTables, foodSettings, type KitchenStation, products, registers, tenants, ticketLines, tickets, type TicketLineStatus, type TicketStatus, users,
+  variants, variantUnits, wastageEntries,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
-import { DINING_OPTIONS, type DiningOption } from '@/lib/food';
+import { businessDate } from '@/lib/dates';
+import { multiplyQty } from '@/lib/decimal';
+import { DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS } from '@/lib/food';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid, itemLabel } from './products';
-import { isUniqueViolation } from './sales';
+import { verifyStaffPin } from './devices';
+import { costFor } from './pots';
+import { checkOrderLine, isUniqueViolation, type OrderLineError } from './sales';
+import { deductRecipe } from './stock';
+import { costOf } from './variants';
 
 export type TicketView = {
   id: string; label: string; tableId: string | null; status: TicketStatus; diningOption: DiningOption; waiterName: string; openedAt: Date;
@@ -99,5 +106,187 @@ export async function listOpenTickets(db: Db, ctx: Ctx, branchId: string): Promi
       id: t.id, label: t.label, tableId: t.tableId, status: t.status, diningOption: t.diningOption, waiterName, openedAt: t.openedAt,
       lineCount: Number(counts.find((c) => c.ticketId === t.id)?.n ?? 0),
     }));
+  });
+}
+
+/** The ticket, locked, when it is at one of the user's branches; 'not_open' once paid, merged, or cancelled. */
+async function openTicketRow(tx: Tx, ctx: Ctx, ticketId: string) {
+  if (!isUuid(ticketId)) return 'not_found' as const;
+  const [t] = await tx.select().from(tickets).where(eq(tickets.id, ticketId)).for('update');
+  const [me] = await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId));
+  if (!t || !me?.branchIds.includes(t.branchId)) return 'not_found' as const;
+  return t.status === 'open' ? t : ('not_open' as const);
+}
+
+async function shopDay(tx: Tx, tenantId: string, now: Date): Promise<string> {
+  const [shop] = await tx.select({ timezone: tenants.timezone, cutoff: tenants.businessDayCutoff }).from(tenants).where(eq(tenants.id, tenantId));
+  return businessDate(shop.timezone, shop.cutoff, now);
+}
+
+const lineSchema = z.object({
+  variantId: z.uuid(), unitId: z.uuid(), quantity: z.string().max(20), byAmount: z.boolean().optional(),
+  amountPesewas: z.number().int().min(1).max(2_000_000_000).optional(),
+  choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
+  addOns: z.array(z.object({ groupId: z.uuid(), optionId: z.uuid() })).max(30).optional(),
+  note: z.string().trim().max(140).optional(),
+});
+type AddLineResult = { ok: true; lineId: string } | Fail<'not_found' | 'not_open' | 'invalid_input' | OrderLineError>;
+
+/** Spec 6.37: an item added to an open ticket at its product's station; it is priced when the ticket is paid. */
+export async function addTicketLine(db: Db, ctx: Ctx, ticketId: string, line: z.input<typeof lineSchema>, now: Date): Promise<AddLineResult> {
+  assertPermission(ctx, 'take_orders');
+  const parsed = lineSchema.safeParse(line);
+  if (!parsed.success) return fail('invalid_input');
+  const l = parsed.data;
+  return withTenant(db, ctx.tenantId, async (tx): Promise<AddLineResult> => {
+    const t = await openTicketRow(tx, ctx, ticketId);
+    if (typeof t === 'string') return fail(t);
+    const [settings] = await tx.select({ packId: foodSettings.packVariantId }).from(foodSettings);
+    if (l.variantId === settings?.packId) return fail('invalid_input'); // packs are added when the ticket is paid
+    const checked = await checkOrderLine(tx, l, t.branchId, await shopDay(tx, ctx.tenantId, now));
+    if (typeof checked === 'string') return fail(checked);
+    const [{ station }] = await tx.select({ station: products.kitchenStation }).from(variants)
+      .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.id, l.variantId));
+    const [{ last }] = await tx.select({ last: sql<number>`coalesce(max(${ticketLines.lineNo}), 0)::int` }).from(ticketLines).where(eq(ticketLines.ticketId, t.id));
+    const [row] = await tx.insert(ticketLines).values({
+      tenantId: ctx.tenantId, ticketId: t.id, lineNo: Number(last) + 1, variantId: checked.variantId, unitId: checked.unitId, quantity: checked.quantity,
+      byAmount: checked.byAmount === true, amountPesewas: checked.amountPesewas ?? null, choices: checked.choices ?? [], addOns: checked.addOns ?? [],
+      note: checked.note ?? null, station,
+    }).returning({ id: ticketLines.id });
+    return { ok: true, lineId: row.id };
+  });
+}
+
+/** A line not yet sent can be taken off freely; a sent one needs a void. */
+export async function removeTicketLine(db: Db, ctx: Ctx, lineId: string): Promise<{ ok: true } | Fail<'not_found' | 'already_sent'>> {
+  assertPermission(ctx, 'take_orders');
+  if (!isUuid(lineId)) return fail('not_found');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<{ ok: true } | Fail<'not_found' | 'already_sent'>> => {
+    const [line] = await tx.select().from(ticketLines).where(eq(ticketLines.id, lineId));
+    if (!line || typeof (await openTicketRow(tx, ctx, line.ticketId)) === 'string') return fail('not_found');
+    if (line.kitchenStatus !== 'new') return fail('already_sent');
+    await tx.delete(ticketLines).where(eq(ticketLines.id, line.id));
+    return { ok: true };
+  });
+}
+
+type SendResult = { ok: true; sent: Record<KitchenStation, number> } | Fail<'not_found' | 'not_open' | 'nothing_new'>;
+
+/** Spec 6.37: every new line goes to its station at once; the table now waits for food. */
+export async function sendToKitchen(db: Db, ctx: Ctx, ticketId: string, now: Date): Promise<SendResult> {
+  assertPermission(ctx, 'take_orders');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<SendResult> => {
+    const t = await openTicketRow(tx, ctx, ticketId);
+    if (typeof t === 'string') return fail(t);
+    const sent = await tx.update(ticketLines).set({ kitchenStatus: 'sent', sentAt: now })
+      .where(and(eq(ticketLines.ticketId, t.id), eq(ticketLines.kitchenStatus, 'new'))).returning({ station: ticketLines.station });
+    if (!sent.length) return fail('nothing_new');
+    if (t.tableId) await tx.update(diningTables).set({ status: 'waiting_for_food' }).where(eq(diningTables.id, t.tableId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'ticket_sent', recordType: 'ticket', recordId: t.id, changes: { lines: sent.length } });
+    return { ok: true, sent: Object.fromEntries(KITCHEN_STATIONS.map((st) => [st, sent.filter((x) => x.station === st).length])) as Record<KitchenStation, number> };
+  });
+}
+
+type VoidResult = { ok: true } | Fail<'not_found' | 'not_sent' | 'invalid_input' | 'self_approval' | 'not_authorised' | 'wrong_pin' | 'pin_locked'>;
+
+/** Spec 6.37: a line already sent is voided only with a reason and another person's manager PIN; a prepared dish is recorded as waste. */
+export async function voidSentLine(db: Db, ctx: Ctx, input: { lineId: string; reason: string; prepared: boolean; approverId: string; approverPin: string }, now: Date): Promise<VoidResult> {
+  assertPermission(ctx, 'take_orders');
+  const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+  if (reason.length < 1 || reason.length > 200 || !isUuid(input.lineId) || !isUuid(input.approverId) || typeof input.approverPin !== 'string') return fail('invalid_input');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<VoidResult> => {
+    const [line] = await tx.select().from(ticketLines).where(eq(ticketLines.id, input.lineId));
+    if (!line) return fail('not_found');
+    const t = await openTicketRow(tx, ctx, line.ticketId);
+    if (typeof t === 'string') return fail('not_found');
+    if (line.kitchenStatus !== 'sent' && line.kitchenStatus !== 'ready') return fail('not_sent');
+    if (input.approverId === ctx.userId) return fail('self_approval');
+    const [approver] = await tx.select().from(users).where(eq(users.id, input.approverId)).for('update');
+    if (!approver || approver.status !== 'active' || !approver.permissions.includes('void_sent_items') || !approver.branchIds.includes(t.branchId)) return fail('not_authorised');
+    const pin = await verifyStaffPin(tx, { tenantId: ctx.tenantId, staff: approver, pin: input.approverPin, registerId: ctx.registerId ?? null }, now);
+    if (pin !== 'ok') return fail(pin);
+    await tx.update(ticketLines).set({ kitchenStatus: 'void', voidReason: reason, voidedBy: ctx.userId, approvedBy: approver.id }).where(eq(ticketLines.id, line.id));
+    if (input.prepared === true) await wasteVoidedLine(tx, ctx, t.branchId, line, now);
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: approver.id, action: 'ticket_line_voided', recordType: 'ticket', recordId: t.id,
+      changes: { lineNo: line.lineNo, reason, prepared: input.prepared === true, requestedBy: ctx.userId } });
+    return { ok: true };
+  });
+}
+
+/** "Already prepared": the dish was made, so its ingredients leave stock as waste with their cost. */
+async function wasteVoidedLine(tx: Tx, ctx: Ctx, branchId: string, line: typeof ticketLines.$inferSelect, now: Date): Promise<void> {
+  const [item] = await tx.select({ kind: variants.kind, factor: variantUnits.factor }).from(variantUnits)
+    .innerJoin(variants, eq(variants.id, variantUnits.variantId)).where(eq(variantUnits.id, line.unitId));
+  // shortcut: a combo or by-amount line is voided without waste (its parts vary, or its pot is counted at closing); record those on the kitchen stock page
+  if (!item || item.kind === 'combo' || line.byAmount) return;
+  const quantity = multiplyQty(line.quantity, item.factor);
+  const [w] = await tx.insert(wastageEntries).values({
+    tenantId: ctx.tenantId, branchId, variantId: line.variantId, businessDate: await shopDay(tx, ctx.tenantId, now), quantity, reason: 'spoiled',
+    costPesewas: costFor(await costOf(tx, line.variantId), quantity), note: 'voided after sending', userId: ctx.userId,
+  }).returning({ id: wastageEntries.id });
+  await deductRecipe(tx, { tenantId: ctx.tenantId, branchId, userId: ctx.userId }, line.variantId, quantity, 'waste', { type: 'wastage', id: w.id });
+}
+
+type MoveResult = { ok: true; merged: boolean } | Fail<'not_found' | 'not_open' | 'invalid_input'>;
+
+/** Spec 6.37: lines move to another open ticket of the branch; moving all of them merges the tickets and frees the first table. */
+export async function moveTicketLines(db: Db, ctx: Ctx, input: { fromTicketId: string; toTicketId: string; lineIds: string[] }, now: Date): Promise<MoveResult> {
+  assertPermission(ctx, 'take_orders');
+  const ids = Array.isArray(input.lineIds) ? input.lineIds : [];
+  if (!ids.length || ids.length > 200 || !ids.every(isUuid) || new Set(ids).size !== ids.length || input.fromTicketId === input.toTicketId) return fail('invalid_input');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<MoveResult> => {
+    // lock both tickets in id order, so two moves between the same tickets cannot deadlock
+    const [first, second] = [input.fromTicketId, input.toTicketId].sort();
+    const a = await openTicketRow(tx, ctx, first);
+    const b = await openTicketRow(tx, ctx, second);
+    if (typeof a === 'string') return fail(a);
+    if (typeof b === 'string') return fail(b);
+    const [from, to] = a.id === input.fromTicketId ? [a, b] : [b, a];
+    if (from.branchId !== to.branchId) return fail('invalid_input');
+    const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, from.id), inArray(ticketLines.id, ids))).orderBy(asc(ticketLines.lineNo));
+    if (lines.length !== ids.length || lines.some((l) => l.kitchenStatus === 'void')) return fail('invalid_input');
+    const [{ last }] = await tx.select({ last: sql<number>`coalesce(max(${ticketLines.lineNo}), 0)::int` }).from(ticketLines).where(eq(ticketLines.ticketId, to.id));
+    for (const [i, l] of lines.entries()) await tx.update(ticketLines).set({ ticketId: to.id, lineNo: Number(last) + i + 1 }).where(eq(ticketLines.id, l.id));
+    const [{ left }] = await tx.select({ left: count() }).from(ticketLines).where(and(eq(ticketLines.ticketId, from.id), ne(ticketLines.kitchenStatus, 'void')));
+    const merged = Number(left) === 0;
+    if (merged) {
+      await tx.update(tickets).set({ status: 'merged', closedAt: now }).where(eq(tickets.id, from.id));
+      if (from.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, from.tableId));
+    }
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: merged ? 'ticket_merged' : 'ticket_lines_moved', recordType: 'ticket',
+      recordId: from.id, changes: { toTicketId: to.id, lines: lines.length } });
+    return { ok: true, merged };
+  });
+}
+
+/** The bill is printed: the table shows it is waiting to pay. */
+export async function printBill(db: Db, ctx: Ctx, ticketId: string, now: Date): Promise<{ ok: true } | Fail<'not_found' | 'not_open'>> {
+  assertPermission(ctx, 'take_orders');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<{ ok: true } | Fail<'not_found' | 'not_open'>> => {
+    const t = await openTicketRow(tx, ctx, ticketId);
+    if (typeof t === 'string') return fail(t);
+    if (t.tableId) await tx.update(diningTables).set({ status: 'bill_printed' }).where(eq(diningTables.id, t.tableId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'bill_printed', recordType: 'ticket', recordId: t.id, changes: { at: now.toISOString() } });
+    return { ok: true };
+  });
+}
+
+type CancelResult = { ok: true } | Fail<'not_found' | 'not_open' | 'has_sent_lines' | 'invalid_input'>;
+
+/** A ticket nothing was sent from can be cancelled with a reason; once the kitchen has items, they are voided one by one instead. */
+export async function cancelTicket(db: Db, ctx: Ctx, ticketId: string, reason: string, now: Date): Promise<CancelResult> {
+  assertPermission(ctx, 'take_orders');
+  const why = typeof reason === 'string' ? reason.trim() : '';
+  if (why.length < 1 || why.length > 200) return fail('invalid_input');
+  return withTenant(db, ctx.tenantId, async (tx): Promise<CancelResult> => {
+    const t = await openTicketRow(tx, ctx, ticketId);
+    if (typeof t === 'string') return fail(t);
+    const [sent] = await tx.select({ id: ticketLines.id }).from(ticketLines)
+      .where(and(eq(ticketLines.ticketId, t.id), inArray(ticketLines.kitchenStatus, ['sent', 'ready']))).limit(1);
+    if (sent) return fail('has_sent_lines');
+    await tx.update(tickets).set({ status: 'cancelled', closedAt: now }).where(eq(tickets.id, t.id));
+    if (t.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, t.tableId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'ticket_cancelled', recordType: 'ticket', recordId: t.id, changes: { reason: why } });
+    return { ok: true };
   });
 }

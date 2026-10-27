@@ -1,7 +1,7 @@
 import 'server-only';
 import { and, arrayContains, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import type { Db } from '@/db/client';
+import type { Db, Tx } from '@/db/client';
 import { registers, sessions, tenants, users } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { writeAudit } from './audit';
@@ -73,6 +73,30 @@ export async function listTillStaff(db: Db, deviceToken: string | undefined): Pr
   )).orderBy(asc(users.name)));
 }
 
+/** Spec 6.1: checks a staff PIN; 5 wrong PINs lock it for 15 minutes, audited so managers see it. Also used for manager approvals. */
+export async function verifyStaffPin(
+  tx: Tx, a: { tenantId: string; staff: { id: string; pinHash: string | null; pinLockedUntil: Date | null }; pin: string; registerId: string | null }, now: Date,
+): Promise<'ok' | 'wrong_pin' | 'pin_locked'> {
+  const { staff } = a;
+  if (staff.pinLockedUntil && staff.pinLockedUntil.getTime() > now.getTime()) return 'pin_locked';
+  if (!staff.pinHash || !(await verifySecret(staff.pinHash, a.pin))) {
+    const [{ failed }] = await tx.update(users).set({ failedPinCount: sql`${users.failedPinCount} + 1` })
+      .where(eq(users.id, staff.id)).returning({ failed: users.failedPinCount });
+    if (failed >= PIN_MAX_FAILURES) {
+      // a fresh 5 tries once the lock ends
+      await tx.update(users).set({ pinLockedUntil: new Date(now.getTime() + PIN_LOCK_MINUTES * 60_000), failedPinCount: 0 })
+        .where(eq(users.id, staff.id));
+      await writeAudit(tx, {
+        tenantId: a.tenantId, actorType: 'system', actorId: null, action: 'pin_locked',
+        recordType: 'user', recordId: staff.id, changes: { registerId: a.registerId },
+      });
+    }
+    return 'wrong_pin';
+  }
+  await tx.update(users).set({ failedPinCount: 0, pinLockedUntil: null }).where(eq(users.id, staff.id));
+  return 'ok';
+}
+
 /** Spec 6.1: 5 wrong PINs lock it for 15 minutes; the lock is audited so managers see it. */
 export async function switchCashierWithPin(
   db: Db, input: { deviceToken: string | undefined; staffId: string; pin: string }, now: Date,
@@ -85,23 +109,8 @@ export async function switchCashierWithPin(
     const [staff] = await tx.select().from(users).where(eq(users.id, input.staffId)).for('update');
     if (!staff || staff.status !== 'active' || !staff.pinHash || !staff.permissions.includes('make_sale')
       || !staff.branchIds.includes(device.branchId)) return { error: 'not_assigned' };
-    if (staff.pinLockedUntil && staff.pinLockedUntil.getTime() > now.getTime()) return { error: 'pin_locked' };
-
-    if (!(await verifySecret(staff.pinHash, input.pin))) {
-      const [{ failed }] = await tx.update(users).set({ failedPinCount: sql`${users.failedPinCount} + 1` })
-        .where(eq(users.id, staff.id)).returning({ failed: users.failedPinCount });
-      if (failed >= PIN_MAX_FAILURES) {
-        // a fresh 5 tries once the lock ends
-        await tx.update(users).set({ pinLockedUntil: new Date(now.getTime() + PIN_LOCK_MINUTES * 60_000), failedPinCount: 0 })
-          .where(eq(users.id, staff.id));
-        await writeAudit(tx, {
-          tenantId: device.tenantId, actorType: 'system', actorId: null, action: 'pin_locked',
-          recordType: 'user', recordId: staff.id, changes: { registerId: device.registerId },
-        });
-      }
-      return { error: 'wrong_pin' };
-    }
-    await tx.update(users).set({ failedPinCount: 0, pinLockedUntil: null }).where(eq(users.id, staff.id));
+    const pin = await verifyStaffPin(tx, { tenantId: device.tenantId, staff, pin: input.pin, registerId: device.registerId }, now);
+    if (pin !== 'ok') return { error: pin };
     await writeAudit(tx, {
       tenantId: device.tenantId, actorType: 'user', actorId: staff.id, action: 'pin_sign_in', changes: { registerId: device.registerId },
     });
