@@ -4,14 +4,16 @@ import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, branchOrderCounters, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines, taxRules,
+  branches, branchOrderCounters, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines, taxRules,
   TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
-import { DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount } from '@/lib/food';
+import {
+  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount,
+} from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
@@ -23,13 +25,17 @@ import { redeemStoreCredit } from './customers';
 import { foodEnabled } from './food-settings';
 import { loadPriceRules } from './price-lists';
 import { type Fail, fail, isUuid, itemLabel } from './products';
+import type { SaleLineChoice } from '@/db/schema';
 import { isSoldOut } from './sold-out';
 import { type DeductProblems, deductStockForLine } from './stock';
 
 export type { TenderMethod };
 export type SaleInput = {
   saleId: string; receiptNumber: string;
-  lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[] }>;
+  lines: Array<{
+    variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
+    byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
+  }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: { serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string };
@@ -38,7 +44,8 @@ export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cash
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
   | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
-  | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number';
+  | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
+  | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
 } | { ok: false; error: SaleError };
@@ -50,6 +57,8 @@ const inputSchema = z.object({
   lines: z.array(z.object({
     variantId: z.uuid(), unitId: z.uuid(), quantity: z.string(), unitPricePesewas: pesewas, discountPesewas: pesewas,
     serials: z.array(z.string().trim().min(1).max(64)).max(1000).optional(),
+    byAmount: z.boolean().optional(),
+    choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
   })).min(1).max(200),
   tenders: z.array(z.object({
     id: z.uuid(), method: z.enum(TENDER_METHODS as [TenderMethod, ...TenderMethod[]]), amountPesewas: pesewas.min(1),
@@ -150,7 +159,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
           unitName: variantUnits.name, factor: variantUnits.factor, isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, unitPrice: variantUnits.pricePesewas,
           kind: variants.kind, variantName: variants.name, allowsFractions: variants.allowsFractions, basePrice: variants.basePricePesewas,
           sellable: variants.sellable, variantStatus: variants.status, productName: products.name, productStatus: products.status,
-          taxRuleId: products.taxRuleId, tracking: products.tracking,
+          taxRuleId: products.taxRuleId, tracking: products.tracking, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
         }).from(variantUnits)
           .innerJoin(variants, eq(variants.id, variantUnits.variantId))
           .innerJoin(products, eq(products.id, variants.productId))
@@ -159,11 +168,23 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         if (item.productStatus === 'archived' || item.variantStatus === 'archived') lenient('item_unavailable', 'item_archived');
         if (!item.sellable || !item.unitSellable) return refuse('not_sellable');
         if (!validSaleQuantity(quantity, item.isBase && item.allowsFractions)) return refuse('invalid_quantity');
+        // spec 6.53: rice or stew sold by cedi amount is one line at the amount typed; its stock moves with the pots
+        if (item.sellByAmount && !l.byAmount) return refuse('amount_required');
+        if (l.byAmount && !item.sellByAmount) return refuse('not_sold_by_amount');
+        if (l.byAmount && quantity !== '1.000') return refuse('invalid_quantity');
+        if (item.kind !== 'combo' && l.choices?.length) return refuse('invalid_choices');
         if (item.kind !== 'standard') {
           const [{ n }] = await tx.select({ n: count() }).from(components).where(eq(components.parentVariantId, l.variantId));
-          if (n === 0) return refuse('empty_bundle');
+          const [{ slots }] = item.kind === 'combo' ? await tx.select({ slots: count() }).from(comboSlots).where(eq(comboSlots.comboVariantId, l.variantId)) : [{ slots: 0 }];
+          if (n === 0 && slots === 0) return refuse('empty_bundle');
         }
-        const currentPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
+        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay) : null;
+        if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
+        if (combo === 'sold_out') lenient('sold_out', 'sold_out');
+        const comboPriced = typeof combo === 'object' ? combo : null;
+        const listPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
+        const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0);
+        if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
         if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
         const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
         // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
@@ -173,7 +194,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         const lineSerials = l.serials ?? [];
         if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
         const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
-        priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
+        priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
       }
 
       const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
@@ -203,7 +224,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
         quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
         discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
-        taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials,
+        taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices,
       })));
       for (const t of s.tenders) {
         if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
@@ -247,6 +268,25 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
 }
 
 type PricedLine = { variantId: string; quantity: string };
+
+/** Spec 6.52: the combo slots checked against the choices sent; upgrades add to the price; choices are stored as sold. */
+async function priceCombo(
+  tx: Tx, comboVariantId: string, chosen: Array<{ slotId: string; variantId: string }>, branchId: string, day: string,
+): Promise<'invalid_choices' | 'sold_out' | { upgrades: number; choices: SaleLineChoice[] }> {
+  const slotRows = await tx.select().from(comboSlots).where(eq(comboSlots.comboVariantId, comboVariantId));
+  const choiceRows = slotRows.length ? await tx.select({
+    slotId: comboChoices.slotId, variantId: comboChoices.variantId, upgradePesewas: comboChoices.upgradePesewas, productName: products.name, variantName: variants.name,
+  }).from(comboChoices).innerJoin(variants, eq(variants.id, comboChoices.variantId)).innerJoin(products, eq(products.id, variants.productId))
+    .where(inArray(comboChoices.slotId, slotRows.map((s) => s.id))) : [];
+  const slots: ComboSlotDef[] = slotRows.map((s) => ({ id: s.id, minChoices: s.minChoices, maxChoices: s.maxChoices, choices: choiceRows.filter((c) => c.slotId === s.id) }));
+  const check = checkComboChoices(slots, chosen, await isSoldOut(tx, branchId, chosen.map((c) => c.variantId), day));
+  if (check !== 'ok') return check;
+  const choices = chosen.map((c) => {
+    const row = choiceRows.find((r) => r.slotId === c.slotId && r.variantId === c.variantId)!;
+    return { slotId: c.slotId, variantId: c.variantId, name: itemLabel(row.productName, row.variantName), upgradePesewas: row.upgradePesewas };
+  });
+  return { upgrades: comboUpgradeTotal(slots, chosen), choices };
+}
 type FoodCheck = {
   food: NonNullable<SaleInput['food']>; dining: DiningOption; deviceNumberOk: boolean; serviceModes: string[]; branchId: string; saleDay: string;
   lines: PricedLine[]; lenient: (code: SaleError, reason: string) => unknown;
@@ -310,8 +350,9 @@ export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, n
   const today = todayIn(shop.timezone, now);
   const lines = await tx.select().from(saleLines).where(eq(saleLines.saleId, saleId)).orderBy(asc(saleLines.lineNo));
   for (const l of lines) {
+    if (l.byAmount) continue; // spec 6.54: by-amount stock moves when pots are recorded
     const p = await deductStockForLine(tx, { tenantId, branchId: sale.branchId, saleId, saleLineId: l.id, userId: sale.cashierId, today },
-      { variantId: l.variantId, baseQty: l.baseQuantity, serials: l.serials });
+      { variantId: l.variantId, baseQty: l.baseQuantity, serials: l.serials, choices: l.choices.map((c) => c.variantId) });
     problems.negative ||= p.negative;
     problems.onlyExpired ||= p.onlyExpired;
     problems.serialsMissing ||= p.serialsMissing;

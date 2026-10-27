@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { branches, kitchenOrders, registers, sales, tenants, users } from '@/db/schema';
+import { branches, kitchenOrders, registers, saleLines, sales, stockBalances, tenants, users } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
+import { getComboSlots, saveComboSlots } from '@/server/combos';
 import { type Ctx, requireContext } from '@/server/context';
+import { createProduct } from '@/server/products';
 import { completeSale, type SaleInput, type SaleResult } from '@/server/sales';
 import { createSession } from '@/server/sessions';
 import { markSoldOut } from '@/server/sold-out';
+import { addComponent, updateVariant } from '@/server/variants';
 import { ctxFor, foodShop, productFor, saleInput, type SeededShop, tillCtxFor } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -140,4 +143,93 @@ it("an online order from a till whose clock is behind lands on the server's busi
   const after = new Date('2026-10-27T00:05:00Z'); // Accra is UTC; the cutoff is midnight
   const r = await completeSale(db, till, counterSale('T1', { deviceCreatedAt: '2026-10-26T23:55:00.000Z' }), after);
   expect(await kitchenOrderOf(r)).toMatchObject({ businessDate: '2026-10-27', orderNumber: '001' });
+});
+
+describe('combos and sell by amount', () => {
+  let meal: { variantId: string; baseUnitId: string };
+  let coke: { variantId: string; baseUnitId: string };
+  let large: { variantId: string; baseUnitId: string };
+  let sobolo: { variantId: string; baseUnitId: string };
+  let chicken: { variantId: string };
+  let soboloBase: { variantId: string };
+  let rice: { variantId: string; baseUnitId: string };
+  let drink: string;
+  const onHand = async (variantId: string) => {
+    const [r] = await asPlatform(db, (tx) => tx.select({ q: stockBalances.onHand }).from(stockBalances).where(eq(stockBalances.variantId, variantId)));
+    return r?.q ?? '0.000';
+  };
+  beforeEach(async () => {
+    const owner = await ctxFor(db, shop, 'owner', t);
+    chicken = await productFor(db, owner, { name: 'Chicken piece', variants: [{ sku: 'CHK', basePricePesewas: 1500, costPesewas: 800 }] });
+    soboloBase = await productFor(db, owner, { name: 'Sobolo base', baseUnit: 'L', allowsFractions: true, variants: [{ sku: 'SOB', basePricePesewas: 1000, costPesewas: 500 }] });
+    coke = await productFor(db, owner, { name: 'Coke' });
+    large = await productFor(db, owner, { name: 'Large Coke' });
+    const sob = await createProduct(db, owner, { name: 'Sobolo', kind: 'recipe', tracking: 'none', baseUnit: 'cup', allowsFractions: false, variants: [{ basePricePesewas: 800, costPesewas: 0 }] });
+    sobolo = (sob as { variants: Array<{ variantId: string; baseUnitId: string }> }).variants[0];
+    await addComponent(db, owner, sobolo.variantId, { code: 'SOB', quantity: '0.300' });
+    const m = await createProduct(db, owner, { name: 'Meal 2', kind: 'combo', tracking: 'none', baseUnit: 'meal', allowsFractions: false, variants: [{ basePricePesewas: 4500, costPesewas: 0 }] });
+    meal = (m as { variants: Array<{ variantId: string; baseUnitId: string }> }).variants[0];
+    await addComponent(db, owner, meal.variantId, { code: 'CHK', quantity: '2' });
+    await saveComboSlots(db, owner, meal.variantId, [{ name: 'Drink', minChoices: 1, maxChoices: 1, choices: [
+      { variantId: coke.variantId, upgradePesewas: 0 }, { variantId: large.variantId, upgradePesewas: 500 }, { variantId: sobolo.variantId, upgradePesewas: 0 },
+    ] }]);
+    drink = (await getComboSlots(db, owner, meal.variantId))[0].id;
+    rice = await productFor(db, owner, { name: 'Jollof rice', variants: [{ basePricePesewas: 1000, costPesewas: 0 }] });
+    await updateVariant(db, owner, rice.variantId, { name: '', sku: null, basePricePesewas: 1000, costPesewas: null, reorderLevel: null, sellable: true, allowsFractions: false,
+      sellByAmount: true, minAmountPesewas: 500, valuePerPotPesewas: 60000 });
+  });
+  const comboLine = (o: { unitPricePesewas?: number; choices?: Array<{ slotId: string; variantId: string }> } = {}) => ({
+    variantId: meal.variantId, unitId: meal.baseUnitId, quantity: '1', unitPricePesewas: o.unitPricePesewas ?? 4500, discountPesewas: 0,
+    choices: o.choices ?? [{ slotId: drink, variantId: coke.variantId }],
+  });
+  const riceLine = (amount: number, extra: Record<string, unknown> = {}) => ({
+    variantId: rice.variantId, unitId: rice.baseUnitId, quantity: '1', unitPricePesewas: amount, discountPesewas: 0, byAmount: true, ...extra,
+  });
+  const lineOf = async (r: SaleResult) => (await asPlatform(db, (tx) => tx.select().from(saleLines).where(eq(saleLines.saleId, (r as { saleId: string }).saleId))))[0];
+
+  it('a combo upgrade adds its price', async () => {
+    const r = await completeSale(db, till, counterSale('T1', { lines: [comboLine({ unitPricePesewas: 5000, choices: [{ slotId: drink, variantId: large.variantId }] })] }), t);
+    expect(r.ok).toBe(true);
+    expect(await lineOf(r)).toMatchObject({ unitPricePesewas: 5000, choices: [{ slotId: drink, variantId: large.variantId, name: 'Large Coke', upgradePesewas: 500 }] });
+    expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine({ unitPricePesewas: 4500, choices: [{ slotId: drink, variantId: large.variantId }] })] }), t))
+      .toEqual({ ok: false, error: 'price_changed' });
+  });
+
+  it('a combo deducts its fixed items and the recipe ingredients of a chosen item', async () => {
+    const r = await completeSale(db, till, counterSale('T1', { lines: [comboLine({ choices: [{ slotId: drink, variantId: sobolo.variantId }] })] }), t);
+    expect(r.ok).toBe(true);
+    expect([await onHand(chicken.variantId), await onHand(soboloBase.variantId), await onHand(sobolo.variantId)]).toEqual(['-2.000', '-0.300', '0.000']);
+  });
+
+  it('refuses a combo with too many choices', async () => {
+    const two = [{ slotId: drink, variantId: coke.variantId }, { slotId: drink, variantId: sobolo.variantId }];
+    expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine({ choices: two })] }), t)).toEqual({ ok: false, error: 'invalid_choices' });
+    expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine({ choices: two })], fromOfflineOutbox: true }), t)).toEqual({ ok: false, error: 'invalid_choices' });
+  });
+
+  it('refuses a sold-out choice', async () => {
+    await markSoldOut(db, till, { branchId: shop.branchId, variantId: coke.variantId }, t);
+    expect(await completeSale(db, till, counterSale('T1', { lines: [comboLine()] }), t)).toEqual({ ok: false, error: 'sold_out' });
+  });
+
+  it('a by-amount line keeps the amount typed and deducts no stock', async () => {
+    const r = await completeSale(db, till, counterSale('T1', { lines: [riceLine(1000)] }), t);
+    expect(r.ok).toBe(true);
+    expect(await lineOf(r)).toMatchObject({ unitPricePesewas: 1000, byAmount: true, totalPesewas: 1000 });
+    expect(await onHand(rice.variantId)).toBe('0.000');
+    expect(await completeSale(db, till, counterSale('T1', { lines: [riceLine(1500)] }), t)).toMatchObject({ ok: true }); // any amount above the minimum
+  });
+
+  it('refuses an amount below the minimum online and flags it from the outbox', async () => {
+    expect(await completeSale(db, till, counterSale('T1', { lines: [riceLine(400)] }), t)).toEqual({ ok: false, error: 'below_minimum_amount' });
+    const r = await completeSale(db, till, counterSale('T1', { lines: [riceLine(400)], fromOfflineOutbox: true }), t);
+    expect(r.ok).toBe(true);
+    expect((await saleOf(r)).reviewReasons).toContain('below_minimum');
+  });
+
+  it('a sell-by-amount item must be sold by amount', async () => {
+    expect(await completeSale(db, till, counterSale('T1', { lines: [riceLine(1000, { byAmount: undefined })] }), t)).toEqual({ ok: false, error: 'amount_required' });
+    expect(await completeSale(db, till, counterSale('T1', { lines: [riceLine(1000, { quantity: '2' })] }), t)).toEqual({ ok: false, error: 'invalid_quantity' });
+    expect(await completeSale(db, till, counterSale('T1', { lines: [{ ...jollofLine(), byAmount: true }] }), t)).toEqual({ ok: false, error: 'not_sold_by_amount' });
+  });
 });

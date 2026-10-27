@@ -168,7 +168,7 @@ const minus = (milli: bigint) => `-${fromMilli(milli)}`;
  */
 export async function deductStockForLine(
   tx: Tx, s: { tenantId: string; branchId: string; saleId: string; saleLineId: string; userId: string; today: string },
-  line: { variantId: string; baseQty: string; serials: string[] },
+  line: { variantId: string; baseQty: string; serials: string[]; choices?: string[] },
 ): Promise<DeductProblems> {
   const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking }).from(variants)
     .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.id, line.variantId));
@@ -180,6 +180,13 @@ export async function deductStockForLine(
       .where(eq(components.parentVariantId, line.variantId)).orderBy(asc(components.createdAt), asc(components.id));
     for (const part of parts) {
       const p = await deductStockForLine(tx, s, { variantId: part.id, baseQty: multiplyQty(part.quantity, line.baseQty), serials: [] });
+      problems.negative ||= p.negative;
+      problems.onlyExpired ||= p.onlyExpired;
+      problems.serialsMissing ||= p.serialsMissing;
+    }
+    // a combo also gives what the customer chose; a chosen recipe gives its ingredients (spec 6.52)
+    for (const chosen of line.choices ?? []) {
+      const p = await deductStockForLine(tx, s, { variantId: chosen, baseQty: line.baseQty, serials: [] });
       problems.negative ||= p.negative;
       problems.onlyExpired ||= p.onlyExpired;
       problems.serialsMissing ||= p.serialsMissing;

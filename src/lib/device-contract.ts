@@ -10,7 +10,10 @@ export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_tran
 /** POST /api/[slug]/sales, agreed with Plan 3 (selling). */
 export type SaleRequest = {
   saleId: string; receiptNumber: string;
-  lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[] }>;
+  lines: Array<{
+    variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
+    byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
+  }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: { serviceMode: 'counter' | 'quick'; diningOption: DiningOption; orderNumber?: string };
