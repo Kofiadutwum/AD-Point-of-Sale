@@ -9,9 +9,24 @@ import {
 import { removePriceListItem, setPriceListItem } from '@/server/price-lists';
 import { getImageStore } from '@/server/image-store';
 import { makeMainImage, removeProductImage, uploadProductImage } from '@/server/product-images';
+import { setItemAddOnGroups } from '@/server/add-ons';
 import { getComboSlots, saveComboSlots } from '@/server/combos';
 import { pageCtx } from '../../page-ctx';
 import { catalogueMessage, cedis, optionalNumber, readProductFields, readUnitFields, readVariantFields, value } from '../form-data';
+
+const ADD_ON_LINK_MESSAGES: Record<string, string> = {
+  invalid_input: 'Pick up to 10 groups.', unknown_item: 'That item or group no longer exists.',
+  not_allowed: 'Combos and sell-by-amount items have no add-ons.', module_off: 'Turn on the kitchen module first.',
+};
+
+/** Spec 4.24: the add-on groups this item offers, in the order of the add-ons list. */
+export async function setItemAddOnsAction(slug: string, productId: string, variantId: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_products');
+  const r = await setItemAddOnGroups(getDb(), ctx, variantId, formData.getAll('groupId').map(String));
+  if (!r.ok) return { error: ADD_ON_LINK_MESSAGES[r.error] ?? 'Something went wrong. Try again.' };
+  revalidatePath(`/${slug}/app/products/${productId}`);
+  return { error: null, message: 'Add-ons saved.' };
+}
 
 export async function updateProductAction(slug: string, productId: string, _prev: FormState, formData: FormData): Promise<FormState> {
   const ctx = await pageCtx(slug, 'manage_products');

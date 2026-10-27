@@ -1,9 +1,10 @@
 'use client';
 import { useMemo, useState } from 'react';
-import { canAdd, type CartLine, comboSlotsOf, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
+import { addOnGroupsOf, canAdd, type CartLine, comboSlotsOf, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
+import type { DeviceCache } from '@/lib/device-contract';
 import type { TenderInput } from '@/device/sale';
 import { businessDate, todayIn } from '@/lib/dates';
-import type { ComboChoice, DiningOption } from '@/lib/food';
+import type { AddOnChoice, ComboChoice, DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
 import { type CollectableOrder, createPhoneOrderAction, findPhoneOrderAction, markAvailableAction, markSoldOutAction } from '../actions';
 import { type FoodChoice, type Receipt, useDevice } from './use-device';
@@ -139,9 +140,9 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
   const hits = useMemo(() => searchCatalogue(cache, query, today), [cache, query, today]);
   const soldOutToday = (variantId: string) => cache.food?.businessDate === day && cache.food.soldOutVariantIds.includes(variantId);
   // a by-amount item opens the amount pad; a combo walks through its slots (spec 6.52, 6.53)
-  const [pending, setPending] = useState<{ variantId: string; unitId: string; mode: 'amount' | 'combo' } | null>(null);
+  const [pending, setPending] = useState<{ variantId: string; unitId: string; mode: 'amount' | 'combo' | 'addons' } | null>(null);
 
-  if (receipt) return <ReceiptView receipt={receipt} shop={cache.shop.name} register={cache.register.name} onNew={() => setReceipt(null)} />;
+  if (receipt) return <ReceiptView receipt={receipt} shop={cache.shop.name} register={cache.register.name} cache={cache} onNew={() => setReceipt(null)} />;
   if (slip) return <PhoneSlip slip={slip} customer={order.name} onNew={() => { setSlip(null); setOrder(EMPTY_ORDER); setChannelId(''); }} />;
 
   const resetChannel = () => { setChannelId(''); setOrder(EMPTY_ORDER); setCollecting(null); setCollectNumber(''); };
@@ -170,6 +171,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
       lines: lines.filter((l) => l.variantId !== cache.food?.packVariantId).map((l) => ({
         variantId: l.variantId, unitId: l.unitId, quantity: l.quantity,
         ...(l.amountPesewas != null ? { byAmount: true, amountPesewas: l.amountPesewas } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
+        ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),
       })),
     });
     setBusy(false);
@@ -190,6 +192,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     setLines(r.order.lines.map((p) => ({
       lineId: crypto.randomUUID(), variantId: p.variantId, unitId: p.unitId, quantity: p.quantity, labelPricePesewas: null,
       amountPesewas: p.byAmount ? p.amountPesewas ?? null : null, ...(p.choices?.length ? { choices: p.choices } : {}),
+      ...(p.addOns?.length ? { addOns: p.addOns } : {}), ...(p.note ? { note: p.note } : {}),
     })));
     setMessage(null);
   };
@@ -202,21 +205,21 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     await d.refresh();
   };
 
-  const add = (found: { variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null; amountPesewas?: number | null; choices?: ComboChoice[] }) => {
+  const add = (found: {
+    variantId: string; unitId: string; quantity: string; labelPricePesewas: number | null; amountPesewas?: number | null; choices?: ComboChoice[];
+    addOns?: AddOnChoice[]; note?: string;
+  }) => {
     const variant = cache.variants.find((v) => v.id === found.variantId);
     if (variant?.sellByAmount && found.amountPesewas == null && !soldOutToday(found.variantId)) return setPending({ variantId: found.variantId, unitId: found.unitId, mode: 'amount' });
     if (variant?.kind === 'combo' && !found.choices && !soldOutToday(found.variantId)) return setPending({ variantId: found.variantId, unitId: found.unitId, mode: 'combo' });
+    // spec 4.24: an item with add-on groups asks for its add-ons and a note first
+    if (addOnGroupsOf(cache, found.variantId).length && !found.addOns && !soldOutToday(found.variantId)) return setPending({ variantId: found.variantId, unitId: found.unitId, mode: 'addons' });
     const problem = canAdd(cache, found, day);
     if (problem) return setMessage(ADD_ERRORS[problem]);
     setMessage(null);
     setQuery('');
     setPending(null);
-    setLines((ls) => {
-      const plain = found.labelPricePesewas === null && found.amountPesewas == null && !found.choices;
-      const same = plain && ls.find((l) => l.variantId === found.variantId && l.unitId === found.unitId && l.labelPricePesewas === null && l.amountPesewas == null && !l.choices);
-      if (!same) return [...ls, { lineId: crypto.randomUUID(), ...found }];
-      return ls.map((l) => (l === same ? { ...l, quantity: (Number(l.quantity) + Number(found.quantity)).toFixed(3) } : l));
-    });
+    setLines((ls) => mergeLine(ls, found));
   };
   const setQty = (lineId: string, value: string) => {
     const q = Number(value);
@@ -283,6 +286,10 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         <AmountPad min={cache.variants.find((v) => v.id === pending.variantId)?.minAmountPesewas ?? 0} onCancel={() => setPending(null)}
           onAdd={(amountPesewas) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, amountPesewas })} />
       )}
+      {pending?.mode === 'addons' && (
+        <AddOnPicker key={pending.variantId} groups={addOnGroupsOf(cache, pending.variantId)} onCancel={() => setPending(null)}
+          onAdd={(addOns, note) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, addOns, ...(note ? { note } : {}) })} />
+      )}
       {pending?.mode === 'combo' && (
         <ComboPicker key={pending.variantId} slots={comboSlotsOf(cache, pending.variantId)} hidden={(id) => soldOutToday(id)} onCancel={() => setPending(null)}
           onAdd={(choices) => add({ variantId: pending.variantId, unitId: pending.unitId, quantity: '1.000', labelPricePesewas: null, choices })} />
@@ -342,7 +349,10 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         <tbody>
           {priced.lines.map((l, i) => (
             <tr key={l.lineId} className="border-b">
-              <td className="py-2">{l.label} <span className="text-gray-600">({l.unitName})</span></td>
+              <td className="py-2">
+                {l.label} <span className="text-gray-600">({l.unitName})</span>
+                <LineExtras cache={cache} line={l} />
+              </td>
               <td>
                 {l.labelPricePesewas === null && l.lineId !== 'pack' && l.amountPesewas == null && !collecting
                   ? <input type="number" step="any" min="0" value={Number(l.quantity)} onChange={(e) => setQty(l.lineId, e.target.value)} className="w-20 rounded border px-2 py-1" aria-label={`Quantity of ${l.label}`} />
@@ -413,6 +423,58 @@ function AmountPad({ min, onAdd, onCancel }: { min: number; onAdd: (amountPesewa
   );
 }
 
+/** A cart or receipt line's add-ons and note, under the item name. */
+function LineExtras({ cache, line }: { cache: DeviceCache; line: CartLine }) {
+  const names = (line.addOns ?? []).map((a) => cache.addOnGroups.find((g) => g.id === a.groupId)?.optionNames[a.optionId] ?? 'Add-on');
+  return (
+    <>
+      {names.length > 0 && <span className="block pl-3 text-xs text-gray-700">+ {names.join(', ')}</span>}
+      {line.note && <span className="block pl-3 text-xs italic">{line.note}</span>}
+    </>
+  );
+}
+
+/** Spec 4.24: one step per add-on group, required groups cannot be skipped; a note for the kitchen on the last step. */
+function AddOnPicker({ groups, onAdd, onCancel }: {
+  groups: DeviceCache['addOnGroups']; onAdd: (addOns: AddOnChoice[], note: string) => void; onCancel: () => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [chosen, setChosen] = useState<AddOnChoice[]>([]);
+  const [note, setNote] = useState('');
+  const group = groups[step];
+  if (!group) return null;
+  const mine = chosen.filter((c) => c.groupId === group.id);
+  const toggle = (optionId: string) => setChosen((cs) => {
+    if (cs.some((c) => c.groupId === group.id && c.optionId === optionId)) return cs.filter((c) => !(c.groupId === group.id && c.optionId === optionId));
+    const others = group.maxChoices === 1 ? cs.filter((c) => c.groupId !== group.id) : cs;
+    return others.filter((c) => c.groupId === group.id).length >= group.maxChoices ? cs : [...others, { groupId: group.id, optionId }];
+  });
+  const last = step === groups.length - 1;
+  return (
+    <div role="dialog" aria-label={group.name} className="flex flex-col gap-2 rounded border p-3">
+      <p className="font-semibold">{group.name} <span className="text-sm font-normal text-gray-600">
+        ({group.minChoices === 0 ? `up to ${group.maxChoices}, optional` : group.minChoices === group.maxChoices ? `pick ${group.maxChoices}` : `pick ${group.minChoices}–${group.maxChoices}`})
+      </span></p>
+      <div className="grid grid-cols-2 gap-2">
+        {group.options.filter((o) => o.active).map((o) => (
+          <button key={o.id} type="button" aria-pressed={mine.some((m) => m.optionId === o.id)} onClick={() => toggle(o.id)}
+            className={`${btn} text-left ${mine.some((m) => m.optionId === o.id) ? 'bg-blue-800 text-white' : ''}`}>
+            {group.optionNames[o.id]}{o.pricePesewas > 0 ? ` +${formatCedis(o.pricePesewas)}` : ''}
+          </button>
+        ))}
+      </div>
+      {last && (
+        <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={140} placeholder="Note for the kitchen (e.g. no onions)" aria-label="Note"
+          className="rounded border px-2 py-2 text-sm" />
+      )}
+      <div className="flex gap-2">
+        <button type="button" className={primary} disabled={mine.length < group.minChoices} onClick={() => (last ? onAdd(chosen, note.trim()) : setStep(step + 1))}>{last ? 'Add' : 'Next'}</button>
+        <button type="button" className={btn} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 /** Spec 6.52: one step per slot; sold-out choices are hidden and upgrades show their extra price. */
 function ComboPicker({ slots, hidden, onAdd, onCancel }: {
   slots: ReturnType<typeof comboSlotsOf>; hidden: (variantId: string) => boolean; onAdd: (choices: ComboChoice[]) => void; onCancel: () => void;
@@ -447,7 +509,7 @@ function ComboPicker({ slots, hidden, onAdd, onCancel }: {
   );
 }
 
-function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; shop: string; register: string; onNew: () => void }) {
+function ReceiptView({ receipt, shop, register, onNew, cache }: { receipt: Receipt; shop: string; register: string; onNew: () => void; cache: DeviceCache }) {
   return (
     <section className="flex max-w-sm flex-col gap-2 text-sm">
       <h2 className="text-lg font-semibold">{shop}</h2>
@@ -457,7 +519,9 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
       {receipt.pending && <p className="rounded bg-amber-100 p-2 font-semibold">Offline – pending sync</p>}
       <ul>
         {receipt.lines.map((l, i) => (
-          <li key={l.lineId} className="flex justify-between"><span>{l.label} × {Number(l.quantity)}</span><span>{formatCedis(receipt.totals.lines[i].totalPesewas)}</span></li>
+          <li key={l.lineId} className="flex justify-between">
+            <span>{l.label} × {Number(l.quantity)}<LineExtras cache={cache} line={l} /></span><span>{formatCedis(receipt.totals.lines[i].totalPesewas)}</span>
+          </li>
         ))}
       </ul>
       <p className="flex justify-between"><span>Tax</span><span>{formatCedis(receipt.totals.taxPesewas)}</span></p>
@@ -472,7 +536,7 @@ function ReceiptView({ receipt, shop, register, onNew }: { receipt: Receipt; sho
           <p className="text-base font-semibold">Kitchen</p>
           <p className="text-4xl font-extrabold">{receipt.orderNumber}</p>
           <p>{DINING.find((o) => o.value === receipt.diningOption)?.label} · {receipt.at.toLocaleTimeString()}</p>
-          <ul className="mt-1">{receipt.lines.map((l) => <li key={l.lineId}>{Number(l.quantity)} × {l.label}</li>)}</ul>
+          <ul className="mt-1">{receipt.lines.map((l) => <li key={l.lineId}>{Number(l.quantity)} × {l.label}<LineExtras cache={cache} line={l} /></li>)}</ul>
         </div>
       )}
       <div className="flex gap-2 print:hidden">

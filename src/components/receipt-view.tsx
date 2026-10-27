@@ -25,6 +25,8 @@ export function ReceiptBody({ r }: { r: ReceiptView }) {
           <p className="flex justify-between"><span>{qty(l.quantity)} {l.unitName} × {formatCedis(l.unitPricePesewas)}</span><span>{formatCedis(l.totalPesewas)}</span></p>
           {l.discountPesewas > 0 && <p className="pl-2">Discount −{formatCedis(l.discountPesewas)}</p>}
           {l.serials.length > 0 && <p className="pl-2">S/N {l.serials.join(', ')}</p>}
+          {l.addOns.length > 0 && <p className="pl-2">+ {l.addOns.join(', ')}</p>}
+          {l.note && <p className="pl-2 italic">{l.note}</p>}
         </div>
       ))}
       <hr className="my-1 border-dashed border-black" />

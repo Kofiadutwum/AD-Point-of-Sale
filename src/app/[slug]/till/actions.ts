@@ -84,7 +84,10 @@ export async function createPhoneOrderAction(slug: string, input: PhoneOrderInpu
 
 export type CollectableOrder = {
   kitchenOrderId: string; channelId: string; diningOption: DiningOption; customerName: string;
-  lines: Array<{ variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }> }>;
+  lines: Array<{
+    variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }>;
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string;
+  }>;
 };
 
 /** Today's unpaid phone order with this number, to load into a locked cart for payment. */

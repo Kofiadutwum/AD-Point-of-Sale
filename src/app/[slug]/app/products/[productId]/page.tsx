@@ -10,9 +10,10 @@ import { pageCtx } from '../../page-ctx';
 import { ProductFieldsInputs } from '../product-fields';
 import { PhotoUpload } from '@/components/photo-upload';
 import { getComboSlots, listChoosableItems } from '@/server/combos';
+import { getItemAddOnGroups, listAddOnGroups } from '@/server/add-ons';
 import { ComboSlots } from './combo-slots';
 import {
-  addVariantAction, makeMainPhotoAction, removePhotoAction, setProductStatusAction, updateProductAction, uploadPhotoAction,
+  addVariantAction, makeMainPhotoAction, removePhotoAction, setItemAddOnsAction, setProductStatusAction, updateProductAction, uploadPhotoAction,
 } from './actions';
 import { VariantSection } from './variant-section';
 
@@ -30,6 +31,10 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
   const combos = product.variants.filter((v) => v.kind === 'combo');
   const comboSlots = new Map(await Promise.all(combos.map(async (v) => [v.id, await getComboSlots(getDb(), ctx, v.id)] as const)));
   const choosable = combos.length ? await listChoosableItems(getDb(), ctx) : [];
+  // spec 4.24: food items other than combos and sell-by-amount items can offer add-on groups
+  const addOnItems = selling.modules.includes('kitchen') ? product.variants.filter((v) => v.kind !== 'combo' && !v.sellByAmount) : [];
+  const groups = addOnItems.length ? await listAddOnGroups(getDb(), ctx) : [];
+  const itemGroups = new Map(await Promise.all(addOnItems.map(async (v) => [v.id, await getItemAddOnGroups(getDb(), ctx, v.id)] as const)));
   return (
     <main className="flex flex-col gap-8">
       <a href={`/${slug}/app/products`} className="text-sm text-blue-800 underline">← Products</a>
@@ -70,6 +75,18 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         ))}
         {product.variants.filter((v) => v.kind === 'combo').map((v) => (
           <ComboSlots key={`slots-${v.id}`} slug={slug} productId={productId} variantId={v.id} slots={comboSlots.get(v.id) ?? []} items={choosable} />
+        ))}
+        {groups.length > 0 && addOnItems.map((v) => (
+          <section key={`add-ons-${v.id}`} className="rounded border p-3">
+            <h3 className="font-medium">Add-on groups{v.name ? ` · ${v.name}` : ''}</h3>
+            <ActionForm action={setItemAddOnsAction.bind(null, slug, productId, v.id)} submitLabel="Save add-ons">
+              {groups.map((g) => (
+                <label key={g.id} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" name="groupId" value={g.id} defaultChecked={itemGroups.get(v.id)?.includes(g.id)} /> {g.name}
+                </label>
+              ))}
+            </ActionForm>
+          </section>
         ))}
         <details className="max-w-md">
           <summary className="cursor-pointer text-sm text-blue-800">Add a variant (size, colour, flavour…)</summary>

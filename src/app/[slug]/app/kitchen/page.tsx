@@ -59,7 +59,11 @@ function OrderCard({ slug, order: o, now, canCancel }: { slug: string; order: Ki
       <ul className="my-2 text-sm">
         {o.lines.map((l) => (
           <li key={l.lineNo} className="flex items-center justify-between gap-2">
-            <span>{Number(l.quantity)} × {l.name}{o.needsPacking && l.packed ? ' ✓' : ''}</span>
+            <span>
+              {Number(l.quantity)} × {l.name}{o.needsPacking && l.packed ? ' ✓' : ''}
+              {l.addOns.length > 0 && <span className="block pl-4 text-xs">+ {l.addOns.join(', ')}</span>}
+              {l.note && <span className="block pl-4 text-xs font-bold">{l.note}</span>}
+            </span>
             {o.needsPacking && (
               <ActionForm action={packAction.bind(null, slug, o.id, l.lineNo, !l.packed)} submitLabel={l.packed ? 'Unpack' : 'Packed'}>{null}</ActionForm>
             )}
