@@ -13,6 +13,7 @@ export type SaleRequest = {
   lines: Array<{
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
   }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;

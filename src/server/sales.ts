@@ -4,8 +4,8 @@ import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
-  salesChannels, taxRules,
+  addOnGroups, addOnOptions, branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
+  salesChannels, taxRules, variantAddOnGroups,
   TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
@@ -13,7 +13,7 @@ import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
 import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
-  checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
+  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer,
 } from '@/lib/food';
 import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
@@ -26,7 +26,7 @@ import { redeemStoreCredit } from './customers';
 import { foodEnabled } from './food-settings';
 import { loadPriceRules } from './price-lists';
 import { type Fail, fail, isUuid, itemLabel } from './products';
-import type { PendingLine, SaleLineChoice } from '@/db/schema';
+import type { PendingLine, SaleLineAddOn, SaleLineChoice } from '@/db/schema';
 import { isSoldOut } from './sold-out';
 import { type DeductProblems, deductStockForLine } from './stock';
 
@@ -36,6 +36,7 @@ export type SaleInput = {
   lines: Array<{
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
   }>;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
@@ -52,7 +53,7 @@ export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cash
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
   | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
   | 'unknown_channel' | 'channel_not_allowed' | 'external_order_id_required' | 'channel_order_exists' | 'channel_settlement_required'
-  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open';
+  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open' | 'invalid_add_ons';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
 } | { ok: false; error: SaleError };
@@ -66,6 +67,8 @@ const inputSchema = z.object({
     serials: z.array(z.string().trim().min(1).max(64)).max(1000).optional(),
     byAmount: z.boolean().optional(),
     choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
+    addOns: z.array(z.object({ groupId: z.uuid(), optionId: z.uuid() })).max(30).optional(),
+    note: z.string().trim().max(140).optional(),
   })).min(1).max(200),
   tenders: z.array(z.object({
     id: z.uuid(), method: z.enum(TENDER_METHODS as [TenderMethod, ...TenderMethod[]]), amountPesewas: pesewas.min(1),
@@ -204,7 +207,14 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         if (combo === 'sold_out') lenient('sold_out', 'sold_out');
         const comboPriced = typeof combo === 'object' ? combo : combo === 'stale_choices' ? await choicesAsSent(tx, l.choices ?? []) : null;
         const listPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
-        const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0);
+        // spec 4.24: add-ons are checked against the item's groups and add their prices; a combo or a by-amount line has none
+        if (l.addOns?.length && (l.byAmount || item.kind === 'combo')) return refuse('invalid_add_ons');
+        const addOnGroupsOfItem = l.byAmount || item.kind === 'combo' ? [] : await loadAddOnGroups(tx, l.variantId);
+        const addOnCheck = checkAddOns(addOnGroupsOfItem, l.addOns ?? []);
+        if (addOnCheck === 'invalid_add_ons') return refuse('invalid_add_ons'); // the device built a bad cart: never lenient
+        if (addOnCheck === 'stale_add_ons') lenient('invalid_add_ons', 'add_ons_changed'); // a paid offline sale from before an add-on edit is kept for review
+        const addOns = await addOnsAsSold(tx, addOnGroupsOfItem, l.addOns ?? [], addOnCheck === 'ok');
+        const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
         if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
         if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
         const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
@@ -215,7 +225,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         const lineSerials = l.serials ?? [];
         if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
         const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
-        priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
+        priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
       }
 
       const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
@@ -252,7 +262,7 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
         tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
         quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
         discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
-        taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices,
+        taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note,
       })));
       for (const t of s.tenders) {
         if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
@@ -302,6 +312,26 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
 }
 
 type PricedLine = { variantId: string; quantity: string };
+
+/** The item's add-on groups in order, with every option (active or not) and its name (spec 4.24). */
+export async function loadAddOnGroups(tx: Tx, variantId: string) {
+  const groups = await tx.select({ id: addOnGroups.id, name: addOnGroups.name, minChoices: addOnGroups.minChoices, maxChoices: addOnGroups.maxChoices })
+    .from(variantAddOnGroups).innerJoin(addOnGroups, eq(addOnGroups.id, variantAddOnGroups.groupId))
+    .where(eq(variantAddOnGroups.variantId, variantId)).orderBy(asc(variantAddOnGroups.sortOrder));
+  const options = groups.length ? await tx.select({ id: addOnOptions.id, groupId: addOnOptions.groupId, name: addOnOptions.name, pricePesewas: addOnOptions.pricePesewas, active: addOnOptions.active })
+    .from(addOnOptions).where(inArray(addOnOptions.groupId, groups.map((g) => g.id))).orderBy(asc(addOnOptions.sortOrder)) : [];
+  return groups.map((g) => ({ ...g, options: options.filter((o) => o.groupId === g.id) }));
+}
+
+/** The add-ons as they go on the line: names and prices from the catalogue; a stale choice keeps its name at price 0. */
+async function addOnsAsSold(tx: Tx, groups: Awaited<ReturnType<typeof loadAddOnGroups>>, chosen: Array<{ groupId: string; optionId: string }>, priced: boolean): Promise<SaleLineAddOn[]> {
+  if (!chosen.length) return [];
+  const named = await tx.select({ id: addOnOptions.id, name: addOnOptions.name }).from(addOnOptions).where(inArray(addOnOptions.id, chosen.map((c) => c.optionId)));
+  return chosen.map((c) => {
+    const option = groups.find((g) => g.id === c.groupId)?.options.find((o) => o.id === c.optionId);
+    return { groupId: c.groupId, optionId: c.optionId, name: named.find((n) => n.id === c.optionId)?.name ?? 'Add-on', pricePesewas: priced && option ? option.pricePesewas : 0 };
+  });
+}
 
 /** A Postgres unique violation of `constraint`, from postgres.js or PGlite, wrapped by Drizzle or not. */
 function isUniqueViolation(e: unknown, constraint: string): boolean {
@@ -462,6 +492,16 @@ export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, n
     if (l.byAmount) continue; // spec 6.54: by-amount stock moves when pots are recorded
     const p = await deductStockForLine(tx, { tenantId, branchId: sale.branchId, saleId, saleLineId: l.id, userId: sale.cashierId, today },
       { variantId: l.variantId, baseQty: l.baseQuantity, serials: l.serials, choices: l.choices.map((c) => c.variantId) });
+    // spec 6.28: an add-on with an ingredient (extra chicken) deducts it once per plate
+    const extras = l.addOns.length ? await tx.select({ variantId: addOnOptions.ingredientVariantId, quantity: addOnOptions.ingredientQuantity }).from(addOnOptions)
+      .where(inArray(addOnOptions.id, l.addOns.map((a) => a.optionId))) : [];
+    for (const e of extras) {
+      if (!e.variantId || !e.quantity) continue;
+      const x = await deductStockForLine(tx, { tenantId, branchId: sale.branchId, saleId, saleLineId: l.id, userId: sale.cashierId, today },
+        { variantId: e.variantId, baseQty: multiplyQty(e.quantity, l.baseQuantity), serials: [] });
+      p.negative ||= x.negative;
+      p.onlyExpired ||= x.onlyExpired;
+    }
     problems.negative ||= p.negative;
     problems.onlyExpired ||= p.onlyExpired;
     problems.serialsMissing ||= p.serialsMissing;
