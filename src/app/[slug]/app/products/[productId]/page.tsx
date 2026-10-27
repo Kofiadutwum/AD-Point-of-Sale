@@ -13,7 +13,7 @@ import { getComboSlots, listChoosableItems } from '@/server/combos';
 import { getItemAddOnGroups, listAddOnGroups } from '@/server/add-ons';
 import { ComboSlots } from './combo-slots';
 import {
-  addVariantAction, makeMainPhotoAction, removePhotoAction, setItemAddOnsAction, setProductStatusAction, updateProductAction, uploadPhotoAction,
+  addVariantAction, makeMainPhotoAction, removePhotoAction, setItemAddOnsAction, setProductStatusAction, setStationAction, updateProductAction, uploadPhotoAction,
 } from './actions';
 import { VariantSection } from './variant-section';
 
@@ -76,6 +76,15 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
         {product.variants.filter((v) => v.kind === 'combo').map((v) => (
           <ComboSlots key={`slots-${v.id}`} slug={slug} productId={productId} variantId={v.id} slots={comboSlots.get(v.id) ?? []} items={choosable} />
         ))}
+        {selling.modules.includes('kitchen') && (
+          <ActionForm action={setStationAction.bind(null, slug, productId)} submitLabel="Save station">
+            <label className="flex flex-col gap-1 text-sm">Table orders go to
+              <select name="station" defaultValue={product.kitchenStation} className="rounded border border-gray-400 px-3 py-2">
+                <option value="kitchen">Kitchen</option><option value="bar">Bar</option><option value="grill">Grill</option>
+              </select>
+            </label>
+          </ActionForm>
+        )}
         {groups.length > 0 && addOnItems.map((v) => (
           <section key={`add-ons-${v.id}`} className="rounded border p-3">
             <h3 className="font-medium">Add-on groups{v.name ? ` · ${v.name}` : ''}</h3>

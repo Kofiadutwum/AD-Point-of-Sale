@@ -2,7 +2,7 @@ import 'server-only';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { foodSettings, kitchenOrders, type PendingLine, products, registers, salesChannels, tenants, users, variants, variantUnits } from '@/db/schema';
+import { foodSettings, kitchenOrders, type PendingLine, registers, salesChannels, tenants, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { businessDate } from '@/lib/dates';
 import { type DiningOption, phoneCustomer } from '@/lib/food';

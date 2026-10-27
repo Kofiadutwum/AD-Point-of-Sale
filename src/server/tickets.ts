@@ -111,6 +111,33 @@ export async function listOpenTickets(db: Db, ctx: Ctx, branchId: string): Promi
   });
 }
 
+/** Items a waiter can put on a ticket: active, sellable, plain or recipe items by their base unit (not combos, by-amount, or serial items). */
+export async function listTicketItems(db: Db, ctx: Ctx): Promise<Array<{ variantId: string; unitId: string; label: string }>> {
+  assertPermission(ctx, 'take_orders');
+  // shortcut: combos and sell-by-amount items are not offered on tickets yet; sell them at the counter till
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ variantId: variants.id, unitId: variantUnits.id, productName: products.name, variantName: variants.name })
+    .from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
+    .where(and(eq(variants.status, 'active'), eq(products.status, 'active'), eq(variants.sellable, true), inArray(variants.kind, ['standard', 'recipe']),
+      eq(variants.sellByAmount, false), ne(products.tracking, 'serial')))
+    .orderBy(asc(products.name), asc(variants.name))).map((v) => ({ variantId: v.variantId, unitId: v.unitId, label: itemLabel(v.productName, v.variantName) })));
+}
+
+/** The branch whose tables and tickets this user works with now. */
+export async function currentTicketBranch(db: Db, ctx: Ctx): Promise<string | null> {
+  assertPermission(ctx, 'take_orders');
+  return withTenant(db, ctx.tenantId, (tx) => ticketBranch(tx, ctx));
+}
+
+/** Managers at the branch who can approve a void with their PIN, other than the signed-in user. */
+export async function listApprovers(db: Db, ctx: Ctx, branchId: string): Promise<Array<{ id: string; name: string }>> {
+  assertPermission(ctx, 'take_orders');
+  if (!isUuid(branchId)) return [];
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ id: users.id, name: users.name, permissions: users.permissions, branchIds: users.branchIds, pinHash: users.pinHash })
+    .from(users).where(and(eq(users.status, 'active'), ne(users.id, ctx.userId))).orderBy(asc(users.name)))
+    .filter((u) => u.pinHash && u.permissions.includes('void_sent_items') && u.branchIds.includes(branchId)).map((u) => ({ id: u.id, name: u.name })));
+}
+
 /** The ticket, locked, when it is at one of the user's branches; 'not_open' once paid, merged, or cancelled. */
 async function openTicketRow(tx: Tx, ctx: Ctx, ticketId: string) {
   if (!isUuid(ticketId)) return 'not_found' as const;

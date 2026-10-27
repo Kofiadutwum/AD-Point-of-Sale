@@ -3,6 +3,7 @@ import { revalidatePath } from 'next/cache';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { handOverOrder, markOrderReady, tickPackedLine } from '@/server/kitchen';
+import { markLineReady } from '@/server/kitchen-display';
 import { cancelPhoneOrder } from '@/server/phone-orders';
 import { pageCtx } from '../page-ctx';
 
@@ -16,6 +17,14 @@ async function run(slug: string, change: (ctx: Awaited<ReturnType<typeof pageCtx
   const r = await change(await pageCtx(slug, 'run_kitchen'));
   if (!r.ok) return { error: MESSAGES[r.error] ?? 'Something went wrong. Try again.' };
   revalidatePath(`/${slug}/app/kitchen`);
+  return { error: null };
+}
+
+/** Spec 6.37: a table order item is ready at its station. */
+export async function lineReadyAction(slug: string, lineId: string, _prev: FormState, _fd: FormData): Promise<FormState> {
+  const r = await markLineReady(getDb(), await pageCtx(slug, 'run_kitchen'), lineId, new Date());
+  if (!r.ok) return { error: r.error === 'not_sent' ? 'That item is no longer waiting.' : 'That item is no longer there.' };
+  revalidatePath(`/${slug}/app/kitchen/stations`);
   return { error: null };
 }
 

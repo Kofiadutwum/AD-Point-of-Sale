@@ -296,6 +296,19 @@ export async function setProductStatus(
   });
 }
 
+/** Spec 4.24: the kitchen station a product's ticket lines go to (food to the kitchen, drinks to the bar). */
+export async function setKitchenStation(db: Db, ctx: Ctx, productId: string, station: string): Promise<{ ok: true } | Fail<'not_found' | 'invalid_input'>> {
+  assertPermission(ctx, 'manage_products');
+  if (!isUuid(productId)) return fail('not_found');
+  if (station !== 'kitchen' && station !== 'bar' && station !== 'grill') return fail('invalid_input');
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const [p] = await tx.update(products).set({ kitchenStation: station }).where(eq(products.id, productId)).returning({ id: products.id });
+    if (!p) return fail('not_found');
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'kitchen_station_set', recordType: 'product', recordId: productId, changes: { station } });
+    return { ok: true } as const;
+  });
+}
+
 export type ProductDetail = typeof products.$inferSelect & {
   categoryName: string | null;
   variants: Array<typeof variants.$inferSelect & {

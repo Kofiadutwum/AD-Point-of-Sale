@@ -45,6 +45,10 @@ export async function saveTable(db: Db, ctx: Ctx, input: { id?: string; branchId
   });
 }
 
+export async function getServiceChargeBp(db: Db, ctx: Ctx): Promise<number> {
+  return withTenant(db, ctx.tenantId, async (tx) => (await tx.select({ bp: tenants.serviceChargeBp }).from(tenants).where(eq(tenants.id, ctx.tenantId)))[0]?.bp ?? 0);
+}
+
 /** Spec 6.6: the shop's table service charge in basis points (1000 = 10%), 0 to turn it off. */
 export async function saveServiceCharge(db: Db, ctx: Ctx, bp: number): Promise<{ ok: true } | Fail<'invalid_input'>> {
   assertPermission(ctx, 'manage_shop_settings');

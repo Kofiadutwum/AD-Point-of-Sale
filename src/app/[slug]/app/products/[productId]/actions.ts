@@ -2,7 +2,7 @@
 import { revalidatePath } from 'next/cache';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
-import { setProductStatus, updateProduct } from '@/server/products';
+import { setKitchenStation, setProductStatus, updateProduct } from '@/server/products';
 import {
   addBarcode, addComponent, addUnit, addVariant, removeBarcode, removeComponent, removeUnit, setVariantStatus, updateUnit, updateVariant,
 } from '@/server/variants';
@@ -26,6 +26,13 @@ export async function setItemAddOnsAction(slug: string, productId: string, varia
   if (!r.ok) return { error: ADD_ON_LINK_MESSAGES[r.error] ?? 'Something went wrong. Try again.' };
   revalidatePath(`/${slug}/app/products/${productId}`);
   return { error: null, message: 'Add-ons saved.' };
+}
+
+export async function setStationAction(slug: string, productId: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const r = await setKitchenStation(getDb(), await pageCtx(slug, 'manage_products'), productId, String(formData.get('station') ?? ''));
+  if (!r.ok) return { error: 'Pick a station.' };
+  revalidatePath(`/${slug}/app/products/${productId}`);
+  return { error: null, message: 'Station saved.' };
 }
 
 export async function updateProductAction(slug: string, productId: string, _prev: FormState, formData: FormData): Promise<FormState> {
