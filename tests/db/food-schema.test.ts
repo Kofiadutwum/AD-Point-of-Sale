@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { branches, comboChoices, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
+import { addOnGroups, addOnOptions, branches, comboChoices, variantAddOnGroups, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb, dbError } from '../helpers/test-db';
@@ -156,5 +156,33 @@ describe('channels', () => {
   it('channel_settlement needs a reference', async () => {
     expect(await dbError(asPlatform(db, (tx) => tx.insert(payments).values({ id: randomUUID(), tenantId: a.tenantId, saleId: saleA, method: 'channel_settlement', amountPesewas: 500 }))))
       .toMatch(/payments_reference/);
+  });
+});
+
+describe('add-ons', () => {
+  const group = (shop: SeededShop, name: string, minChoices = 0, maxChoices = 1) =>
+    asPlatform(db, (tx) => tx.insert(addOnGroups).values({ tenantId: shop.tenantId, name, minChoices, maxChoices }).returning());
+
+  it("an option's ingredient needs a quantity", async () => {
+    const [g] = await group(a, 'Protein');
+    const option = { tenantId: a.tenantId, groupId: g.id, name: 'Chicken', ingredientVariantId: variantA, sortOrder: 0 };
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(addOnOptions).values(option)))).toMatch(/add_on_options_ingredient/);
+    await expect(asPlatform(db, (tx) => tx.insert(addOnOptions).values({ ...option, ingredientQuantity: '1' }))).resolves.toBeDefined();
+  });
+
+  it("a group's min cannot exceed its max", async () => {
+    expect(await dbError(group(a, 'Extras', 2, 1))).toMatch(/add_on_groups_choices/);
+  });
+
+  it('group names are unique per shop in any case', async () => {
+    await group(a, 'Protein');
+    expect(await dbError(group(a, 'PROTEIN'))).toMatch(/add_on_groups_name|duplicate key/);
+    await expect(group(b, 'Protein')).resolves.toBeDefined();
+  });
+
+  it("an item cannot link another shop's group", async () => {
+    const [g] = await group(b, 'Protein');
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(variantAddOnGroups).values({ tenantId: a.tenantId, variantId: variantA, groupId: g.id, sortOrder: 0 }))))
+      .toMatch(/variant_add_on_groups_group_fk|foreign key/);
   });
 });

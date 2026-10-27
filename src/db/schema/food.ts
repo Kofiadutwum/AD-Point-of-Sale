@@ -1,12 +1,15 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
 import { variants } from './catalogue';
 import { users } from './people';
 import { sales, salesChannels } from './selling';
 import { branches, tenants } from './tenancy';
 
-export type PendingLine = { variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }> };
+export type PendingLine = {
+  variantId: string; unitId: string; quantity: string; byAmount?: boolean; amountPesewas?: number; choices?: Array<{ slotId: string; variantId: string }>;
+  addOns?: Array<{ groupId: string; optionId: string }>; note?: string;
+};
 export type KitchenOrderStatus = 'preparing' | 'ready' | 'collected' | 'handed_over' | 'cancelled';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -221,4 +224,49 @@ export const channelReceivables = pgTable('channel_receivables', {
   foreignKey({ name: 'channel_receivables_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
   foreignKey({ name: 'channel_receivables_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
   foreignKey({ name: 'channel_receivables_payout_fk', columns: [t.tenantId, t.payoutId], foreignColumns: [channelPayouts.tenantId, channelPayouts.id] }),
+]);
+
+/** A shop-level add-on group such as "Protein: choose 1" or "Extras", linked to items (spec 4.24). */
+export const addOnGroups = pgTable('add_on_groups', {
+  id: id(),
+  tenantId: tenantId(),
+  name: text('name').notNull(),
+  minChoices: integer('min_choices').notNull().default(0),
+  maxChoices: integer('max_choices').notNull().default(1),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('add_on_groups_tenant_id').on(t.tenantId, t.id),
+  uniqueIndex('add_on_groups_name').on(t.tenantId, sql`lower(${t.name})`),
+  check('add_on_groups_choices', sql`${t.minChoices} between 0 and 20 and ${t.maxChoices} between 1 and 20 and ${t.minChoices} <= ${t.maxChoices}`),
+]);
+
+/** One add-on with its price and the ingredient it uses, if any; never deleted, only made inactive. */
+export const addOnOptions = pgTable('add_on_options', {
+  id: id(),
+  tenantId: tenantId(),
+  groupId: uuid('group_id').notNull(),
+  name: text('name').notNull(),
+  pricePesewas: integer('price_pesewas').notNull().default(0),
+  ingredientVariantId: uuid('ingredient_variant_id'),
+  ingredientQuantity: qty('ingredient_quantity'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  active: boolean('active').notNull().default(true),
+}, (t) => [
+  unique('add_on_options_tenant_id').on(t.tenantId, t.id),
+  foreignKey({ name: 'add_on_options_group_fk', columns: [t.tenantId, t.groupId], foreignColumns: [addOnGroups.tenantId, addOnGroups.id] }),
+  foreignKey({ name: 'add_on_options_ingredient_fk', columns: [t.tenantId, t.ingredientVariantId], foreignColumns: [variants.tenantId, variants.id] }),
+  check('add_on_options_price', sql`${t.pricePesewas} >= 0`),
+  check('add_on_options_ingredient', sql`(${t.ingredientVariantId} is null) = (${t.ingredientQuantity} is null) and (${t.ingredientQuantity} is null or ${t.ingredientQuantity} > 0)`),
+]);
+
+/** The add-on groups an item offers, in order. */
+export const variantAddOnGroups = pgTable('variant_add_on_groups', {
+  tenantId: tenantId(),
+  variantId: uuid('variant_id').notNull(),
+  groupId: uuid('group_id').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+}, (t) => [
+  primaryKey({ name: 'variant_add_on_groups_pk', columns: [t.tenantId, t.variantId, t.groupId] }),
+  foreignKey({ name: 'variant_add_on_groups_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }).onDelete('cascade'),
+  foreignKey({ name: 'variant_add_on_groups_group_fk', columns: [t.tenantId, t.groupId], foreignColumns: [addOnGroups.tenantId, addOnGroups.id] }),
 ]);

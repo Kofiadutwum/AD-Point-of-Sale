@@ -8,6 +8,7 @@ import { branches, registers, tenants } from './tenancy';
 export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
+export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
 export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement'];
 export type ChannelKind = 'delivery_app' | 'phone' | 'whatsapp';
 
@@ -140,7 +141,10 @@ export const saleLines = pgTable('sale_lines', {
   serials: text('serials').array().notNull().default(sql`'{}'`),
   byAmount: boolean('by_amount').notNull().default(false), // sold by cedi amount; stock moves with pots, not here (spec 6.53)
   choices: jsonb('choices').$type<SaleLineChoice[]>().notNull().default(sql`'[]'::jsonb`), // combo choices as sold (spec 6.52)
+  addOns: jsonb('add_ons').$type<SaleLineAddOn[]>().notNull().default(sql`'[]'::jsonb`), // add-ons as sold (spec 4.24)
+  note: text('note'), // e.g. "no onions", for the kitchen
 }, (t) => [
+  check('sale_lines_note', sql`length(${t.note}) <= 140`),
   unique('sale_lines_tenant_id').on(t.tenantId, t.id),
   unique('sale_lines_line_no').on(t.saleId, t.lineNo),
   foreignKey({ name: 'sale_lines_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
