@@ -33,7 +33,7 @@ export default async function AddOnsPage({ params }: { params: Promise<{ slug: s
 }
 
 function GroupForm({ slug, group: g, items }: { slug: string; group: AddOnGroup | null; items: Array<{ variantId: string; label: string }> }) {
-  const rows = [...(g?.options.filter((o) => o.active) ?? []), ...Array.from({ length: BLANK_ROWS }, () => null)];
+  const rows = [...(g?.options.filter((o) => o.active) ?? []), ...Array.from({ length: BLANK_ROWS }, () => null)].slice(0, 30); // the form saves at most 30 options
   return (
     <ActionForm action={saveAddOnGroupAction.bind(null, slug, g?.id ?? null)} submitLabel={g ? 'Save' : 'Add group'}>
       <Field label="Group name (e.g. Protein)" name="name" maxLength={40} defaultValue={g?.name} />

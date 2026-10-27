@@ -98,6 +98,10 @@ it('an inactive or unknown add-on is stale', () => {
   expect(checkAddOns([protein, extras], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g2', optionId: 'old' }])).toBe('stale_add_ons');
   expect(checkAddOns([protein], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g9', optionId: 'x' }])).toBe('stale_add_ons');
 });
+it('a stale add-on does not hide a missing required one', () => {
+  expect(checkAddOns([protein, extras], [{ groupId: 'g2', optionId: 'old' }])).toBe('invalid_add_ons');
+});
+
 it('adds the chosen add-on prices', () => {
   expect(addOnTotal([protein, extras], [{ groupId: 'g1', optionId: 'fish' }, { groupId: 'g2', optionId: 'egg' }])).toBe(1500);
 });

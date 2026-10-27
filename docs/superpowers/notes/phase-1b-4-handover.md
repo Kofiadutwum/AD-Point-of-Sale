@@ -18,6 +18,15 @@ Sale lines gain `addOns?: [{ groupId, optionId }]` and `note?` (trimmed, at most
 - Device cache: `addOnGroups`, `itemAddOnGroups`; the till checks and prices add-ons offline and merges cart lines only when add-ons and note match (`mergeLine`).
 - `/[slug]/app/add-ons` to set up groups; the product page ticks an item's groups; the till asks for add-ons and a note before adding the item.
 
+## Review fixes
+- Ingredients: any active standard or recipe item, sold on its own or not; an archived ingredient stays selected when the group is saved again.
+- An item turned into sell-by-amount loses its add-on groups; the till ignores groups on by-amount items and combos, as the server does.
+- Counts are checked before stale choices, so a stale add-on never hides a skipped required group.
+- A group cannot ask for more choices than it has options; the form shows at most 30 options; phone orders report `invalid_add_ons`.
+
+## Accepted risk
+Adding a required group or tightening a group's limits refuses an offline sale for that item still waiting to sync, even though the customer paid. The cashier sees it in held sales.
+
 ## Shortcuts
 - An item's groups are ordered as the add-ons list shows them, not dragged into a custom order.
 

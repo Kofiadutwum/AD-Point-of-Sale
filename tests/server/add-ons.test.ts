@@ -87,6 +87,10 @@ it('turning on sell by amount removes the item from its add-on groups', async ()
   expect(await getItemAddOnGroups(db, owner, rice)).toEqual([]);
 });
 
+it('refuses a group that asks for more choices than it offers', async () => {
+  expect(await saveAddOnGroup(db, owner, { ...protein(), minChoices: 3, maxChoices: 3 })).toMatchObject({ ok: false, error: 'invalid_input' });
+});
+
 it('a cashier cannot change add-ons', async () => {
   await expectAccess(saveAddOnGroup(db, await ctxFor(db, shop, 'cashier', t0), protein()), 'forbidden');
 });

@@ -100,7 +100,7 @@ it('collecting a phone order checks add-ons and notes', async () => {
     channelId: phone, diningOption: 'takeaway', customer: { name: 'Ama', phone: '0241234567' }, pickupAt: '2026-10-27T13:00:00Z',
     lines: [{ variantId: jollof.variantId, unitId: jollof.baseUnitId, quantity: '1', addOns, note: 'no onions' }],
   }, t);
-  expect(await order([{ groupId: ids.extras, optionId: ids.egg }])).toEqual({ ok: false, error: 'invalid_choices' });
+  expect(await order([{ groupId: ids.extras, optionId: ids.egg }])).toEqual({ ok: false, error: 'invalid_add_ons' });
   const { kitchenOrderId } = await order(fishAndEgg()) as { kitchenOrderId: string };
   const pack = { variantId: s.packVariantId, unitId: s.packUnitId, quantity: '1', unitPricePesewas: 100, discountPesewas: 0 };
   const collect = (l: SaleInput['lines'][number]) => sale(l, { lines: [l, pack], food: { serviceMode: 'counter', diningOption: 'takeaway', channelId: phone, kitchenOrderId } });

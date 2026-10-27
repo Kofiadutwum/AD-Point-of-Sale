@@ -101,14 +101,15 @@ export type AddOnGroupDef = { id: string; minChoices: number; maxChoices: number
 
 /** Stale: an add-on the item no longer offers (an edit after the till built the cart). Invalid: a count outside a group's limits, or a repeat. */
 export function checkAddOns(groups: AddOnGroupDef[], chosen: AddOnChoice[]): 'ok' | 'invalid_add_ons' | 'stale_add_ons' {
-  const known = (c: AddOnChoice) => groups.find((g) => g.id === c.groupId)?.options.some((o) => o.id === c.optionId && o.active);
-  if (!chosen.every(known)) return 'stale_add_ons';
+  // counts first, so a stale choice never hides a skipped required group; a stale choice still counts toward its own group
   if (new Set(chosen.map((c) => `${c.groupId}:${c.optionId}`)).size !== chosen.length) return 'invalid_add_ons';
   const counts = groups.every((g) => {
     const n = chosen.filter((c) => c.groupId === g.id).length;
     return n >= g.minChoices && n <= g.maxChoices;
   });
-  return counts ? 'ok' : 'invalid_add_ons';
+  if (!counts) return 'invalid_add_ons';
+  const known = (c: AddOnChoice) => groups.find((g) => g.id === c.groupId)?.options.some((o) => o.id === c.optionId && o.active);
+  return chosen.every(known) ? 'ok' : 'stale_add_ons';
 }
 
 export function addOnTotal(groups: AddOnGroupDef[], chosen: AddOnChoice[]): number {

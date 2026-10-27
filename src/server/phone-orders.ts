@@ -29,7 +29,7 @@ const inputSchema = z.object({
 
 export type PhoneOrderInput = z.input<typeof inputSchema>;
 type CreateError = 'invalid_input' | 'no_register' | 'unknown_channel' | 'customer_details_required' | 'unknown_item' | 'not_sellable'
-  | 'invalid_quantity' | 'invalid_choices' | 'sold_out';
+  | 'invalid_quantity' | 'invalid_choices' | 'invalid_add_ons' | 'sold_out';
 type CreateResult = { ok: true; kitchenOrderId: string; orderNumber: string } | Fail<CreateError>;
 
 /** The till's branch and today's business date, when the signed-in user works there. */
@@ -80,8 +80,8 @@ export async function createPhoneOrder(db: Db, ctx: Ctx, input: PhoneOrderInput,
         if (typeof combo !== 'object') return fail('invalid_choices');
       }
       // the same add-on rules as a sale (spec 4.24); prices are charged at collection
-      if (l.addOns?.length && (byAmount || item.kind === 'combo')) return fail('invalid_choices');
-      if (!byAmount && item.kind !== 'combo' && checkAddOns(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []) !== 'ok') return fail('invalid_choices');
+      if (l.addOns?.length && (byAmount || item.kind === 'combo')) return fail('invalid_add_ons');
+      if (!byAmount && item.kind !== 'combo' && checkAddOns(await loadAddOnGroups(tx, l.variantId), l.addOns ?? []) !== 'ok') return fail('invalid_add_ons');
       lines.push({
         variantId: l.variantId, unitId: l.unitId, quantity,
         ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note ? { note: l.note } : {}),

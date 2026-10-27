@@ -61,7 +61,7 @@ export async function markAvailableAction(slug: string, variantId: string) {
 const PHONE_MESSAGES: Record<string, string> = {
   invalid_input: 'Check the order and try again.', no_register: 'Take phone orders from a till.', unknown_channel: 'Pick the phone or WhatsApp channel.',
   customer_details_required: 'Enter the name, a Ghana phone number, and a pickup time or address.', unknown_item: 'An item is no longer in the catalogue.',
-  not_sellable: 'An item cannot be sold.', invalid_quantity: 'Check the quantities and amounts.', invalid_choices: 'Pick the combo choices again.',
+  not_sellable: 'An item cannot be sold.', invalid_quantity: 'Check the quantities and amounts.', invalid_choices: 'Pick the combo choices again.', invalid_add_ons: 'Pick the add-ons again.',
   sold_out: 'An item is sold out today.',
 };
 

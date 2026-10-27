@@ -22,7 +22,7 @@ const groupSchema = z.object({
     id: z.uuid().optional(), name: z.string().trim().min(1).max(40), pricePesewas: z.number().int().min(0).max(2_000_000_000),
     ingredientVariantId: z.uuid().nullable(), ingredientQuantity: z.string().max(20).nullable(),
   })).min(1).max(30),
-}).refine((g) => g.minChoices <= g.maxChoices);
+}).refine((g) => g.minChoices <= g.maxChoices && g.minChoices <= g.options.length); // asking for more than it offers would block the item at the till
 
 /** Every add-on group with its options (active and inactive), in order (spec 4.24). */
 export async function listAddOnGroups(db: Db, ctx: Ctx): Promise<AddOnGroup[]> {
