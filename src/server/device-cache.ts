@@ -2,10 +2,10 @@ import 'server-only';
 import { and, arrayContains, asc, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Db } from '@/db/client';
 import {
-  barcodes, branches, deviceCacheVersions, heldSales, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
+  barcodes, branches, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
-import { todayIn } from '@/lib/dates';
+import { businessDate, todayIn } from '@/lib/dates';
 import type { DeviceCache } from '@/lib/device-contract';
 import { type Permission, TILL_PERMISSIONS } from '@/lib/permissions';
 import { subscriptionState } from '@/lib/subscription';
@@ -41,12 +41,15 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
     const resolved = await tx.select({ saleId: heldSales.saleId }).from(heldSales)
       .where(and(eq(heldSales.registerId, device.registerId), isNotNull(heldSales.resolvedAt))).orderBy(desc(heldSales.resolvedAt)).limit(200);
     const offline = shop.t.offlineEnabled;
+    const day = businessDate(shop.t.timezone, shop.t.businessDayCutoff, now);
+    const [food] = await tx.select().from(foodSettings);
+    const sold = await tx.select({ id: soldOut.variantId }).from(soldOut).where(and(eq(soldOut.branchId, device.branchId), eq(soldOut.businessDate, day)));
     return {
       version: ver?.version ?? 0,
       generatedAt: now.toISOString(),
       shop: {
         name: shop.t.name, timezone: shop.t.timezone, taxMode: shop.t.taxMode, taxEnabled: shop.t.taxEnabled,
-        scaleLayout: shop.t.scaleBarcode ?? null, offlineEnabled: offline,
+        scaleLayout: shop.t.scaleBarcode ?? null, offlineEnabled: offline, businessDayCutoff: shop.t.businessDayCutoff,
         canSell: subscriptionState(shop.sub, todayIn(shop.t.timezone, now)) !== 'read_only',
       },
       register: {
@@ -66,6 +69,7 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       variants: await tx.select({
         id: variants.id, productId: variants.productId, name: variants.name, sku: variants.sku, allowsFractions: variants.allowsFractions,
         basePricePesewas: variants.basePricePesewas, scaleItemCode: variants.scaleItemCode, sellable: variants.sellable, status: variants.status,
+        needsPack: variants.needsPack,
       }).from(variants),
       units: await tx.select({
         id: variantUnits.id, variantId: variantUnits.variantId, name: variantUnits.name, factor: variantUnits.factor,
@@ -73,6 +77,12 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       }).from(variantUnits),
       barcodes: await tx.select({ code: barcodes.code, variantId: barcodes.variantId, unitId: barcodes.unitId }).from(barcodes),
       resolvedHeldSaleIds: resolved.map((r) => r.saleId),
+      food: shop.t.modules.includes('kitchen') ? {
+        // table mode waits for open tickets (Phase 1b tickets plan)
+        serviceModes: till.b.serviceModes.filter((m): m is 'counter' | 'quick' => m === 'counter' || m === 'quick'),
+        packVariantId: food?.packVariantId ?? null, packFeeMode: food?.packFeeMode ?? 'per_order',
+        businessDate: day, soldOutVariantIds: sold.map((r) => r.id),
+      } : null,
     };
   });
 }

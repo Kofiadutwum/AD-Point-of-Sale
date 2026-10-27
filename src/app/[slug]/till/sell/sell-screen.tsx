@@ -10,7 +10,7 @@ const METHODS: Array<{ value: TenderInput['method']; label: string }> = [
   { value: 'cash', label: 'Cash' }, { value: 'momo_manual', label: 'MoMo' }, { value: 'card_terminal', label: 'Card' }, { value: 'bank_transfer', label: 'Bank' },
 ];
 const ADD_ERRORS = {
-  unavailable: 'Product unavailable', serial_item: 'Sell serial items on the online sell page.', invalid_quantity: 'Enter a valid quantity',
+  unavailable: 'Product unavailable', serial_item: 'Sell serial items on the online sell page.', invalid_quantity: 'Enter a valid quantity', sold_out: 'Sold out today',
 } as const;
 const btn = 'rounded border px-3 py-2';
 const primary = 'rounded bg-blue-800 px-4 py-2 text-white disabled:opacity-50';

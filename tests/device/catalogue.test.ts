@@ -1,18 +1,18 @@
 import { expect, it } from 'vitest';
-import { canAdd, findByCode, priceCart, searchCatalogue } from '@/device/catalogue';
+import { canAdd, type CartLine, findByCode, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import { ean13CheckDigit } from '@/lib/barcode';
 import type { DeviceCache } from '@/lib/device-contract';
 
 const P = (id: string, name: string, extra: Partial<DeviceCache['products'][number]> = {}) =>
   ({ id, name, genericName: null, taxRuleId: null, tracking: 'none' as const, status: 'active' as const, imageId: null, ...extra });
 const V = (id: string, productId: string, price: number, extra: Partial<DeviceCache['variants'][number]> = {}) =>
-  ({ id, productId, name: '', sku: null, allowsFractions: false, basePricePesewas: price, scaleItemCode: null, sellable: true, status: 'active' as const, ...extra });
+  ({ id, productId, name: '', sku: null, allowsFractions: false, basePricePesewas: price, scaleItemCode: null, sellable: true, status: 'active' as const, needsPack: false, ...extra });
 const U = (id: string, variantId: string, extra: Partial<DeviceCache['units'][number]> = {}) =>
   ({ id, variantId, name: 'piece', factor: '1.000', pricePesewas: null, sellable: true, isBase: true, ...extra });
 
 const cache: DeviceCache = {
   version: 1, generatedAt: '',
-  shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'exclusive', taxEnabled: true, offlineEnabled: true, canSell: true,
+  shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'exclusive', taxEnabled: true, offlineEnabled: true, canSell: true, businessDayCutoff: '00:00',
     scaleLayout: { prefix: '21', itemStart: 2, itemLength: 5, valueStart: 7, valueLength: 5, carries: 'weight' } },
   register: { id: 'r', name: 'Till 1', registerCode: 'T1', branchId: 'b1', branchCode: 'B1', branchName: 'Main' },
   staff: [],
@@ -26,6 +26,7 @@ const cache: DeviceCache = {
     U('u-strip', 'v-para', { name: 'strip', factor: '10.000', isBase: false })],
   barcodes: [{ code: '6001234567890', variantId: 'v-milo', unitId: 'u-milo' }, { code: '0123456789012', variantId: 'v-old', unitId: 'u-old' }],
   resolvedHeldSaleIds: [],
+  food: null,
 };
 const today = '2026-10-20';
 const label = (first12: string) => first12 + ean13CheckDigit(first12);
@@ -68,4 +69,38 @@ it('searches name, generic name, and SKU among sellable items', () => {
   expect(searchCatalogue(cache, 'MILO400', today)).toHaveLength(1);
   expect(searchCatalogue(cache, 'old', today)).toEqual([]);
   expect(searchCatalogue(cache, '', today)).toEqual([]);
+});
+
+const foodCache: DeviceCache = {
+  ...cache,
+  products: [...cache.products, P('p-pack', 'Takeaway pack')],
+  variants: [...cache.variants.map((v) => (v.id === 'v-rice' ? { ...v, needsPack: true } : v)), V('v-pack', 'p-pack', 100)],
+  units: [...cache.units, U('u-pack', 'v-pack')],
+  food: { serviceModes: ['counter', 'quick'], packVariantId: 'v-pack', packFeeMode: 'per_order', businessDate: today, soldOutVariantIds: ['v-milo'] },
+};
+const milo: CartLine = { lineId: 'l1', variantId: 'v-milo', unitId: 'u-milo', quantity: '1.000', labelPricePesewas: null };
+const rice = (quantity: string): CartLine => ({ lineId: 'l2', variantId: 'v-rice', unitId: 'u-rice', quantity, labelPricePesewas: null });
+
+it('refuses a sold-out item', () => {
+  expect(canAdd(foodCache, { variantId: 'v-milo', unitId: 'u-milo', quantity: '1.000', labelPricePesewas: null }, today)).toBe('sold_out');
+});
+
+it('ignores a sold-out list from another business date', () => {
+  expect(canAdd(foodCache, { variantId: 'v-milo', unitId: 'u-milo', quantity: '1.000', labelPricePesewas: null }, '2026-10-21')).toBeNull();
+});
+
+it('adds one pack line for a takeaway order', () => {
+  const lines = withPackLine(foodCache, [milo, rice('2.000')], 'takeaway');
+  expect(lines).toEqual([milo, rice('2.000'), { lineId: 'pack', variantId: 'v-pack', unitId: 'u-pack', quantity: '1.000', labelPricePesewas: null }]);
+  expect(withPackLine(foodCache, lines, 'delivery')).toEqual(lines); // already right: unchanged
+});
+
+it('switching to eat in removes the pack line', () => {
+  expect(withPackLine(foodCache, withPackLine(foodCache, [milo], 'takeaway'), 'eat_in')).toEqual([milo]);
+});
+
+it('per-item packs follow the cart quantity', () => {
+  const perItem: DeviceCache = { ...foodCache, food: { ...foodCache.food!, packFeeMode: 'per_item' } };
+  expect(withPackLine(perItem, [milo, rice('1.500')], 'takeaway').find((l) => l.lineId === 'pack')!.quantity).toBe('2.000');
+  expect(withPackLine(perItem, [milo], 'takeaway').find((l) => l.lineId === 'pack')).toBeUndefined(); // milo needs no pack
 });

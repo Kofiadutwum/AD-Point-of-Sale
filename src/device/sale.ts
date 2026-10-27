@@ -35,10 +35,11 @@ export function formatReceiptNumber(branchCode: string, registerCode: string, co
 export function buildSaleRequest(i: {
   saleId: string; receiptNumber: string; cashierId: string;
   lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number }>;
-  tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean;
+  tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean; food?: SaleRequest['food'];
 }): SaleRequest {
   return {
     saleId: i.saleId, receiptNumber: i.receiptNumber, cashierId: i.cashierId, deviceCreatedAt: i.now.toISOString(), fromOfflineOutbox: i.fromOfflineOutbox,
+    ...(i.food ? { food: i.food } : {}),
     lines: i.lines.map((l) => ({ variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: 0 })),
     tenders: i.tenders.map((t, k) => ({
       id: i.tenderIds[k], method: t.method, amountPesewas: t.amountPesewas, ...(t.method === 'cash' ? {} : { reference: t.reference.trim() }),

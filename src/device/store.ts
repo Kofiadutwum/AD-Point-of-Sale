@@ -7,7 +7,10 @@ export type OutboxEntry = {
   saleId: string; seq: number; request: SaleRequest; totalPesewas: number; status: 'queued' | 'needs_review';
   attempts: number; nextAttemptAt: number; lastError: string | null; reported: boolean;
 };
-export type DeviceMeta = { lastSyncAt: number | null; counter: number; cacheVersion: number; deregistered: boolean };
+export type DeviceMeta = {
+  lastSyncAt: number | null; counter: number; cacheVersion: number; deregistered: boolean;
+  orderCounter: number; orderCounterDate: string | null; // offline food order numbers, per business date
+};
 type PinLock = { failures: number; lockedUntil: number | null };
 
 interface Schema extends DBSchema {
@@ -20,12 +23,13 @@ export type DeviceStore = {
   getCache(): Promise<DeviceCache | null>; setCache(cache: DeviceCache): Promise<void>; wipeCache(): Promise<void>;
   getMeta(): Promise<DeviceMeta>; patchMeta(patch: Partial<DeviceMeta>): Promise<DeviceMeta>;
   takeReceiptCounter(): Promise<number>; raiseCounter(atLeast: number): Promise<void>;
+  takeOrderNumber(businessDate: string): Promise<number>;
   addSale(entry: OutboxEntry): Promise<void>; listOutbox(): Promise<OutboxEntry[]>;
   putOutbox(entry: OutboxEntry): Promise<void>; deleteOutbox(saleId: string): Promise<void>;
   getPinLock(staffId: string): Promise<PinLock>; setPinLock(staffId: string, lock: PinLock): Promise<void>;
 };
 
-const EMPTY_META: DeviceMeta = { lastSyncAt: null, counter: 0, cacheVersion: 0, deregistered: false };
+const EMPTY_META: DeviceMeta = { lastSyncAt: null, counter: 0, cacheVersion: 0, deregistered: false, orderCounter: 0, orderCounterDate: null };
 
 export function openDeviceStore(slug: string): DeviceStore {
   let db: Promise<IDBPDatabase<Schema>> | undefined;
@@ -54,6 +58,9 @@ export function openDeviceStore(slug: string): DeviceStore {
     getMeta: async () => ({ ...EMPTY_META, ...((await (await open()).get('kv', 'meta')) as DeviceMeta | undefined) }),
     patchMeta: (patch) => updateMeta((m) => ({ ...m, ...patch })),
     takeReceiptCounter: async () => (await updateMeta((m) => ({ ...m, counter: m.counter + 1 }))).counter,
+    takeOrderNumber: async (businessDate) => (await updateMeta((m) => ({
+      ...m, orderCounterDate: businessDate, orderCounter: m.orderCounterDate === businessDate ? m.orderCounter + 1 : 1,
+    }))).orderCounter,
     raiseCounter: async (atLeast) => { await updateMeta((m) => ({ ...m, counter: Math.max(m.counter, atLeast) })); },
     addSale: async (entry) => { await (await open()).add('outbox', entry); },
     listOutbox: async () => (await open()).getAllFromIndex('outbox', 'seq'),

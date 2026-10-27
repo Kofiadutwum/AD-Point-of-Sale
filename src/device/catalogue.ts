@@ -2,6 +2,7 @@ import { normaliseBarcode, readScaleLabel } from '@/lib/barcode';
 import { type CartTotals, calculateCartTotals } from '@/lib/cart-totals';
 import { fromMilli, ratioToQty, validSaleQuantity } from '@/lib/decimal';
 import type { DeviceCache } from '@/lib/device-contract';
+import { type DiningOption, packCount } from '@/lib/food';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { chooseTaxRule } from '@/lib/tax';
 
@@ -40,9 +41,11 @@ function parts(cache: DeviceCache, variantId: string, unitId: string) {
 }
 
 /** Why this item cannot go in the cart, or null. */
-export function canAdd(cache: DeviceCache, found: Found): 'unavailable' | 'serial_item' | 'invalid_quantity' | null {
+/** `today` is the device business date; a sold-out list from another date is stale and ignored (the server checks again on sync). */
+export function canAdd(cache: DeviceCache, found: Found, today?: string): 'unavailable' | 'serial_item' | 'invalid_quantity' | 'sold_out' | null {
   const p = parts(cache, found.variantId, found.unitId);
   if (!p || p.product.status !== 'active' || p.variant.status !== 'active' || !p.variant.sellable || !p.unit.sellable) return 'unavailable';
+  if (cache.food && today === cache.food.businessDate && cache.food.soldOutVariantIds.includes(found.variantId)) return 'sold_out';
   if (p.product.tracking === 'serial') return 'serial_item'; // the device till has no serial picker yet
   return validSaleQuantity(found.quantity, p.unit.isBase && p.variant.allowsFractions) ? null : 'invalid_quantity';
 }
@@ -81,4 +84,21 @@ export function priceCart(cache: DeviceCache, lines: CartLine[], today: string):
   }
   const totals = calculateCartTotals(priced.map((l) => ({ ...l, discountPesewas: 0 })), { taxMode: cache.shop.taxMode });
   return { lines: priced, totals };
+}
+
+/** Spec 6.56: adds, resizes, or removes the pack line (lineId 'pack') so the cart always carries the packs it owes. */
+export function withPackLine(cache: DeviceCache, lines: CartLine[], diningOption: DiningOption): CartLine[] {
+  const food = cache.food;
+  const items = lines.filter((l) => l.lineId !== 'pack');
+  const packUnit = food?.packVariantId ? cache.units.find((u) => u.variantId === food.packVariantId && u.isBase) : undefined;
+  if (!food || !packUnit) return items;
+  const packs = packCount(items, {
+    diningOption, mode: food.packFeeMode, packVariantId: food.packVariantId,
+    needsPack: (id) => cache.variants.find((v) => v.id === id)?.needsPack ?? false,
+  });
+  if (packs === 0) return items;
+  const quantity = fromMilli(BigInt(packs) * 1000n);
+  const current = lines.find((l) => l.lineId === 'pack');
+  if (current?.quantity === quantity) return lines;
+  return [...items, { lineId: 'pack', variantId: food.packVariantId!, unitId: packUnit.id, quantity, labelPricePesewas: null }];
 }

@@ -4,20 +4,21 @@ import { switchCashier, verifyPinOffline } from '@/device/pin';
 import { checkTenders, formatReceiptNumber, OFFLINE_LIMIT_MS, offlineBlock } from '@/device/sale';
 import { type DeviceMeta, type OutboxEntry, openDeviceStore } from '@/device/store';
 import type { DeviceCache } from '@/lib/device-contract';
+import { offlineOrderNumber } from '@/lib/food';
 import { hashSecret } from '@/server/crypto';
 
 let n = 0;
 const store = () => openDeviceStore(`test-${++n}`);
 const now = Date.parse('2026-10-20T10:00:00Z');
-const meta: DeviceMeta = { lastSyncAt: now, counter: 0, cacheVersion: 1, deregistered: false };
+const meta: DeviceMeta = { lastSyncAt: now, counter: 0, cacheVersion: 1, deregistered: false, orderCounter: 0, orderCounterDate: null };
 
 async function cacheWith(pin: string | null, extra: Partial<DeviceCache['shop']> = {}): Promise<DeviceCache> {
   return {
     version: 1, generatedAt: new Date(now).toISOString(),
-    shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'inclusive', taxEnabled: false, scaleLayout: null, offlineEnabled: true, canSell: true, ...extra },
+    shop: { name: 'A', timezone: 'Africa/Accra', taxMode: 'inclusive', taxEnabled: false, scaleLayout: null, offlineEnabled: true, canSell: true, businessDayCutoff: '00:00', ...extra },
     register: { id: 'r', name: 'Till 1', registerCode: 'T1', branchId: 'b', branchCode: 'B1', branchName: 'Main' },
     staff: [{ id: 'kofi', name: 'Kofi', permissions: ['make_sale'], pinHash: pin && (await hashSecret(pin)), pinLockedUntil: null }],
-    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [],
+    taxRules: [], priceRules: [], products: [], variants: [], units: [], barcodes: [], resolvedHeldSaleIds: [], food: null,
   };
 }
 const entry = (saleId: string, seq: number): OutboxEntry => ({
@@ -115,3 +116,15 @@ it('wipes saved PINs when the server says the device was removed', async () => {
   expect(await s.getCache()).toBeNull();
   expect((await s.getMeta()).deregistered).toBe(true);
 }, 60_000);
+
+it('order numbers restart on a new business date', async () => {
+  const s = store();
+  expect([await s.takeOrderNumber('2026-10-26'), await s.takeOrderNumber('2026-10-26'), await s.takeOrderNumber('2026-10-27')]).toEqual([1, 2, 1]);
+});
+
+it('two device stores give different numbers on the same day', async () => {
+  const [t1, t2] = [store(), store()];
+  const n1 = await t1.takeOrderNumber('2026-10-26');
+  const n2 = await t2.takeOrderNumber('2026-10-26');
+  expect([offlineOrderNumber('T1', n1), offlineOrderNumber('T2', n2)]).toEqual(['T1-001', 'T2-001']);
+});

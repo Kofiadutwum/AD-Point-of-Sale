@@ -1,14 +1,16 @@
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { productImages, sessions, subscriptions } from '@/db/schema';
+import { productImages, sessions, subscriptions, variants } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { getDeviceCache, getDeviceCacheVersion, readDeviceImage } from '@/server/device-cache';
 import { deregisterDevice, registerDevice, switchCashierWithPin } from '@/server/devices';
 import { listHeldSales, reportHeldSale, resolveHeldSale } from '@/server/held-sales';
+import { setServiceModes } from '@/server/food-settings';
 import { setOfflineEnabled } from '@/server/shop-settings';
+import { markSoldOut } from '@/server/sold-out';
 import { addBarcode } from '@/server/variants';
-import { ctxFor, expectAccess, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
+import { ctxFor, expectAccess, foodShop, productFor, type SeededShop, seedShop, tillCtxFor } from '../helpers/fixtures';
 import { memoryImageStore } from '../helpers/image-store';
 import { createTestDb } from '../helpers/test-db';
 
@@ -130,4 +132,38 @@ it('serves a photo only to a device of the same shop', async () => {
 
 it('switches offline mode only with manage_shop_settings', async () => {
   await expectAccess(setOfflineEnabled(db, await ctxFor(db, shop, 'kofi', t0), false), 'forbidden');
+});
+
+describe('food', () => {
+  const at = new Date('2026-10-26T12:00:00Z');
+  async function foodDevice(modes: Array<'counter' | 'quick' | 'table'>) {
+    const food = await foodShop(db, at, { slug: 'chop-bar' });
+    const owner = await ctxFor(db, food, 'owner', at);
+    await setServiceModes(db, owner, food.branchId, modes);
+    const token = (await registerDevice(db, owner, food.registerId, at) as { deviceToken: string }).deviceToken;
+    const jollof = await productFor(db, owner, { name: 'Jollof' });
+    await asPlatform(db, (tx) => tx.update(variants).set({ needsPack: true }).where(eq(variants.id, jollof.variantId)));
+    return { food, owner, token, jollof };
+  }
+
+  it("includes the branch food settings and today's sold-out items", async () => {
+    const { food, owner, token, jollof } = await foodDevice(['counter', 'quick']);
+    await markSoldOut(db, await tillCtxFor(db, food, 'owner', at), { branchId: food.branchId, variantId: jollof.variantId }, at);
+    const c = await getDeviceCache(db, { deviceToken: token, slug: 'chop-bar' }, at);
+    expect(c!.food).toEqual({
+      serviceModes: ['counter', 'quick'], packVariantId: food.packVariantId, packFeeMode: 'per_order', businessDate: '2026-10-26', soldOutVariantIds: [jollof.variantId],
+    });
+    expect(c!.shop.businessDayCutoff).toBe('00:00');
+    expect(c!.variants.find((v) => v.id === jollof.variantId)!.needsPack).toBe(true);
+    expect(owner).toBeDefined();
+  });
+
+  it('food is null when the kitchen module is off', async () => {
+    expect((await getDeviceCache(db, dev(), t0))!.food).toBeNull();
+  });
+
+  it("leaves table mode out of the till's service modes", async () => {
+    const { token } = await foodDevice(['table', 'counter']);
+    expect((await getDeviceCache(db, { deviceToken: token, slug: 'chop-bar' }, at))!.food!.serviceModes).toEqual(['counter']);
+  });
 });

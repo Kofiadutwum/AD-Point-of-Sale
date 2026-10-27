@@ -26,7 +26,7 @@ export type DeviceCache = {
   version: number; generatedAt: string;
   shop: {
     name: string; timezone: string; taxMode: 'inclusive' | 'exclusive'; taxEnabled: boolean; scaleLayout: ScaleLayout | null;
-    offlineEnabled: boolean; canSell: boolean;
+    offlineEnabled: boolean; canSell: boolean; businessDayCutoff: string;
   };
   register: { id: string; name: string; registerCode: string; branchId: string; branchCode: string; branchName: string };
   staff: CachedStaff[];
@@ -35,11 +35,16 @@ export type DeviceCache = {
   products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null }>;
   variants: Array<{
     id: string; productId: string; name: string; sku: string | null; allowsFractions: boolean; basePricePesewas: number;
-    scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus;
+    scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus; needsPack: boolean;
   }>;
   units: Array<{ id: string; variantId: string; name: string; factor: string; pricePesewas: number | null; sellable: boolean; isBase: boolean }>;
   barcodes: Array<{ code: string; variantId: string; unitId: string }>;
   resolvedHeldSaleIds: string[];
+  /** Null when the kitchen module is off. Sold-out ids are for businessDate only; a till ignores them on another date. */
+  food: {
+    serviceModes: Array<'counter' | 'quick'>; packVariantId: string | null; packFeeMode: 'per_item' | 'per_order';
+    businessDate: string; soldOutVariantIds: string[];
+  } | null;
 };
 
 /** POST /api/[slug]/device/held-sales: a sale the server refused, or one held earlier that has now synced. */
