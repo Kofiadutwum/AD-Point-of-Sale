@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { addOnGroups, addOnOptions, branches, comboChoices, variantAddOnGroups, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
+import { addOnGroups, addOnOptions, branches, comboChoices, diningTables, ticketLines, tickets, variantAddOnGroups, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb, dbError } from '../helpers/test-db';
@@ -156,6 +156,38 @@ describe('channels', () => {
   it('channel_settlement needs a reference', async () => {
     expect(await dbError(asPlatform(db, (tx) => tx.insert(payments).values({ id: randomUUID(), tenantId: a.tenantId, saleId: saleA, method: 'channel_settlement', amountPesewas: 500 }))))
       .toMatch(/payments_reference/);
+  });
+});
+
+describe('tickets', () => {
+  const table = (shop: SeededShop, name: string) =>
+    asPlatform(db, (tx) => tx.insert(diningTables).values({ tenantId: shop.tenantId, branchId: shop.branchId, name }).returning());
+  const ticket = (shop: SeededShop, extra: Partial<typeof tickets.$inferInsert> = {}) => asPlatform(db, (tx) => tx.insert(tickets).values({
+    tenantId: shop.tenantId, branchId: shop.branchId, label: 'T', waiterId: shop.users.owner.id, diningOption: 'eat_in', openedAt: t0, ...extra,
+  }).returning());
+
+  it('one open ticket per table', async () => {
+    const [tb] = await table(a, 'Table 1');
+    await ticket(a, { tableId: tb.id });
+    expect(await dbError(ticket(a, { tableId: tb.id }))).toMatch(/tickets_open_table|duplicate key/);
+    await expect(ticket(a, { tableId: null })).resolves.toBeDefined();
+  });
+
+  it('a paid ticket needs its sale', async () => {
+    expect(await dbError(ticket(a, { status: 'paid' }))).toMatch(/tickets_paid/);
+    await expect(ticket(a, { status: 'paid', saleId: saleA })).resolves.toBeDefined();
+  });
+
+  it('a voided line needs a reason', async () => {
+    const [tk] = await ticket(a);
+    const line = { tenantId: a.tenantId, ticketId: tk.id, lineNo: 1, variantId: variantA, unitId: variantA, quantity: '1', station: 'kitchen' as const, kitchenStatus: 'void' as const };
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(ticketLines).values(line)))).toMatch(/ticket_lines_void|foreign key/);
+  });
+
+  it('table names are unique per branch in any case', async () => {
+    await table(a, 'Table 1');
+    expect(await dbError(table(a, 'TABLE 1'))).toMatch(/dining_tables_name|duplicate key/);
+    await expect(table(b, 'Table 1')).resolves.toBeDefined();
   });
 });
 

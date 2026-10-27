@@ -40,7 +40,7 @@ it('creates an invited member with preset permissions and a working invite link'
   const shop = await seedShop(db);
   const ctx = await ctxFor(db, shop, 'owner', t0, 'manage_staff');
   const r = await addStaff(db, ctx, { name: 'Kofi', phone: '020 123 4567', rolePreset: 'cashier', branchIds: [shop.branchId] }, t0) as { userId: string; inviteUrl: string };
-  expect(await userRow(r.userId)).toMatchObject({ status: 'invited', permissions: ['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders'], phone: '233201234567', rolePreset: 'cashier' });
+  expect(await userRow(r.userId)).toMatchObject({ status: 'invited', permissions: ['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders'], phone: '233201234567', rolePreset: 'cashier' });
   expect(await activateAccount(db, { token: tokenOf(r.inviteUrl), password: 'kofi-password', pin: '5678' }, t0)).toMatchObject({ ok: true });
   expect(await userRow(r.userId)).toMatchObject({ status: 'active' });
 });

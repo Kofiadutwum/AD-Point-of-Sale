@@ -101,6 +101,7 @@ export const sales = pgTable('sales', {
   channelId: uuid('channel_id'), // delivery app, phone, or WhatsApp; null for walk-in (spec 6.57)
   externalOrderId: text('external_order_id'), // the platform order ID
   commissionPesewas: integer('commission_pesewas').notNull().default(0),
+  serviceChargePesewas: integer('service_charge_pesewas').notNull().default(0), // untaxed, added to the total (spec 6.6)
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
@@ -110,6 +111,7 @@ export const sales = pgTable('sales', {
   uniqueIndex('sales_channel_order').on(t.tenantId, t.channelId, t.externalOrderId).where(sql`${t.externalOrderId} is not null`),
   check('sales_external_order', sql`${t.externalOrderId} is null or ${t.channelId} is not null`),
   check('sales_commission', sql`${t.commissionPesewas} >= 0`),
+  check('sales_service_charge', sql`${t.serviceChargePesewas} >= 0`),
   foreignKey({ name: 'sales_channel_fk', columns: [t.tenantId, t.channelId], foreignColumns: [salesChannels.tenantId, salesChannels.id] }),
   foreignKey({ name: 'sales_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
   foreignKey({ name: 'sales_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),

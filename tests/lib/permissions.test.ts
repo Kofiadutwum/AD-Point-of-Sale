@@ -8,7 +8,7 @@ it('gives owners every permission and managers all but shop settings', () => {
 });
 
 it('lets cashiers only sell, mark items sold out, and run the kitchen', () => {
-  expect(ROLE_PRESETS.cashier).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders']);
+  expect(ROLE_PRESETS.cashier).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders']);
 });
 
 it('a cashier PIN can mark sold out and run the kitchen', () => {
@@ -33,6 +33,13 @@ it('every default module is a known module', () => {
 it('a cashier PIN can record kitchen stock', () => {
   expect(ROLE_PRESETS.cashier).toContain('record_kitchen_stock');
   expect(TILL_PERMISSIONS).toContain('record_kitchen_stock');
+});
+
+it('a cashier PIN can take orders but not approve voids', () => {
+  expect(ROLE_PRESETS.cashier).toContain('take_orders');
+  expect(TILL_PERMISSIONS).toContain('take_orders');
+  expect(ROLE_PRESETS.cashier).not.toContain('void_sent_items');
+  expect(ROLE_PRESETS.manager).toContain('void_sent_items');
 });
 
 it('a cashier PIN can enter channel orders but not manage channels', () => {

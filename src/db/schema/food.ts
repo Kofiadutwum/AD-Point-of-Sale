@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
-import { variants } from './catalogue';
+import { type KitchenStation, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { sales, salesChannels } from './selling';
 import { branches, tenants } from './tenancy';
@@ -269,4 +269,86 @@ export const variantAddOnGroups = pgTable('variant_add_on_groups', {
   primaryKey({ name: 'variant_add_on_groups_pk', columns: [t.tenantId, t.variantId, t.groupId] }),
   foreignKey({ name: 'variant_add_on_groups_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }).onDelete('cascade'),
   foreignKey({ name: 'variant_add_on_groups_group_fk', columns: [t.tenantId, t.groupId], foreignColumns: [addOnGroups.tenantId, addOnGroups.id] }),
+]);
+
+export type TableStatus = 'free' | 'ordering' | 'waiting_for_food' | 'bill_printed';
+export type TicketStatus = 'open' | 'paid' | 'merged' | 'cancelled';
+export type TicketLineStatus = 'new' | 'sent' | 'ready' | 'void';
+
+/** A sit-down restaurant's table (spec 4.24); never deleted, only made inactive. */
+export const diningTables = pgTable('dining_tables', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  name: text('name').notNull(),
+  status: text('status').$type<TableStatus>().notNull().default('free'),
+  active: boolean('active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('dining_tables_tenant_id').on(t.tenantId, t.id),
+  uniqueIndex('dining_tables_name').on(t.tenantId, t.branchId, sql`lower(${t.name})`),
+  foreignKey({ name: 'dining_tables_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  check('dining_tables_status', sql`${t.status} in ('free', 'ordering', 'waiting_for_food', 'bill_printed')`),
+]);
+
+/** An open ticket for a table or a name, added to before it is paid (spec 6.37). */
+export const tickets = pgTable('tickets', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  tableId: uuid('table_id'),
+  label: text('label').notNull(),
+  waiterId: uuid('waiter_id').notNull(),
+  diningOption: text('dining_option').$type<'eat_in' | 'takeaway' | 'delivery'>().notNull(),
+  status: text('status').$type<TicketStatus>().notNull().default('open'),
+  saleId: uuid('sale_id'),
+  openedAt: timestamptz('opened_at').notNull(),
+  closedAt: timestamptz('closed_at'),
+}, (t) => [
+  unique('tickets_tenant_id').on(t.tenantId, t.id),
+  unique('tickets_sale').on(t.tenantId, t.saleId),
+  uniqueIndex('tickets_open_table').on(t.tenantId, t.tableId).where(sql`${t.status} = 'open' and ${t.tableId} is not null`),
+  foreignKey({ name: 'tickets_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'tickets_table_fk', columns: [t.tenantId, t.tableId], foreignColumns: [diningTables.tenantId, diningTables.id] }),
+  foreignKey({ name: 'tickets_waiter_fk', columns: [t.tenantId, t.waiterId], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'tickets_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  check('tickets_status', sql`${t.status} in ('open', 'paid', 'merged', 'cancelled')`),
+  check('tickets_dining', sql`${t.diningOption} in ('eat_in', 'takeaway', 'delivery')`),
+  check('tickets_paid', sql`${t.status} <> 'paid' or ${t.saleId} is not null`),
+]);
+
+/** One item on a ticket with its kitchen station and status; priced when the ticket is paid (spec 6.37). */
+export const ticketLines = pgTable('ticket_lines', {
+  id: id(),
+  tenantId: tenantId(),
+  ticketId: uuid('ticket_id').notNull(),
+  lineNo: integer('line_no').notNull(),
+  variantId: uuid('variant_id').notNull(),
+  unitId: uuid('unit_id').notNull(),
+  quantity: qty('quantity').notNull(),
+  byAmount: boolean('by_amount').notNull().default(false),
+  amountPesewas: integer('amount_pesewas'),
+  choices: jsonb('choices').$type<Array<{ slotId: string; variantId: string }>>().notNull().default(sql`'[]'::jsonb`),
+  addOns: jsonb('add_ons').$type<Array<{ groupId: string; optionId: string }>>().notNull().default(sql`'[]'::jsonb`),
+  note: text('note'),
+  station: text('station').$type<KitchenStation>().notNull(),
+  kitchenStatus: text('kitchen_status').$type<TicketLineStatus>().notNull().default('new'),
+  sentAt: timestamptz('sent_at'),
+  readyAt: timestamptz('ready_at'),
+  voidReason: text('void_reason'),
+  voidedBy: uuid('voided_by'),
+  approvedBy: uuid('approved_by'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('ticket_lines_tenant_id').on(t.tenantId, t.id),
+  unique('ticket_lines_line_no').on(t.ticketId, t.lineNo),
+  foreignKey({ name: 'ticket_lines_ticket_fk', columns: [t.tenantId, t.ticketId], foreignColumns: [tickets.tenantId, tickets.id] }),
+  foreignKey({ name: 'ticket_lines_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  foreignKey({ name: 'ticket_lines_unit_fk', columns: [t.tenantId, t.variantId, t.unitId], foreignColumns: [variantUnits.tenantId, variantUnits.variantId, variantUnits.id] }),
+  check('ticket_lines_station', sql`${t.station} in ('kitchen', 'bar', 'grill')`),
+  check('ticket_lines_status', sql`${t.kitchenStatus} in ('new', 'sent', 'ready', 'void')`),
+  check('ticket_lines_void', sql`${t.kitchenStatus} <> 'void' or ${t.voidReason} is not null`),
+  check('ticket_lines_quantity', sql`${t.quantity} > 0`),
+  check('ticket_lines_note', sql`length(${t.note}) <= 140`),
 ]);

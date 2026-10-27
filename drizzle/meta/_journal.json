@@ -127,6 +127,20 @@
       "when": 1793096065797,
       "tag": "0017_food_add_ons_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793122972592,
+      "tag": "0018_food_tickets",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793122976873,
+      "tag": "0019_food_tickets_rls",
+      "breakpoints": true
     }
   ]
 }

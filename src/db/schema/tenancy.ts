@@ -26,8 +26,10 @@ export const tenants = pgTable('tenants', {
   allowNegativeStock: boolean('allow_negative_stock').notNull().default(true), // spec 4.1: sell past zero and alert, unless the shop blocks it
   taxNumber: text('tax_number'), // TIN or VAT number printed on receipts
   receiptFooter: text('receipt_footer'), // return policy text
+  serviceChargeBp: integer('service_charge_bp').notNull().default(0), // table service charge, 0 = off (spec 4.24)
   createdAt: createdAt(),
 }, (t) => [
+  check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),
   check('tenants_status', sql`${t.status} in ('active', 'suspended', 'closed')`),
   check('tenants_tax_mode', sql`${t.taxMode} in ('inclusive', 'exclusive')`),

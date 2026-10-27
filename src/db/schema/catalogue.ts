@@ -44,6 +44,7 @@ export const categories = pgTable('categories', {
   uniqueIndex('categories_name').on(t.tenantId, sql`lower(${t.name})`),
 ]);
 
+export type KitchenStation = 'kitchen' | 'bar' | 'grill';
 export const products = pgTable('products', {
   id: id(),
   tenantId: tenantId(),
@@ -61,9 +62,11 @@ export const products = pgTable('products', {
   dosageForm: text('dosage_form'),
   registrationNumber: text('registration_number'),
   prescriptionOnly: boolean('prescription_only').notNull().default(false),
+  kitchenStation: text('kitchen_station').$type<KitchenStation>().notNull().default('kitchen'), // where its tickets go (spec 4.24)
   createdAt: createdAt(),
 }, (t) => [
   unique('products_tenant_id').on(t.tenantId, t.id),
+  check('products_kitchen_station', sql`${t.kitchenStation} in ('kitchen', 'bar', 'grill')`),
   foreignKey({ name: 'products_category_fk', columns: [t.tenantId, t.categoryId], foreignColumns: [categories.tenantId, categories.id] }),
   foreignKey({ name: 'products_tax_rule_fk', columns: [t.tenantId, t.taxRuleId], foreignColumns: [taxRules.tenantId, taxRules.id] }),
   check('products_tracking', sql`${t.tracking} in ('none', 'batch', 'serial')`),
