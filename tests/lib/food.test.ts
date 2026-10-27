@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  checkComboChoices, type ComboSlotDef, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
+  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, sameAddOns, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
 } from '@/lib/food';
 
 it('order numbers run 001 to 999 and wrap', () => {
@@ -84,4 +84,25 @@ it('every channel order needs packing; walk-in eat in does not', () => {
   expect(needsPacking('eat_in')).toBe(false);
   expect(needsPacking('takeaway')).toBe(true);
   expect(needsPacking('eat_in', true)).toBe(true);
+});
+
+const protein = { id: 'g1', minChoices: 1, maxChoices: 1, options: [{ id: 'chk', pricePesewas: 1000, active: true }, { id: 'fish', pricePesewas: 1200, active: true }] };
+const extras = { id: 'g2', minChoices: 0, maxChoices: 3, options: [{ id: 'egg', pricePesewas: 300, active: true }, { id: 'old', pricePesewas: 100, active: false }] };
+it('a required group needs its choice', () => {
+  expect(checkAddOns([protein], [])).toBe('invalid_add_ons');
+  expect(checkAddOns([protein], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g1', optionId: 'fish' }])).toBe('invalid_add_ons');
+  expect(checkAddOns([extras], [{ groupId: 'g2', optionId: 'egg' }, { groupId: 'g2', optionId: 'egg' }])).toBe('invalid_add_ons');
+  expect(checkAddOns([protein, extras], [{ groupId: 'g1', optionId: 'fish' }])).toBe('ok');
+});
+it('an inactive or unknown add-on is stale', () => {
+  expect(checkAddOns([protein, extras], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g2', optionId: 'old' }])).toBe('stale_add_ons');
+  expect(checkAddOns([protein], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g9', optionId: 'x' }])).toBe('stale_add_ons');
+});
+it('adds the chosen add-on prices', () => {
+  expect(addOnTotal([protein, extras], [{ groupId: 'g1', optionId: 'fish' }, { groupId: 'g2', optionId: 'egg' }])).toBe(1500);
+});
+it('compares add-ons as sets', () => {
+  expect(sameAddOns([{ groupId: 'g2', optionId: 'egg' }, { groupId: 'g1', optionId: 'chk' }], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g2', optionId: 'egg' }])).toBe(true);
+  expect(sameAddOns([], [{ groupId: 'g2', optionId: 'egg' }])).toBe(false);
+  expect(sameAddOns()).toBe(true);
 });

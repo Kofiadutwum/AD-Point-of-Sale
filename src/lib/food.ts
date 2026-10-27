@@ -94,3 +94,28 @@ export function phoneCustomer(i: { customer?: { name: string; phone: string }; p
   if (name.length < 1 || name.length > 80 || !phone || (!i.pickupAt && !deliveryAddress) || (deliveryAddress?.length ?? 0) > 200) return null;
   return { name, phone, pickupAt: i.pickupAt ? new Date(i.pickupAt) : null, deliveryAddress };
 }
+
+/** Spec 4.24: add-ons chosen for one line, such as Protein: Fish. */
+export type AddOnChoice = { groupId: string; optionId: string };
+export type AddOnGroupDef = { id: string; minChoices: number; maxChoices: number; options: Array<{ id: string; pricePesewas: number; active: boolean }> };
+
+/** Stale: an add-on the item no longer offers (an edit after the till built the cart). Invalid: a count outside a group's limits, or a repeat. */
+export function checkAddOns(groups: AddOnGroupDef[], chosen: AddOnChoice[]): 'ok' | 'invalid_add_ons' | 'stale_add_ons' {
+  const known = (c: AddOnChoice) => groups.find((g) => g.id === c.groupId)?.options.some((o) => o.id === c.optionId && o.active);
+  if (!chosen.every(known)) return 'stale_add_ons';
+  if (new Set(chosen.map((c) => `${c.groupId}:${c.optionId}`)).size !== chosen.length) return 'invalid_add_ons';
+  const counts = groups.every((g) => {
+    const n = chosen.filter((c) => c.groupId === g.id).length;
+    return n >= g.minChoices && n <= g.maxChoices;
+  });
+  return counts ? 'ok' : 'invalid_add_ons';
+}
+
+export function addOnTotal(groups: AddOnGroupDef[], chosen: AddOnChoice[]): number {
+  return chosen.reduce((sum, c) => sum + (groups.find((g) => g.id === c.groupId)?.options.find((o) => o.id === c.optionId)?.pricePesewas ?? 0), 0);
+}
+
+export function sameAddOns(a: AddOnChoice[] = [], b: AddOnChoice[] = []): boolean {
+  const key = (l: AddOnChoice[]) => l.map((c) => `${c.groupId}:${c.optionId}`).sort().join(',');
+  return key(a) === key(b);
+}
