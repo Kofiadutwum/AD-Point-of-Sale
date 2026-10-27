@@ -334,7 +334,7 @@ async function addOnsAsSold(tx: Tx, groups: Awaited<ReturnType<typeof loadAddOnG
 }
 
 /** A Postgres unique violation of `constraint`, from postgres.js or PGlite, wrapped by Drizzle or not. */
-function isUniqueViolation(e: unknown, constraint: string): boolean {
+export function isUniqueViolation(e: unknown, constraint: string): boolean {
   for (let err = e as { code?: string; constraint?: string; constraint_name?: string; message?: string; cause?: unknown } | undefined; err; err = err.cause as typeof err) {
     if (err.code === '23505') return [err.constraint, err.constraint_name, err.message].some((v) => v?.includes(constraint));
   }
