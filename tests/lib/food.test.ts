@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, sameAddOns, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
+  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, sameAddOns, serviceChargePesewas, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
 } from '@/lib/food';
 
 it('order numbers run 001 to 999 and wrap', () => {
@@ -105,6 +105,12 @@ it('a stale add-on does not hide a missing required one', () => {
 it('adds the chosen add-on prices', () => {
   expect(addOnTotal([protein, extras], [{ groupId: 'g1', optionId: 'fish' }, { groupId: 'g2', optionId: 'egg' }])).toBe(1500);
 });
+it('service charge is half up on the net', () => {
+  expect(serviceChargePesewas(10_000, 1000)).toBe(1000);
+  expect(serviceChargePesewas(333, 1500)).toBe(50); // 49.95 → 50
+  expect(serviceChargePesewas(5_000, 0)).toBe(0);
+});
+
 it('compares add-ons as sets', () => {
   expect(sameAddOns([{ groupId: 'g2', optionId: 'egg' }, { groupId: 'g1', optionId: 'chk' }], [{ groupId: 'g1', optionId: 'chk' }, { groupId: 'g2', optionId: 'egg' }])).toBe(true);
   expect(sameAddOns([], [{ groupId: 'g2', optionId: 'egg' }])).toBe(false);
