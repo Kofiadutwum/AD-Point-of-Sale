@@ -5,7 +5,7 @@ import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit'; // exchange_credit: server only (spec 6.32)
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
@@ -167,8 +167,8 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement')`),
-  check('payments_reference', sql`${t.method} in ('cash', 'store_credit') or ${t.reference} is not null`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit')`),
+  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),
 ]);
@@ -189,6 +189,8 @@ export const returns = pgTable('returns', {
   reference: text('reference'),
   requestedBy: uuid('requested_by').notNull(),
   approvedBy: uuid('approved_by'),
+  exchangeSaleId: uuid('exchange_sale_id'), // the sale the returned items paid towards (spec 6.32)
+  exchangeCreditPesewas: integer('exchange_credit_pesewas').notNull().default(0),
   createdAt: createdAt(),
 }, (t) => [
   unique('returns_tenant_id').on(t.tenantId, t.id),
@@ -197,6 +199,8 @@ export const returns = pgTable('returns', {
   foreignKey({ name: 'returns_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
   foreignKey({ name: 'returns_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'returns_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'returns_exchange_sale_fk', columns: [t.tenantId, t.exchangeSaleId], foreignColumns: [sales.tenantId, sales.id] }),
+  check('returns_exchange_credit', sql`${t.exchangeCreditPesewas} between 0 and ${t.refundPesewas}`),
   check('returns_kind', sql`${t.kind} in ('receipt', 'no_receipt') and (${t.kind} = 'no_receipt' or ${t.saleId} is not null)`),
   check('returns_refund', sql`${t.refundPesewas} >= 0`),
 ]);

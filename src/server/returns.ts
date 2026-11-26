@@ -1,12 +1,15 @@
 import 'server-only';
+import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  customers, payments, products, registers, returnLines, returns, saleLines, sales, stockBatches, stockMovements, tenants, users, variants, variantUnits,
+  branches, customers, payments, products, registers, returnLines, returns, saleLines, sales, stockBatches, stockMovements, tenants, users, variants, variantUnits,
   type TenderMethod,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
+import { formatReceiptNumber } from '@/device/sale';
+import { cashRounding } from '@/lib/cash-rounding';
 import { normaliseGhanaPhone } from '@/lib/contact';
 import { todayIn } from '@/lib/dates';
 import { divHalfUp, fromMilli, parseQuantity, toMilli } from '@/lib/decimal';
@@ -15,6 +18,7 @@ import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { creditStoreCredit } from './customers';
 import { type Fail, fail, isUuid } from './products';
+import { completeSaleTx, type SaleError, type SaleInput, saleFailure, throwSaleFailure } from './sales';
 import { changeBalance } from './stock';
 
 export type RefundMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
@@ -141,38 +145,54 @@ export async function processReturnTx(tx: Tx, ctx: Ctx, input: Parameters<typeof
   const parsed = processSchema.safeParse(input);
   if (!parsed.success) return fail('invalid_input');
   const s = parsed.data;
-  {
-    const loaded = await loadSale(tx, ctx, { saleId: s.saleId }, true);
-    if (!loaded) return fail<ProcessError>('not_found');
-    const plan = planReturn(loaded, s.items);
-    if (!plan.ok) return plan;
-    const reference = s.reference || null;
-    if (s.refundMethod !== 'cash' && s.refundMethod !== 'store_credit' && !reference) return fail<ProcessError>('reference_required');
-    if (s.refundMethod === 'store_credit' && !loaded.sale.customerId) return fail<ProcessError>('needs_customer');
-    const needed = await approvalFor(tx, ctx, loaded, s.refundMethod, plan.total);
-    const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
-    if (needed && !approval) return fail<ProcessError>('approval_required');
+  const loaded = await loadSale(tx, ctx, { saleId: s.saleId }, true);
+  if (!loaded) return fail<ProcessError>('not_found');
+  const plan = planReturn(loaded, s.items);
+  if (!plan.ok) return plan;
+  const reference = s.reference || null;
+  const refusal = refundRefusal(loaded, s.refundMethod, reference);
+  if (refusal) return fail<ProcessError>(refusal);
+  const needed = await approvalFor(tx, ctx, loaded, s.refundMethod, plan.total);
+  const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
+  if (needed && !approval) return fail<ProcessError>('approval_required');
 
-    const [ret] = await tx.insert(returns).values({
-      tenantId: ctx.tenantId, branchId: loaded.sale.branchId, saleId: loaded.sale.id, customerId: loaded.sale.customerId, kind: 'receipt', reason: s.reason,
-      refundMethod: s.refundMethod, refundPesewas: plan.total, reference, requestedBy: ctx.userId, approvedBy: approval?.approverId ?? null,
-    }).returning({ id: returns.id });
-    await tx.insert(returnLines).values(plan.planned.map((x) => ({
-      tenantId: ctx.tenantId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, unitId: x.line.unitId,
-      quantity: x.quantity, baseQuantity: x.baseQuantity, condition: x.item.condition, refundPesewas: x.refund,
-    })));
-    for (const x of plan.planned) {
-      if (x.item.condition === 'saleable') await restock(tx, ctx, { branchId: loaded.sale.branchId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, tracking: x.line.tracking, baseQuantity: x.baseQuantity });
+  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: s.refundMethod, reference, approvedBy: approval?.approverId ?? null });
+  await payRefund(tx, ctx, loaded, s.refundMethod, plan.total, s.reason);
+  await writeAudit(tx, {
+    tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'return_processed', recordType: 'sale', recordId: loaded.sale.id,
+    reason: s.reason, changes: { returnId, refundPesewas: plan.total, refundMethod: s.refundMethod, approvedBy: approval?.approverId ?? null },
+  });
+  return { ok: true as const, returnId, refundPesewas: plan.total };
+}
+
+type Plan = Extract<ReturnType<typeof planReturn>, { ok: true }>;
+
+const refundRefusal = (loaded: Loaded, method: RefundMethod, reference: string | null): 'reference_required' | 'needs_customer' | null =>
+  method !== 'cash' && method !== 'store_credit' && !reference ? 'reference_required'
+    : method === 'store_credit' && !loaded.sale.customerId ? 'needs_customer' : null;
+
+/** Store credit is the only refund the system pays itself; cash, MoMo, card, and bank leave the till by hand. */
+async function payRefund(tx: Tx, ctx: Ctx, loaded: Loaded, method: RefundMethod, pesewas: number, reason: string) {
+  if (method !== 'store_credit' || !loaded.sale.customerId || pesewas <= 0) return;
+  await creditStoreCredit(tx, { tenantId: ctx.tenantId, customerId: loaded.sale.customerId, amountPesewas: pesewas, source: 'refund', userId: ctx.userId, saleId: loaded.sale.id, reason });
+}
+
+/** The return, its lines, and saleable items back on hand; shared by returns and exchanges. */
+async function recordReturn(tx: Tx, ctx: Ctx, loaded: Loaded, plan: Plan, f: { reason: string; refundMethod: string; reference: string | null; approvedBy: string | null }) {
+  const [ret] = await tx.insert(returns).values({
+    tenantId: ctx.tenantId, branchId: loaded.sale.branchId, saleId: loaded.sale.id, customerId: loaded.sale.customerId, kind: 'receipt', reason: f.reason,
+    refundMethod: f.refundMethod, refundPesewas: plan.total, reference: f.reference, requestedBy: ctx.userId, approvedBy: f.approvedBy,
+  }).returning({ id: returns.id });
+  await tx.insert(returnLines).values(plan.planned.map((x) => ({
+    tenantId: ctx.tenantId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, unitId: x.line.unitId,
+    quantity: x.quantity, baseQuantity: x.baseQuantity, condition: x.item.condition, refundPesewas: x.refund,
+  })));
+  for (const x of plan.planned) {
+    if (x.item.condition === 'saleable') {
+      await restock(tx, ctx, { branchId: loaded.sale.branchId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, tracking: x.line.tracking, baseQuantity: x.baseQuantity });
     }
-    if (s.refundMethod === 'store_credit' && loaded.sale.customerId && plan.total > 0) {
-      await creditStoreCredit(tx, { tenantId: ctx.tenantId, customerId: loaded.sale.customerId, amountPesewas: plan.total, source: 'refund', userId: ctx.userId, saleId: loaded.sale.id, reason: s.reason });
-    }
-    await writeAudit(tx, {
-      tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'return_processed', recordType: 'sale', recordId: loaded.sale.id,
-      reason: s.reason, changes: { returnId: ret.id, refundPesewas: plan.total, refundMethod: s.refundMethod, approvedBy: approval?.approverId ?? null },
-    });
-    return { ok: true as const, returnId: ret.id, refundPesewas: plan.total };
   }
+  return ret.id;
 }
 
 /** Back on hand; a batch item goes back into the batches its sale line took from, up to what each gave and has not already had back. */
@@ -303,4 +323,113 @@ export async function returnWithoutReceipt(db: Db, ctx: Ctx, input: {
     });
     return { ok: true as const, returnId: ret.id, creditPesewas: priced.total };
   });
+}
+
+export type ExchangeInput = {
+  saleId: string; items: ReturnItem[]; reason: string; newLines: Array<{ variantId: string; unitId: string; quantity: string }>;
+  tenders?: SaleInput['tenders']; refundMethod?: RefundMethod; reference?: string; approvalToken?: string;
+};
+export type ExchangeQuote = {
+  returnPesewas: number; newTotalPesewas: number; creditPesewas: number; toPayPesewas: number; cashToPayPesewas: number; refundPesewas: number;
+  approval: { action: ApprovalAction; contextKey: string } | null;
+};
+type ExchangeError = ProcessError | SaleError;
+type ExchangeDone = { ok: true; returnId: string; saleId: string; changeDuePesewas: number; refundPesewas: number };
+const exchangeSchema = z.object({
+  saleId: z.uuid(), items: z.array(itemSchema).min(1).max(100), reason: z.string().trim().min(1).max(200),
+  newLines: z.array(z.object({ variantId: z.uuid(), unitId: z.uuid(), quantity: z.string() })).min(1).max(100),
+  refundMethod: z.enum(REFUND_METHODS).optional(), reference: z.string().trim().max(100).optional(), approvalToken: z.string().max(200).optional(),
+});
+class ExchangeRefused extends Error {
+  constructor(readonly code: ExchangeError) { super(code); }
+}
+/** Carries a quote out of a transaction that must roll back. */
+class QuoteReady extends Error {
+  constructor(readonly quote: ExchangeQuote) { super('quote'); }
+}
+
+/** Spec 6.32: what an exchange would cost, from the real return and sale steps, rolled back. */
+export async function quoteExchange(db: Db, ctx: Ctx, input: ExchangeInput, now: Date): Promise<({ ok: true } & ExchangeQuote) | Fail<ExchangeError>> {
+  const r = await exchange(db, ctx, { ...input, tenders: [] }, now, true);
+  if (!r.ok) return r;
+  return 'quote' in r ? { ok: true, ...r.quote } : fail('invalid_input');
+}
+
+/** Spec 6.32: the return and the new sale in one transaction; returned goods pay for the new ones, the customer pays or gets back the difference. */
+export async function processExchange(db: Db, ctx: Ctx, input: ExchangeInput, now: Date): Promise<ExchangeDone | Fail<ExchangeError>> {
+  const r = await exchange(db, ctx, input, now, false);
+  if (!r.ok) return r;
+  return 'quote' in r ? fail('invalid_input') : r;
+}
+
+async function exchange(db: Db, ctx: Ctx, input: ExchangeInput, now: Date, quote: boolean): Promise<ExchangeDone | { ok: true; quote: ExchangeQuote } | Fail<ExchangeError>> {
+  assertPermission(ctx, 'process_return');
+  assertPermission(ctx, 'make_sale');
+  const parsed = exchangeSchema.safeParse(input);
+  if (!parsed.success || !Array.isArray(input.tenders ?? [])) return fail('invalid_input');
+  if (!ctx.registerId) return fail('no_register');
+  const registerId = ctx.registerId;
+  const saleId = randomUUID();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await withTenant(db, ctx.tenantId, async (tx) => {
+        const [reg] = await tx.select({ counter: registers.receiptCounter, registerCode: registers.registerCode, branchCode: branches.branchCode })
+          .from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId));
+        if (!reg) throw new ExchangeRefused('no_register');
+        const receiptNumber = formatReceiptNumber(reg.branchCode, reg.registerCode, Number(reg.counter) + 1 + attempt);
+        return exchangeTx(tx, ctx, { ...parsed.data, tenders: input.tenders ?? [] }, now, quote, saleId, receiptNumber);
+      });
+    } catch (e) {
+      if (e instanceof QuoteReady) return { ok: true, quote: e.quote };
+      if (e instanceof ExchangeRefused) return fail(e.code);
+      const f = saleFailure(e);
+      if (f.error !== 'duplicate_receipt_number' || attempt === 1) return f; // another sale on this till took the number first
+    }
+  }
+}
+
+async function exchangeTx(
+  tx: Tx, ctx: Ctx, s: z.infer<typeof exchangeSchema> & { tenders: SaleInput['tenders'] }, now: Date, quote: boolean, saleId: string, receiptNumber: string,
+): Promise<ExchangeDone> {
+  const refuse = (code: ExchangeError): never => { throw new ExchangeRefused(code); };
+  const loaded = (await loadSale(tx, ctx, { saleId: s.saleId }, true)) ?? refuse('not_found');
+  const plan = planReturn(loaded, s.items);
+  if (!plan.ok) return refuse(plan.error);
+  // the returned goods come back first, so the new items can be sold from them
+  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: 'exchange', reference: null, approvedBy: null });
+  const sold = await completeSaleTx(tx, ctx, {
+    saleId, receiptNumber, deviceCreatedAt: now.toISOString(), customerId: loaded.sale.customerId ?? undefined, tenders: s.tenders,
+    lines: s.newLines.map((l) => ({ ...l, unitPricePesewas: 0, discountPesewas: 0 })),
+  }, now, { serverPrices: true, exchangeCreditPesewas: plan.total, quote });
+  if (!sold.ok) throwSaleFailure(sold);
+  const [made] = await tx.select({ total: sales.totalPesewas }).from(sales).where(eq(sales.id, saleId));
+  const credit = Math.min(plan.total, made.total);
+  const leftover = plan.total - credit;
+  const method = leftover > 0 ? s.refundMethod : undefined;
+  const reference = s.reference || null;
+  const needed = method ? await approvalFor(tx, ctx, loaded, method, leftover) : null;
+  if (quote) {
+    const [t] = await tx.select({ step: tenants.cashRoundingStep }).from(tenants).where(eq(tenants.id, ctx.tenantId));
+    const toPay = made.total - credit;
+    throw new QuoteReady({
+      returnPesewas: plan.total, newTotalPesewas: made.total, creditPesewas: credit, toPayPesewas: toPay,
+      cashToPayPesewas: toPay + cashRounding(made.total, credit, toPay > 0, t?.step ?? 0), refundPesewas: leftover, approval: needed,
+    });
+  }
+  if (leftover > 0 && !method) refuse('invalid_input');
+  if (method) {
+    const refusal = refundRefusal(loaded, method, reference);
+    if (refusal) refuse(refusal);
+  }
+  const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
+  if (needed && !approval) refuse('approval_required');
+  await tx.update(returns).set({
+    refundMethod: method ?? 'exchange', reference: method ? reference : null, approvedBy: approval?.approverId ?? null, exchangeSaleId: saleId, exchangeCreditPesewas: credit,
+  }).where(eq(returns.id, returnId));
+  if (method) await payRefund(tx, ctx, loaded, method, leftover, s.reason);
+  await writeAudit(tx, {
+    tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'exchange_processed', recordType: 'sale', recordId: loaded.sale.id, reason: s.reason,
+    changes: { returnId, newSaleId: saleId, returnPesewas: plan.total, creditPesewas: credit, refundPesewas: leftover, refundMethod: method ?? null, approvedBy: approval?.approverId ?? null },
+  });
+  return { ok: true, returnId, saleId, changeDuePesewas: sold.changeDuePesewas, refundPesewas: leftover };
 }

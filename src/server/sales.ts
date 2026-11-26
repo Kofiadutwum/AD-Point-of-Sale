@@ -1,5 +1,5 @@
 import 'server-only';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { and, asc, count, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
@@ -121,7 +121,13 @@ export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
 }
 
 /** Spec 6.8 inside the caller's transaction: refusals after the first write throw (see `saleFailure`), so everything rolls back together. */
-export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date): Promise<SaleResult> {
+/**
+ * serverPrices: lines are charged today's catalogue price (web screens). exchangeCreditPesewas: returned goods pay up to this much (6.32).
+ * quote: an unpaid sale is allowed so a caller can read the totals and roll back.
+ */
+export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean };
+
+export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date, opts: SaleOptions = {}): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
   const parsed = inputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: 'invalid_input' };
@@ -242,7 +248,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     if (addOnCheck === 'stale_add_ons') lenient('invalid_add_ons', 'add_ons_changed'); // a paid offline sale from before an add-on edit is kept for review
     const addOns = await addOnsAsSold(tx, addOnGroupsOfItem, l.addOns ?? [], addOnCheck === 'ok');
     const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
-    if (paying && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
+    if ((paying || opts.serverPrices) && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
     if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
     if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
     const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
@@ -260,6 +266,8 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
   const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
   const saleTotal = totals.totalPesewas + serviceCharge;
+  const exchangeCredit = Math.min(opts.exchangeCreditPesewas ?? 0, saleTotal); // never more than the new items cost
+  if (exchangeCredit > 0) s.tenders.push({ id: randomUUID(), method: 'exchange_credit', amountPesewas: exchangeCredit });
   // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
   const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
   if (channel?.collectedBy === 'app') {
@@ -273,7 +281,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   // spec 6.40: when cash pays what is left, the amount due rounds to the shop's smallest coin
   const rounding = cashRounding(saleTotal, nonCash, s.tenders.some((t) => t.method === 'cash'), shop.cashRoundingStep);
   const amountDue = saleTotal + rounding;
-  if (paid < amountDue) lenient('payment_incomplete', 'underpaid');
+  if (paid < amountDue && !opts.quote) lenient('payment_incomplete', 'underpaid');
   const changeDue = Math.max(0, paid - amountDue);
   const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
   if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null || paying !== null });

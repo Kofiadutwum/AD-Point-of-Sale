@@ -5,7 +5,7 @@ import { listApprovers } from '@/server/approvals';
 import { findReturnableSale } from '@/server/returns';
 import { getReturnSettings } from '@/server/shop-settings';
 import { pageCtx } from '../page-ctx';
-import { noReceiptAction, processReturnAction } from './actions';
+import { exchangeAction, noReceiptAction, processReturnAction } from './actions';
 
 const select = 'rounded border border-gray-400 px-3 py-2';
 
@@ -87,6 +87,50 @@ export default async function ReturnsPage({ params, searchParams }: { params: Pr
               <ApproverFields approvers={approvers} />
             </ActionForm>
           )}
+        </section>
+      )}
+
+      {sale && open.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-lg font-semibold">Exchange</h2>
+          <p className="text-sm text-gray-700">The returned items pay for the new ones; the customer pays or gets back the difference. Done at a till.</p>
+          <ActionForm action={exchangeAction.bind(null, slug, sale.saleId, open.map((l) => l.saleLineId))} submitLabel="Record exchange">
+            {open.map((l) => (
+              <div key={l.saleLineId} className="flex flex-wrap items-end gap-2">
+                <Field label={`${l.name} back (up to ${l.returnable})`} name={`xqty_${l.saleLineId}`} inputMode="decimal" required={false} defaultValue="" />
+                <Condition name={`xcond_${l.saleLineId}`} />
+              </div>
+            ))}
+            {[0, 1, 2].map((k) => (
+              <div key={k} className="flex flex-wrap items-end gap-2">
+                <Field label={`New item ${k + 1}: barcode or SKU`} name={`code_${k}`} required={false} maxLength={60} />
+                <Field label="Quantity" name={`nqty_${k}`} inputMode="decimal" required={false} defaultValue="1" />
+              </div>
+            ))}
+            <Field label="Reason" name="reason" maxLength={200} />
+            <button type="submit" name="step" value="quote" className="rounded border border-blue-800 px-4 py-2 text-blue-800">Work out the difference</button>
+            <fieldset className="flex flex-col gap-2 rounded border border-gray-300 p-3">
+              <legend className="px-1 text-sm">Customer pays</legend>
+              <Field label="Cash (GHS)" name="cash" inputMode="decimal" required={false} />
+              <div className="flex flex-wrap items-end gap-2">
+                <select name="otherMethod" className={select} defaultValue="momo_manual" aria-label="Other payment">
+                  <option value="momo_manual">MoMo</option><option value="card_terminal">Card</option><option value="bank_transfer">Bank transfer</option>
+                </select>
+                <Field label="Amount (GHS)" name="otherAmount" inputMode="decimal" required={false} />
+                <Field label="Reference" name="otherReference" required={false} maxLength={100} />
+              </div>
+            </fieldset>
+            <fieldset className="flex flex-col gap-2 rounded border border-gray-300 p-3">
+              <legend className="px-1 text-sm">Customer gets back (when the new items cost less)</legend>
+              <select name="refundMethod" className={select} defaultValue="" aria-label="Give back by">
+                <option value="">Choose how</option><option value="cash">Cash</option><option value="momo_manual">MoMo</option>
+                <option value="card_terminal">Card</option><option value="bank_transfer">Bank transfer</option>
+                {sale.customerId && <option value="store_credit">Store credit</option>}
+              </select>
+              <Field label="Reference (MoMo, card, or bank)" name="reference" required={false} maxLength={100} />
+            </fieldset>
+            <ApproverFields approvers={approvers} />
+          </ActionForm>
         </section>
       )}
 
