@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import {
-  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, sameAddOns, serviceChargePesewas, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
+  addOnTotal, checkAddOns, checkComboChoices, type ComboSlotDef, equalShares, sameAddOns, serviceChargePesewas, commissionPesewas, comboUpgradeTotal, formatOrderNumber, needsPacking, offlineOrderNumber, ORDER_NUMBER, packCount, potVariance, splitComboNet,
 } from '@/lib/food';
 
 it('order numbers run 001 to 999 and wrap', () => {
@@ -105,6 +105,12 @@ it('a stale add-on does not hide a missing required one', () => {
 it('adds the chosen add-on prices', () => {
   expect(addOnTotal([protein, extras], [{ groupId: 'g1', optionId: 'fish' }, { groupId: 'g2', optionId: 'egg' }])).toBe(1500);
 });
+it('equal shares keep every pesewa', () => {
+  expect(equalShares(10_000, 3)).toEqual([3334, 3333, 3333]);
+  expect(equalShares(5, 3)).toEqual([3, 1, 1]);
+  for (const [total, n] of [[9_999, 7], [1, 2], [123_457, 20]]) expect(equalShares(total, n).reduce((a, b) => a + b, 0)).toBe(total);
+});
+
 it('service charge is half up on the net', () => {
   expect(serviceChargePesewas(10_000, 1000)).toBe(1000);
   expect(serviceChargePesewas(333, 1500)).toBe(50); // 49.95 → 50

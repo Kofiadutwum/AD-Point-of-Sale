@@ -339,9 +339,13 @@ export const ticketLines = pgTable('ticket_lines', {
   voidReason: text('void_reason'),
   voidedBy: uuid('voided_by'),
   approvedBy: uuid('approved_by'),
+  paidQuantity: qty('paid_quantity').notNull().default('0'), // paid so far by split-bill parts (spec 6.38)
+  seat: integer('seat'), // optional seat number, for splitting by seat
   createdAt: createdAt(),
 }, (t) => [
   unique('ticket_lines_tenant_id').on(t.tenantId, t.id),
+  check('ticket_lines_paid', sql`${t.paidQuantity} >= 0 and ${t.paidQuantity} <= ${t.quantity}`),
+  check('ticket_lines_seat', sql`${t.seat} between 1 and 50`),
   unique('ticket_lines_line_no').on(t.ticketId, t.lineNo),
   foreignKey({ name: 'ticket_lines_ticket_fk', columns: [t.tenantId, t.ticketId], foreignColumns: [tickets.tenantId, tickets.id] }),
   foreignKey({ name: 'ticket_lines_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),

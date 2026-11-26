@@ -80,6 +80,12 @@ export function serviceChargePesewas(netPesewas: number, bp: number): number {
 
 export const KITCHEN_STATIONS = ['kitchen', 'bar', 'grill'] as const;
 
+/** Spec 6.38: a bill split equally; the leftover pesewas go to the first share, so the shares always add up to the total. */
+export function equalShares(totalPesewas: number, parts: number): number[] {
+  const share = Math.floor(totalPesewas / parts);
+  return Array.from({ length: parts }, (_, i) => share + (i === 0 ? totalPesewas - share * parts : 0));
+}
+
 /**
  * Spec 6.52 (reports): shares a combo net price across its parts in proportion to their usual prices.
  * Each part gets the floor of its share; the pesewas left over go to the largest part (the first on a tie), so the shares add up to .

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { addOnGroups, addOnOptions, branches, comboChoices, diningTables, ticketLines, tickets, variantAddOnGroups, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
+import { addOnGroups, addOnOptions, branches, comboChoices, diningTables, ticketLines, tickets, variantAddOnGroups, variantUnits, comboSlots, deviceCacheVersions, kitchenOrders, payments, potRecords, sales, salesChannels, soldOut, variants, wastageEntries } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { ctxFor, productFor, type SeededShop, seedShop } from '../helpers/fixtures';
 import { createTestDb, dbError } from '../helpers/test-db';
@@ -182,6 +182,14 @@ describe('tickets', () => {
     const [tk] = await ticket(a);
     const line = { tenantId: a.tenantId, ticketId: tk.id, lineNo: 1, variantId: variantA, unitId: variantA, quantity: '1', station: 'kitchen' as const, kitchenStatus: 'void' as const };
     expect(await dbError(asPlatform(db, (tx) => tx.insert(ticketLines).values(line)))).toMatch(/ticket_lines_void|foreign key/);
+  });
+
+  it('paid quantity stays between 0 and the quantity', async () => {
+    const [tk] = await ticket(a);
+    const [unit] = await asPlatform(db, (tx) => tx.select({ id: variantUnits.id }).from(variantUnits).where(eq(variantUnits.variantId, variantA)));
+    const line = { tenantId: a.tenantId, ticketId: tk.id, lineNo: 1, variantId: variantA, unitId: unit.id, quantity: '1', station: 'kitchen' as const };
+    expect(await dbError(asPlatform(db, (tx) => tx.insert(ticketLines).values({ ...line, paidQuantity: '2' })))).toMatch(/ticket_lines_paid/);
+    await expect(asPlatform(db, (tx) => tx.insert(ticketLines).values({ ...line, paidQuantity: '1', seat: 2 }))).resolves.toBeDefined();
   });
 
   it('table names are unique per branch in any case', async () => {
