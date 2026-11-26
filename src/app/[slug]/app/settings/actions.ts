@@ -112,6 +112,7 @@ export async function saveSalesAction(slug: string, _prev: FormState, fd: FormDa
   const ctx = await pageCtx(slug, 'manage_shop_settings');
   const r = await saveSalesSettings(getDb(), ctx, {
     allowNegativeStock: fd.get('allowNegativeStock') === 'on', taxNumber: String(fd.get('taxNumber') ?? ''), receiptFooter: String(fd.get('receiptFooter') ?? ''),
+    cashRoundingStep: Number(fd.get('cashRoundingStep') ?? 0),
   });
   if (!r.ok) return { error: 'Check the details.' };
   revalidatePath(`/${slug}/app/settings`);

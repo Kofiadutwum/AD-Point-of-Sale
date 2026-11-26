@@ -1,4 +1,5 @@
 'use client';
+import { cashRounding } from '@/lib/cash-rounding';
 import { useMemo, useState } from 'react';
 import { addOnGroupsOf, canAdd, type CartLine, comboSlotsOf, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import type { DeviceCache } from '@/lib/device-contract';
@@ -370,6 +371,12 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
         <dt>Subtotal</dt><dd className="text-right">{formatCedis(priced.totals.subtotalPesewas)}</dd>
         <dt>Tax</dt><dd className="text-right">{formatCedis(priced.totals.taxPesewas)}</dd>
         <dt className="text-lg font-semibold">Total</dt><dd className="text-right text-lg font-semibold">{formatCedis(priced.totals.totalPesewas)}</dd>
+        {(() => { // spec 6.40: what cash pays rounds to the shop's smallest coin
+          const r = appCollects ? 0 : cashRounding(priced.totals.totalPesewas, tenders.filter((t) => t.method !== 'cash').reduce((s, t) => s + (parseCedis(t.amount) ?? 0), 0),
+            tenders.some((t) => t.method === 'cash'), cache.shop.cashRoundingStep ?? 0);
+          return r !== 0 && <><dt>Cash rounding</dt><dd className="text-right">{formatCedis(r)}</dd>
+            <dt className="font-semibold">Cash to pay</dt><dd className="text-right font-semibold">{formatCedis(priced.totals.totalPesewas + r)}</dd></>;
+        })()}
       </dl>
       {appCollects ? <p className="text-sm">Paid by the app: {channel!.name} pays the shop later.</p> : (
       <fieldset className="flex flex-col gap-2">

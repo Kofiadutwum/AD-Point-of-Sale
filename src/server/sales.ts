@@ -9,6 +9,7 @@ import {
   TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
+import { cashRounding } from '@/lib/cash-rounding';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
 import { fromMilli, multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
@@ -176,7 +177,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   if (s.customerId && !customer) return refuse('unknown_customer');
 
   const [shop] = await tx.select({
-    serviceChargeBp: tenants.serviceChargeBp, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
+    serviceChargeBp: tenants.serviceChargeBp, cashRoundingStep: tenants.cashRoundingStep, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
   }).from(tenants).where(eq(tenants.id, ctx.tenantId));
   const today = todayIn(shop.timezone, now);
   const deviceAt = new Date(s.deviceCreatedAt);
@@ -269,8 +270,11 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
   if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
   const paid = s.tenders.reduce((a, t) => a + t.amountPesewas, 0);
-  if (paid < saleTotal) lenient('payment_incomplete', 'underpaid');
-  const changeDue = Math.max(0, paid - saleTotal);
+  // spec 6.40: when cash pays what is left, the amount due rounds to the shop's smallest coin
+  const rounding = cashRounding(saleTotal, nonCash, s.tenders.some((t) => t.method === 'cash'), shop.cashRoundingStep);
+  const amountDue = saleTotal + rounding;
+  if (paid < amountDue) lenient('payment_incomplete', 'underpaid');
+  const changeDue = Math.max(0, paid - amountDue);
   const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
   if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null || paying !== null });
 
@@ -278,7 +282,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const [saved] = await tx.insert(sales).values({
     id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
     receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
-    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, paidPesewas: paid,
+    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, roundingPesewas: rounding, paidPesewas: paid,
     changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
     businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
     serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,

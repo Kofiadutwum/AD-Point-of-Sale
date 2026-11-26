@@ -176,6 +176,13 @@
       "when": 1795658542225,
       "tag": "0024_returns_reference",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795660887123,
+      "tag": "0025_cash_rounding",
+      "breakpoints": true
     }
   ]
 }

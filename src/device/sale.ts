@@ -1,3 +1,4 @@
+import { cashRounding } from '@/lib/cash-rounding';
 import type { DeviceCache, SaleRequest } from '@/lib/device-contract';
 import type { DeviceMeta, OutboxEntry } from './store';
 
@@ -15,16 +16,17 @@ export function offlineBlock(cache: DeviceCache | null, meta: DeviceMeta, now: n
   return null;
 }
 
-/** Spec 6.8: manual payments need a reference, and only cash can give change. */
-export function checkTenders(tenders: TenderInput[], totalPesewas: number): { ok: true; changeDuePesewas: number } | { ok: false; error: string } {
+/** Spec 6.8: manual payments need a reference, and only cash can give change; 6.40: what cash pays rounds to the shop's step. */
+export function checkTenders(tenders: TenderInput[], totalPesewas: number, roundingStep = 0): { ok: true; changeDuePesewas: number; roundingPesewas: number } | { ok: false; error: string } {
   if (tenders.length === 0) return { ok: false, error: 'Add a payment.' };
   if (tenders.some((t) => !Number.isSafeInteger(t.amountPesewas) || t.amountPesewas <= 0)) return { ok: false, error: 'Enter each amount in cedis.' };
   if (tenders.some((t) => t.method !== 'cash' && !t.reference.trim())) return { ok: false, error: 'Enter the reference for MoMo, card, bank, or app payments.' };
   const nonCash = tenders.filter((t) => t.method !== 'cash').reduce((s, t) => s + t.amountPesewas, 0);
   if (nonCash > totalPesewas) return { ok: false, error: 'Only cash can give change. Reduce the MoMo, card, or bank amount.' };
   const paid = tenders.reduce((s, t) => s + t.amountPesewas, 0);
-  if (paid < totalPesewas) return { ok: false, error: 'Not enough paid yet.' };
-  return { ok: true, changeDuePesewas: paid - totalPesewas };
+  const roundingPesewas = cashRounding(totalPesewas, nonCash, tenders.some((t) => t.method === 'cash'), roundingStep);
+  if (paid < totalPesewas + roundingPesewas) return { ok: false, error: 'Not enough paid yet.' };
+  return { ok: true, changeDuePesewas: paid - totalPesewas - roundingPesewas, roundingPesewas };
 }
 
 /** A delivery-app order ID already waiting to sync on this till: entering it again would make a second sale (spec 6.57). */

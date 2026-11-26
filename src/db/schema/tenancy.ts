@@ -30,9 +30,11 @@ export const tenants = pgTable('tenants', {
   refundLimitPesewas: integer('refund_limit_pesewas').notNull().default(0), // refunds above this need a manager unless the user may refund freely (spec 6.12)
   allowNoReceiptReturns: boolean('allow_no_receipt_returns').notNull().default(false),
   noReceiptMonthlyLimit: integer('no_receipt_monthly_limit').notNull().default(2),
+  cashRoundingStep: integer('cash_rounding_step').notNull().default(0), // pesewas cash totals round to, 0 = off (spec 6.40)
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),
+  check('tenants_cash_rounding', sql`${t.cashRoundingStep} in (0, 5, 10, 50, 100)`),
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),
   check('tenants_status', sql`${t.status} in ('active', 'suspended', 'closed')`),
   check('tenants_tax_mode', sql`${t.taxMode} in ('inclusive', 'exclusive')`),

@@ -55,7 +55,7 @@ const report = (saleId: string, status: 'held' | 'synced' = 'held') => ({
 it('gives a registered device its catalogue, settings, and branch staff with PIN hashes', async () => {
   const c = await getDeviceCache(db, dev(), t0);
   expect(c!.register).toMatchObject({ registerCode: 'T1', branchCode: 'B1', name: 'Till 1' });
-  expect(c!.shop).toMatchObject({ offlineEnabled: true, canSell: true, taxMode: 'inclusive' });
+  expect(c!.shop).toMatchObject({ offlineEnabled: true, canSell: true, taxMode: 'inclusive', cashRoundingStep: 0 });
   expect(c!.staff.map((s) => s.name).sort()).toEqual(['kofi', 'owner']);
   const kofi = c!.staff.find((s) => s.name === 'kofi')!;
   expect(kofi.pinHash).toMatch(/^\$argon2id\$/);

@@ -102,6 +102,7 @@ export const sales = pgTable('sales', {
   externalOrderId: text('external_order_id'), // the platform order ID
   commissionPesewas: integer('commission_pesewas').notNull().default(0),
   serviceChargePesewas: integer('service_charge_pesewas').notNull().default(0), // untaxed, added to the total (spec 6.6)
+  roundingPesewas: integer('rounding_pesewas').notNull().default(0), // cash rounding added to the amount due, may be negative (spec 6.40)
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),

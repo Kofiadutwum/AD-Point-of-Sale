@@ -76,6 +76,11 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
           <Check name="allowNegativeStock" label="Allow selling when recorded stock is zero (the manager is alerted)" defaultChecked={salesSettings.allowNegativeStock} />
           <Field label="TIN or VAT number on receipts" name="taxNumber" required={false} maxLength={30} defaultValue={salesSettings.taxNumber ?? ''} />
           <Field label="Receipt footer (return policy)" name="receiptFooter" required={false} maxLength={300} defaultValue={salesSettings.receiptFooter ?? ''} />
+          <label className="flex flex-col gap-1 text-sm">Round cash totals to
+            <select name="cashRoundingStep" defaultValue={salesSettings.cashRoundingStep} className="rounded border border-gray-400 px-3 py-2">
+              <option value={0}>No rounding</option><option value={5}>5 pesewas</option><option value={10}>10 pesewas</option><option value={50}>50 pesewas</option><option value={100}>GHS 1</option>
+            </select>
+          </label>
         </ActionForm>
       </section>
       <section className="max-w-md">

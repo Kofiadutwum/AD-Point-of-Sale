@@ -1,3 +1,4 @@
+import { CASH_ROUNDING_STEPS } from '@/lib/cash-rounding';
 import 'server-only';
 import { and, asc, eq, isNotNull, like, sql } from 'drizzle-orm';
 import type { Db } from '@/db/client';
@@ -74,12 +75,12 @@ export async function saveSellingSettings(
   });
 }
 
-export type SalesSettings = { allowNegativeStock: boolean; taxNumber: string | null; receiptFooter: string | null };
+export type SalesSettings = { allowNegativeStock: boolean; taxNumber: string | null; receiptFooter: string | null; cashRoundingStep: number };
 
 /** Readable by any signed-in member: receipts and the till need them. */
 export async function getSalesSettings(db: Db, ctx: Ctx): Promise<SalesSettings> {
   const [t] = await withTenant(db, ctx.tenantId, (tx) => tx
-    .select({ allowNegativeStock: tenants.allowNegativeStock, taxNumber: tenants.taxNumber, receiptFooter: tenants.receiptFooter })
+    .select({ allowNegativeStock: tenants.allowNegativeStock, taxNumber: tenants.taxNumber, receiptFooter: tenants.receiptFooter, cashRoundingStep: tenants.cashRoundingStep })
     .from(tenants).where(eq(tenants.id, ctx.tenantId)));
   return t;
 }
@@ -90,8 +91,9 @@ export async function saveSalesSettings(db: Db, ctx: Ctx, input: SalesSettings):
   const taxNumber = clean(input.taxNumber, 30);
   const receiptFooter = clean(input.receiptFooter, 300);
   if (typeof input.allowNegativeStock !== 'boolean' || taxNumber === undefined || receiptFooter === undefined
-    || (taxNumber?.length ?? 0) > 30 || (receiptFooter?.length ?? 0) > 300) return { ok: false, error: 'invalid_input' };
-  const next = { allowNegativeStock: input.allowNegativeStock, taxNumber, receiptFooter };
+    || (taxNumber?.length ?? 0) > 30 || (receiptFooter?.length ?? 0) > 300
+    || !(CASH_ROUNDING_STEPS as readonly number[]).includes(input.cashRoundingStep)) return { ok: false, error: 'invalid_input' };
+  const next = { allowNegativeStock: input.allowNegativeStock, taxNumber, receiptFooter, cashRoundingStep: input.cashRoundingStep };
   return withTenant(db, ctx.tenantId, async (tx) => {
     await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'sales_settings_saved', changes: next });
