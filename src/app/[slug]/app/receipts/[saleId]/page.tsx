@@ -3,13 +3,15 @@ import { CopyBox } from '@/components/form';
 import { PrintButton } from '@/components/print-button';
 import { ReceiptBody } from '@/components/receipt-view';
 import { getDb } from '@/db/client';
+import { equalShares } from '@/lib/food';
+import { formatCedis } from '@/lib/money';
 import { receiptShareText, whatsappShareUrl } from '@/lib/receipt';
 import { getReceipt } from '@/server/receipts';
 import { pageCtx } from '../../page-ctx';
 
 /** Print view for 58 mm or 80 mm thermal paper, plus share buttons (spec 4.10). `?reprint=1` logs a reprint. */
 export default async function ReceiptPage({ params, searchParams }: {
-  params: Promise<{ slug: string; saleId: string }>; searchParams: Promise<{ w?: string; reprint?: string }>;
+  params: Promise<{ slug: string; saleId: string }>; searchParams: Promise<{ w?: string; reprint?: string; shares?: string }>;
 }) {
   const { slug, saleId } = await params;
   const sp = await searchParams;
@@ -17,6 +19,7 @@ export default async function ReceiptPage({ params, searchParams }: {
   const r = await getReceipt(getDb(), ctx, saleId, { reprint: sp.reprint === '1' });
   if (!r) notFound();
   const width = sp.w === '58' ? 58 : 80;
+  const shares = Math.min(20, Math.max(0, Number(sp.shares) || 0));
   const link = `${process.env.APP_URL ?? 'http://localhost:3000'}/${slug}/r/${r.shareCode}`;
   const share = whatsappShareUrl(receiptShareText({ shopName: r.shopName, receiptNumber: r.receiptNumber, totalPesewas: r.totalPesewas, url: link }), r.customerPhone);
   const widthLink = (w: number) => `?${new URLSearchParams({ w: String(w), ...(sp.reprint === '1' ? { reprint: '1' } : {}) })}`;
@@ -34,6 +37,14 @@ export default async function ReceiptPage({ params, searchParams }: {
       <div className="print:hidden"><CopyBox text={link} /></div>
       <div id="receipt" className="bg-white p-2" style={{ width: `${width}mm` }}>
         <ReceiptBody r={r} />
+        {/* spec 6.38: a bill split equally prints one slip per payer */}
+        {shares >= 2 && equalShares(r.totalPesewas, shares).map((amount, i) => (
+          <div key={i} className="mt-3 border-t border-dashed border-black pt-2 text-center break-before-page">
+            <p>{r.shopName} · Receipt {r.receiptNumber}</p>
+            <p className="font-bold">Share {i + 1} of {shares}</p>
+            <p className="text-lg font-bold">{formatCedis(amount)}</p>
+          </div>
+        ))}
       </div>
     </main>
   );

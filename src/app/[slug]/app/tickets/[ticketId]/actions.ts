@@ -34,6 +34,7 @@ export async function addLineAction(slug: string, ticketId: string, variantId: s
   const addOns = [...fd.keys()].filter((k) => k.startsWith('group-')).flatMap((k) => fd.getAll(k).map(String).filter(Boolean).map((optionId) => ({ groupId: k.slice(6), optionId })));
   const r = await addTicketLine(getDb(), await ctxOf(slug), ticketId, {
     variantId, unitId, quantity: text(fd, 'quantity') || '1', ...(addOns.length ? { addOns } : {}), ...(text(fd, 'note') ? { note: text(fd, 'note') } : {}),
+    ...(text(fd, 'seat') ? { seat: Number(text(fd, 'seat')) } : {}),
   }, new Date());
   if (!r.ok) return say(r, slug, ticketId);
   redirect(`/${slug}/app/tickets/${ticketId}`);
@@ -69,13 +70,34 @@ export async function cancelAction(slug: string, ticketId: string, _prev: FormSt
   redirect(`/${slug}/app/tables`);
 }
 
-export async function payAction(slug: string, ticketId: string, _prev: FormState, fd: FormData): Promise<FormState> {
-  const method = (text(fd, 'method') || 'cash') as TenderMethod;
-  const amountPesewas = parseCedis(text(fd, 'amount'));
-  if (amountPesewas === null || amountPesewas <= 0) return { error: 'Enter the amount paid in cedis.' };
-  const r = await payTicket(getDb(), await ctxOf(slug), {
-    ticketId, tenders: [{ id: randomUUID(), method, amountPesewas, ...(text(fd, 'reference') ? { reference: text(fd, 'reference') } : {}) }],
-  }, new Date());
+/** One tender from the form fields method<suffix>, amount<suffix>, reference<suffix>; null when the amount is missing. */
+function tenderFrom(fd: FormData, suffix = '') {
+  const amountPesewas = parseCedis(text(fd, `amount${suffix}`));
+  if (amountPesewas === null || amountPesewas <= 0) return null;
+  const reference = text(fd, `reference${suffix}`);
+  return { id: randomUUID(), method: (text(fd, `method${suffix}`) || 'cash') as TenderMethod, amountPesewas, ...(reference ? { reference } : {}) };
+}
+
+async function pay(slug: string, ticketId: string, tenders: NonNullable<ReturnType<typeof tenderFrom>>[], part?: Array<{ lineId: string; quantity: string }>, shares?: number): Promise<FormState> {
+  const r = await payTicket(getDb(), await ctxOf(slug), { ticketId, tenders, ...(part ? { part } : {}) }, new Date());
   if (!r.ok) return say(r, slug, ticketId);
-  redirect(`/${slug}/app/receipts/${r.saleId}`);
+  redirect(`/${slug}/app/receipts/${r.saleId}${shares ? `?shares=${shares}` : ''}`);
+}
+
+export async function payAction(slug: string, ticketId: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const tender = tenderFrom(fd);
+  return tender ? pay(slug, ticketId, [tender]) : { error: 'Enter the amount paid in cedis.' };
+}
+
+/** Spec 6.38: one person pays the items or quantities chosen for them; the ticket stays open until everything is paid. */
+export async function payPartAction(slug: string, ticketId: string, partJson: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const tender = tenderFrom(fd);
+  return tender ? pay(slug, ticketId, [tender], JSON.parse(partJson)) : { error: 'Enter the amount paid in cedis.' };
+}
+
+/** Spec 6.38: the bill split equally; one tender per share, and the receipt prints a slip per share. */
+export async function payEqualAction(slug: string, ticketId: string, shares: number, _prev: FormState, fd: FormData): Promise<FormState> {
+  const tenders = Array.from({ length: shares }, (_, i) => tenderFrom(fd, `-${i}`));
+  if (tenders.some((x) => x === null)) return { error: 'Enter every share in cedis.' };
+  return pay(slug, ticketId, tenders as NonNullable<ReturnType<typeof tenderFrom>>[], undefined, shares);
 }

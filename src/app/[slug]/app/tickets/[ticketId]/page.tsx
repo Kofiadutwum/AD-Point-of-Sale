@@ -8,14 +8,30 @@ import { formatCedis } from '@/lib/money';
 import { currentTicketBranch, getTicket, listApprovers, listOpenTickets, listTicketItems, quoteTicket } from '@/server/tickets';
 import { pageCtx } from '../../page-ctx';
 import {
-  addLineAction, cancelAction, moveAction, payAction, printBillAction, removeLineAction, sendAction, voidAction,
+  addLineAction, cancelAction, moveAction, payAction, payEqualAction, payPartAction, printBillAction, removeLineAction, sendAction, voidAction,
 } from './actions';
+import { equalShares } from '@/lib/food';
 
 const KITCHEN = { new: 'Not sent', sent: 'Sent', ready: 'Ready', void: 'Voided' } as const;
+
+/** Method, amount (filled with what is due), and reference for one payment; suffix tells shares apart. */
+function PayFields({ amount, suffix = '' }: { amount: number; suffix?: string }) {
+  return (
+    <>
+      <label className="flex flex-col gap-1 text-sm">Method
+        <select name={`method${suffix}`} className="rounded border border-gray-400 px-3 py-2">
+          <option value="cash">Cash</option><option value="momo_manual">MoMo</option><option value="card_terminal">Card</option><option value="bank_transfer">Bank</option>
+        </select>
+      </label>
+      <Field label="Amount paid (GHS)" name={`amount${suffix}`} inputMode="decimal" defaultValue={(amount / 100).toFixed(2)} />
+      <Field label="Reference (MoMo, card, bank)" name={`reference${suffix}`} required={false} maxLength={100} />
+    </>
+  );
+}
 const STATION = { kitchen: 'Kitchen', bar: 'Bar', grill: 'Grill' } as const;
 
 /** Spec 6.37: a table or named ticket: add items, send them to the kitchen, void, move, print the bill, and take payment. */
-export default async function TicketPage({ params, searchParams }: { params: Promise<{ slug: string; ticketId: string }>; searchParams: Promise<{ item?: string }> }) {
+export default async function TicketPage({ params, searchParams }: { params: Promise<{ slug: string; ticketId: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
   const { slug, ticketId } = await params;
   const ctx = await pageCtx(slug, 'take_orders');
   const ticket = await getTicket(getDb(), ctx, ticketId);
@@ -27,11 +43,23 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
     open && branchId ? listApprovers(getDb(), ctx, branchId) : [], getServiceChargeBp(getDb(), ctx),
   ]);
   const quote = open ? await quoteTicket(getDb(), ctx, ticket.id, new Date()) : null;
-  const wanted = (await searchParams).item;
+  const search = await searchParams;
+  const wanted = search.item;
   const picked = items.find((i) => i.variantId === wanted);
   const groupIds = picked ? await getItemAddOnGroups(getDb(), ctx, picked.variantId) : [];
   const groups = groupIds.length ? (await listAddOnGroups(getDb(), ctx)).filter((g) => groupIds.includes(g.id)).sort((a, b) => groupIds.indexOf(a.id) - groupIds.indexOf(b.id)) : [];
   const live = ticket.lines.filter((l) => l.kitchenStatus !== 'void');
+  // spec 6.38: a split part comes from the address bar (q-<lineId>=quantity), or seat=n picks that seat's unpaid lines
+  const unpaid = (l: (typeof live)[number]) => Number(l.quantity) - Number(l.paidQuantity);
+  const seatPick = Number(search.seat) || null;
+  const part = live.flatMap((l) => {
+    const q = seatPick ? (l.seat === seatPick ? unpaid(l) : 0) : Number(search[`q-${l.id}`] ?? 0);
+    return q > 0 ? [{ lineId: l.id, quantity: String(q) }] : [];
+  });
+  const partQuote = open && part.length ? await quoteTicket(getDb(), ctx, ticket.id, new Date(), part) : null;
+  const shares = Math.min(20, Math.max(0, Number(search.shares) || 0));
+  const seats = [...new Set(live.filter((l) => l.seat && unpaid(l) > 0).map((l) => l.seat!))].sort((a, b) => a - b);
+  const canPay = ctx.permissions.includes('make_sale');
   return (
     <main className="flex max-w-2xl flex-col gap-6">
       <a href={`/${slug}/app/tables`} className="text-sm text-blue-800 underline print:hidden">← Tables</a>
@@ -44,7 +72,8 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
           {ticket.lines.map((l) => (
             <tr key={l.id} className={`border-b align-top ${l.kitchenStatus === 'void' ? 'text-gray-500 line-through' : ''}`}>
               <td className="py-2">
-                {Number(l.quantity)} × {l.name}
+                {Number(l.quantity)} × {l.name}{l.seat ? ` · seat ${l.seat}` : ''}
+                {Number(l.paidQuantity) > 0 && <span className="block pl-3 text-xs text-green-800">paid {Number(l.paidQuantity)} of {Number(l.quantity)}</span>}
                 {l.addOns.length > 0 && <span className="block pl-3 text-xs">+ {l.addOns.join(', ')}</span>}
                 {l.note && <span className="block pl-3 text-xs italic">{l.note}</span>}
               </td>
@@ -106,6 +135,7 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
                   </fieldset>
                 ))}
                 <Field label="Note for the kitchen" name="note" maxLength={140} required={false} />
+                <Field label="Seat (optional, for splitting by seat)" name="seat" type="number" min={1} max={50} required={false} />
               </ActionForm>
             )}
           </section>
@@ -127,7 +157,45 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
               </ActionForm>
             </section>
           )}
-          {ctx.permissions.includes('make_sale') && <section>
+          {canPay && live.some((l) => unpaid(l) > 0) && (
+            <section className="flex flex-col gap-3">
+              <h2 className="text-lg font-semibold">Split the bill</h2>
+              <form className="flex flex-col gap-1 text-sm">
+                <p>By item: how much of each does this person pay?</p>
+                {live.filter((l) => unpaid(l) > 0).map((l) => (
+                  <label key={l.id} className="flex items-center gap-2">
+                    <input name={`q-${l.id}`} type="number" step="any" min="0" max={unpaid(l)} defaultValue={part.find((p) => p.lineId === l.id)?.quantity ?? ''}
+                      aria-label={`Quantity of ${l.name}`} className="w-20 rounded border px-2 py-1" />
+                    of {unpaid(l)} × {l.name}{l.seat ? ` (seat ${l.seat})` : ''}
+                  </label>
+                ))}
+                <button className="self-start rounded border px-3 py-2">Work out this part</button>
+              </form>
+              {seats.length > 0 && (
+                <p className="flex flex-wrap gap-2 text-sm">By seat: {seats.map((n) => <a key={n} href={`?seat=${n}`} className="rounded border px-3 py-1">Seat {n}</a>)}</p>
+              )}
+              {partQuote && (
+                <div className="rounded border p-3">
+                  <p className="font-semibold">This part: {formatCedis(partQuote.totalPesewas)}{partQuote.serviceChargePesewas > 0 ? ` (incl. service ${formatCedis(partQuote.serviceChargePesewas)})` : ''}</p>
+                  <ActionForm action={payPartAction.bind(null, slug, ticket.id, JSON.stringify(part))} submitLabel="Pay this part">
+                    <PayFields amount={partQuote.totalPesewas} />
+                  </ActionForm>
+                </div>
+              )}
+              <form className="flex items-end gap-2 text-sm">
+                <Field label="Split equally between" name="shares" type="number" min={2} max={20} defaultValue={shares ? String(shares) : ''} />
+                <button className="rounded border px-3 py-2">Show shares</button>
+              </form>
+              {shares >= 2 && quote && (
+                <ActionForm action={payEqualAction.bind(null, slug, ticket.id, shares)} submitLabel="Take all shares">
+                  {equalShares(quote.totalPesewas, shares).map((amount, i) => (
+                    <fieldset key={i} className="rounded border p-2 text-sm"><legend>Share {i + 1}</legend><PayFields amount={amount} suffix={`-${i}`} /></fieldset>
+                  ))}
+                </ActionForm>
+              )}
+            </section>
+          )}
+          {canPay && <section>
             <h2 className="text-lg font-semibold">Pay the bill</h2>
             <ActionForm action={payAction.bind(null, slug, ticket.id)} submitLabel="Take payment">
               <label className="flex flex-col gap-1 text-sm">Method
