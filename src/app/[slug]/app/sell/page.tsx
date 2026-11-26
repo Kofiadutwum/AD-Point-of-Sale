@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { SellScreen } from '@/components/till/sell-screen';
 import { getDb } from '@/db/client';
 import { DEVICE_COOKIE } from '@/lib/cookies';
+import { listApprovers } from '@/server/approvals';
 import { getSalesSettings } from '@/server/shop-settings';
 import { tillRegister, tillTaxMode } from '@/server/till';
 import { pageCtx } from '../page-ctx';
@@ -16,7 +17,8 @@ export default async function SellPage({ params }: { params: Promise<{ slug: str
   }
   return (
     <SellScreen slug={slug} till={till} canDiscount={ctx.permissions.includes('give_discount')}
-      taxMode={await tillTaxMode(getDb(), ctx)} roundingStep={(await getSalesSettings(getDb(), ctx)).cashRoundingStep} />
+      taxMode={await tillTaxMode(getDb(), ctx)} roundingStep={(await getSalesSettings(getDb(), ctx)).cashRoundingStep}
+      canDispense={ctx.permissions.includes('dispense_prescription')} pharmacists={await listApprovers(getDb(), ctx, 'dispense_prescription')} />
   );
 }
 

@@ -1,5 +1,6 @@
 'use server';
 import { getDb } from '@/db/client';
+import { requestApproval } from '@/server/approvals';
 import { type Customer, listCustomers } from '@/server/customers';
 import { type CatalogueHit, searchCatalogue } from '@/server/products';
 import { lookupTillItem, type TillItem, tillItemForVariant } from '@/server/till';
@@ -26,4 +27,13 @@ export async function priceItemAction(
 export async function findCustomersAction(slug: string, query: string): Promise<Customer[]> {
   const ctx = await pageCtx(slug, 'make_sale');
   return query.trim() ? listCustomers(getDb(), ctx, { query, limit: 5 }) : [];
+}
+
+/** Spec 6.36: a pharmacist approves prescription-only medicine on this sale with their PIN. */
+export async function rxApprovalAction(slug: string, saleId: string, approverId: string, pin: string): Promise<{ token: string } | { error: string }> {
+  const ctx = await pageCtx(slug, 'make_sale');
+  if (!approverId || !pin) return { error: 'A pharmacist must approve: choose who and enter their PIN.' };
+  const r = await requestApproval(getDb(), ctx, { action: 'dispense_prescription', contextKey: saleId, approverId, pin }, new Date());
+  if (r.ok) return { token: r.token };
+  return { error: r.error === 'wrong_pin' ? 'Wrong PIN.' : r.error === 'pin_locked' ? 'Too many wrong PINs. Try again later.' : 'That person cannot approve.' };
 }

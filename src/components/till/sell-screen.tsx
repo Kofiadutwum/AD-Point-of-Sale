@@ -1,7 +1,7 @@
 'use client';
 import { cashRounding } from '@/lib/cash-rounding';
 import { useCallback, useRef, useState } from 'react';
-import { findCustomersAction, findItemAction, priceItemAction } from '@/app/[slug]/app/sell/actions';
+import { findCustomersAction, findItemAction, priceItemAction, rxApprovalAction } from '@/app/[slug]/app/sell/actions';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { formatCedis, parseCedis } from '@/lib/money';
 import { formatReceiptNumber } from '@/lib/receipt';
@@ -14,7 +14,9 @@ type Line = TillItem & { discountPesewas: number; serials: string };
 type OtherMethod = 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
 
 const ERRORS: Record<string, string> = {
-  price_changed: 'A price changed. Remove the item and scan it again.', item_unavailable: 'An item is no longer sold.',
+  price_changed: 'A price changed. Remove the item and scan it again.',
+  otc_only: 'This shop sells over-the-counter medicine only.', prescription_required: 'Enter a prescription dated within the last year.',
+  prescription_not_allowed: 'A pharmacist must approve prescription-only medicine.', item_unavailable: 'An item is no longer sold.',
   not_enough_stock: 'Not enough stock for this sale.', only_expired_stock: 'Only expired stock is left for an item.',
   serials_required: 'Enter one serial number per unit for serial items.', unknown_serial: 'A serial number is not in stock here.',
   reference_required: 'Enter the payment reference (MoMo ID, slip or transfer number).', reduce_non_cash_amount: 'Only cash can be more than the total.',
@@ -32,7 +34,10 @@ function writeCounter(key: string, n: number) {
   try { localStorage.setItem(key, String(n)); } catch { /* private mode: the server counter still protects uniqueness */ }
 }
 
-export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 }: { slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive'; roundingStep?: number }) {
+export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0, canDispense = true, pharmacists = [] }: {
+  slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive'; roundingStep?: number;
+  canDispense?: boolean; pharmacists?: Array<{ id: string; name: string }>; // spec 6.36
+}) {
   const [lines, setLines] = useState<Line[]>([]);
   const [code, setCode] = useState('');
   const [hits, setHits] = useState<CatalogueHit[]>([]);
@@ -43,6 +48,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 
   const [cash, setCash] = useState('');
   const [other, setOther] = useState<{ method: OtherMethod; amount: string; reference: string }>({ method: 'momo_manual', amount: '', reference: '' });
   const [message, setMessage] = useState<string | null>(null);
+  const [rx, setRx] = useState({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' });
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ saleId: string; change: number; receiptNumber: string; total: number } | null>(null);
   const saleId = useRef<string | null>(null);
@@ -104,16 +110,27 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 
       ...(cashPesewas ? [{ id: crypto.randomUUID(), method: 'cash' as const, amountPesewas: cashPesewas }] : []),
       ...(otherPesewas ? [{ id: crypto.randomUUID(), method: other.method, amountPesewas: otherPesewas, reference: other.reference.trim() || undefined }] : []),
     ];
+    // spec 6.36: prescription-only medicine needs a record, and a pharmacist's PIN when the cashier cannot dispense
+    const { approverId, pin, ...prescription } = rx;
+    let prescriptionApprovalToken: string | undefined;
+    if (lines.some((l) => l.prescriptionOnly)) {
+      if (!Object.values(prescription).every((v) => v.trim())) { setMessage('Enter the prescription details.'); setBusy(false); return; }
+      if (!canDispense) {
+        const a = await rxApprovalAction(slug, saleId.current, approverId, pin);
+        if ('error' in a) { setMessage(a.error); setBusy(false); return; }
+        prescriptionApprovalToken = a.token;
+      }
+    }
     let counter = Math.max(readCounter(counterKey), till.lastCounter) + 1;
     for (let attempt = 0; attempt < 2; attempt++) {
       const receiptNumber = formatReceiptNumber(till.branchCode, till.registerCode, counter);
       const res = await fetch(`/api/${slug}/sales`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          saleId: saleId.current, receiptNumber, tenders, customerId: customer?.id, deviceCreatedAt: new Date().toISOString(),
+          saleId: saleId.current, receiptNumber, tenders, customerId: customer?.id, deviceCreatedAt: new Date().toISOString(), prescriptionApprovalToken,
           lines: lines.map((l) => ({
             variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: l.discountPesewas,
-            ...(l.tracking === 'serial' ? { serials: l.serials.split(/[\s,]+/).filter(Boolean) } : {}),
+            ...(l.tracking === 'serial' ? { serials: l.serials.split(/[\s,]+/).filter(Boolean) } : {}), ...(l.prescriptionOnly ? { prescription } : {}),
           })),
         }),
       });
@@ -121,6 +138,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 
       if (r.ok) {
         writeCounter(counterKey, counter);
         setDone({ saleId: r.saleId, change: r.changeDuePesewas, receiptNumber, total: totals.totalPesewas });
+        setRx({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' });
         setBusy(false);
         return;
       }
@@ -234,6 +252,27 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 
         ))}
       </section>
 
+      {lines.some((l) => l.prescriptionOnly) && (
+        <fieldset className="flex flex-col gap-2 rounded border border-amber-600 p-3">
+          <legend className="px-1 text-sm font-semibold">Prescription (prescription-only medicine)</legend>
+          <input aria-label="Patient name" placeholder="Patient name" maxLength={80} value={rx.patientName} onChange={(e) => setRx({ ...rx, patientName: e.target.value })} className="rounded border border-gray-400 px-2 py-2" />
+          <input aria-label="Prescriber" placeholder="Prescriber" maxLength={80} value={rx.prescriberName} onChange={(e) => setRx({ ...rx, prescriberName: e.target.value })} className="rounded border border-gray-400 px-2 py-2" />
+          <input aria-label="Facility" placeholder="Hospital or clinic" maxLength={120} value={rx.facility} onChange={(e) => setRx({ ...rx, facility: e.target.value })} className="rounded border border-gray-400 px-2 py-2" />
+          <label className="flex flex-col text-sm">Prescription date
+            <input type="date" value={rx.prescriptionDate} onChange={(e) => setRx({ ...rx, prescriptionDate: e.target.value })} className="rounded border border-gray-400 px-2 py-2" />
+          </label>
+          {!canDispense && (
+            <div className="flex flex-wrap gap-2">
+              <select aria-label="Pharmacist" value={rx.approverId} onChange={(e) => setRx({ ...rx, approverId: e.target.value })} className="rounded border border-gray-400 px-2 py-2">
+                <option value="">Pharmacist approves</option>
+                {pharmacists.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <input aria-label="Pharmacist PIN" type="password" inputMode="numeric" autoComplete="off" placeholder="PIN" value={rx.pin}
+                onChange={(e) => setRx({ ...rx, pin: e.target.value })} className="w-24 rounded border border-gray-400 px-2 py-2" />
+            </div>
+          )}
+        </fieldset>
+      )}
       <section className="flex flex-col gap-2">
         <label className="flex flex-col gap-1 text-sm">Cash received (GHS)
           <input value={cash} onChange={(e) => setCash(e.target.value)} inputMode="decimal" className="rounded border border-gray-400 px-3 py-2" />

@@ -3,7 +3,7 @@ import { cashRounding } from '@/lib/cash-rounding';
 import { useMemo, useState } from 'react';
 import { addOnGroupsOf, canAdd, type CartLine, comboSlotsOf, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import type { DeviceCache } from '@/lib/device-contract';
-import type { TenderInput } from '@/device/sale';
+import { isPrescriptionOnly, type TenderInput } from '@/device/sale';
 import { businessDate, todayIn } from '@/lib/dates';
 import type { AddOnChoice, ComboChoice, DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
@@ -114,6 +114,7 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [tenders, setTenders] = useState<Array<{ method: TenderInput['method']; amount: string; reference: string }>>([{ method: 'cash', amount: '', reference: '' }]);
+  const [rx, setRx] = useState({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' }); // spec 6.36
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [modeChoice, setModeChoice] = useState<'counter' | 'quick' | null>(() => {
@@ -241,7 +242,11 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
       ? [{ method: 'channel_settlement', amountPesewas: priced.totals.totalPesewas, reference: order.externalOrderId.trim() }]
       : tenders.map((t) => ({ method: t.method, amountPesewas: parseCedis(t.amount) ?? -1, reference: t.reference }));
     setBusy(true);
-    const r = await d.completeSale(priced.lines, priced.totals, parsed, mode ? { serviceMode: mode, diningOption: dining, ...channelFood() } : undefined);
+    const { approverId, pin, ...prescription } = rx;
+    const filled = Object.values(prescription).every((v) => v.trim());
+    const r = await d.completeSale(priced.lines, priced.totals, parsed, mode ? { serviceMode: mode, diningOption: dining, ...channelFood() } : undefined,
+      filled ? { prescription, approverId: approverId || undefined, pin: pin || undefined } : undefined);
+    if (r.ok) setRx({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' });
     setBusy(false);
     if (!r.ok) return setMessage(r.error);
     setReceipt(r.receipt);
@@ -378,6 +383,29 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
             <dt className="font-semibold">Cash to pay</dt><dd className="text-right font-semibold">{formatCedis(priced.totals.totalPesewas + r)}</dd></>;
         })()}
       </dl>
+      {priced.lines.some((l) => isPrescriptionOnly(cache, l.variantId)) && (
+        <fieldset className="flex flex-col gap-2 rounded border border-amber-600 p-3">
+          <legend className="px-1 text-sm font-semibold">Prescription (prescription-only medicine)</legend>
+          {(['patientName', 'prescriberName', 'facility'] as const).map((k) => (
+            <input key={k} aria-label={{ patientName: 'Patient name', prescriberName: 'Prescriber', facility: 'Facility' }[k]} maxLength={k === 'facility' ? 120 : 80}
+              placeholder={{ patientName: 'Patient name', prescriberName: 'Prescriber', facility: 'Hospital or clinic' }[k]}
+              value={rx[k]} onChange={(e) => setRx({ ...rx, [k]: e.target.value })} className="rounded border px-2 py-2" />
+          ))}
+          <label className="flex flex-col text-sm">Prescription date
+            <input type="date" value={rx.prescriptionDate} onChange={(e) => setRx({ ...rx, prescriptionDate: e.target.value })} className="rounded border px-2 py-2" />
+          </label>
+          {!staffPermissions.includes('dispense_prescription') && (
+            <div className="flex flex-wrap gap-2">
+              <select aria-label="Pharmacist" value={rx.approverId} onChange={(e) => setRx({ ...rx, approverId: e.target.value })} className="rounded border px-2 py-2">
+                <option value="">Pharmacist approves</option>
+                {cache.staff.filter((s) => s.id !== d.cashier?.staffId && s.permissions.includes('dispense_prescription')).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <input aria-label="Pharmacist PIN" type="password" inputMode="numeric" autoComplete="off" placeholder="PIN" value={rx.pin}
+                onChange={(e) => setRx({ ...rx, pin: e.target.value })} className="w-24 rounded border px-2 py-2" />
+            </div>
+          )}
+        </fieldset>
+      )}
       {appCollects ? <p className="text-sm">Paid by the app: {channel!.name} pays the shop later.</p> : (
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1 text-sm">Payment{d.reachable ? '' : ' (offline: cash and manually confirmed payments only)'}</legend>

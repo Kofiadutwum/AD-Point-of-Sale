@@ -14,7 +14,9 @@ export type SaleRequest = {
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
     addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
+    prescription?: { patientName: string; prescriberName: string; facility: string; prescriptionDate: string }; // spec 6.36
   }>;
+  prescriptionApprovalToken?: string;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: {
@@ -41,7 +43,7 @@ export type DeviceCache = {
   staff: CachedStaff[];
   taxRules: Array<{ id: string; isDefault: boolean; rateBp: number }>; // rateBp = effectiveRateBp(rule)
   priceRules: PriceRule[];
-  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null }>;
+  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null; prescriptionOnly?: boolean }>;
   variants: Array<{
     id: string; productId: string; name: string; sku: string | null; allowsFractions: boolean; basePricePesewas: number;
     scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus; needsPack: boolean;
