@@ -128,12 +128,20 @@ type ProcessError = PlanError | 'approval_required' | 'reference_required' | 'ne
 /** Spec 6.12: records the return, puts saleable stock back (into the batches it was sold from), and refunds, all in one transaction. */
 export async function processReturn(db: Db, ctx: Ctx, input: {
   saleId: string; items: ReturnItem[]; reason: string; refundMethod: RefundMethod; reference?: string; approvalToken?: string;
-}, now: Date): Promise<{ ok: true; returnId: string; refundPesewas: number } | Fail<ProcessError>> {
+}, now: Date): Promise<ProcessResult> {
+  assertPermission(ctx, 'process_return');
+  return withTenant(db, ctx.tenantId, (tx) => processReturnTx(tx, ctx, input, now));
+}
+
+type ProcessResult = { ok: true; returnId: string; refundPesewas: number } | Fail<ProcessError>;
+
+/** `processReturn` inside the caller's transaction; every refusal comes before the first write. */
+export async function processReturnTx(tx: Tx, ctx: Ctx, input: Parameters<typeof processReturn>[2], now: Date): Promise<ProcessResult> {
   assertPermission(ctx, 'process_return');
   const parsed = processSchema.safeParse(input);
   if (!parsed.success) return fail('invalid_input');
   const s = parsed.data;
-  return withTenant(db, ctx.tenantId, async (tx) => {
+  {
     const loaded = await loadSale(tx, ctx, { saleId: s.saleId }, true);
     if (!loaded) return fail<ProcessError>('not_found');
     const plan = planReturn(loaded, s.items);
@@ -164,7 +172,7 @@ export async function processReturn(db: Db, ctx: Ctx, input: {
       reason: s.reason, changes: { returnId: ret.id, refundPesewas: plan.total, refundMethod: s.refundMethod, approvedBy: approval?.approverId ?? null },
     });
     return { ok: true as const, returnId: ret.id, refundPesewas: plan.total };
-  });
+  }
 }
 
 /** Back on hand; a batch item goes back into the batches its sale line took from, up to what each gave and has not already had back. */

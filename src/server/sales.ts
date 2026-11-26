@@ -100,6 +100,28 @@ const refuse = (code: SaleError): never => { throw new SaleRefused(code); };
 /** Spec 6.8, 6.9, and the server side of 6.10. Idempotent by saleId; stock goes down exactly once. */
 export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
+  try {
+    return await withTenant(db, ctx.tenantId, (tx) => completeSaleTx(tx, ctx, input, now));
+  } catch (e) {
+    return saleFailure(e);
+  }
+}
+
+/** A refusal thrown inside a sale's transaction, as a result; anything else is rethrown. */
+export function saleFailure(e: unknown): Extract<SaleResult, { ok: false }> {
+  if (e instanceof SaleRefused) return { ok: false, error: e.code };
+  if (isUniqueViolation(e, 'sales_channel_order')) return { ok: false, error: 'channel_order_exists' }; // another till saved this platform order first
+  throw e;
+}
+
+/** Throws a refusal so the caller's transaction rolls back (an exchange's return goes with its sale). */
+export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
+  throw new SaleRefused(r.error);
+}
+
+/** Spec 6.8 inside the caller's transaction: refusals after the first write throw (see `saleFailure`), so everything rolls back together. */
+export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date): Promise<SaleResult> {
+  assertPermission(ctx, 'make_sale');
   const parsed = inputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: 'invalid_input' };
   const s = parsed.data;
@@ -114,221 +136,213 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
   // a table sale is a ticket being paid online (payTicket); anything else claiming it is a bad request
   if (s.food && ((s.food.serviceMode === 'table') !== Boolean(s.food.ticketId) || (s.food.ticketId && outbox))) return { ok: false, error: 'invalid_input' };
 
-  try {
-    return await withTenant(db, ctx.tenantId, async (tx): Promise<SaleResult> => {
-      // one till's sales run one at a time, so its receipt numbers and repeats are checked without races
-      const [reg] = await tx.select({
-        id: registers.id, status: registers.status, branchId: registers.branchId, registerCode: registers.registerCode, branchCode: branches.branchCode,
-        serviceModes: branches.serviceModes,
-      }).from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId)).for('update', { of: registers });
-      if (!reg || reg.status !== 'active') return refuse('no_register');
-      // only this till's own offline numbers ('T1-047'); unprefixed numbers come from the server alone
-      const deviceNumber = s.food?.orderNumber;
-      const deviceNumberOk = deviceNumber === undefined || (ORDER_NUMBER.test(deviceNumber) && deviceNumber.startsWith(`${reg.registerCode}-`));
+  // one till's sales run one at a time, so its receipt numbers and repeats are checked without races
+  const [reg] = await tx.select({
+    id: registers.id, status: registers.status, branchId: registers.branchId, registerCode: registers.registerCode, branchCode: branches.branchCode,
+    serviceModes: branches.serviceModes,
+  }).from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId)).for('update', { of: registers });
+  if (!reg || reg.status !== 'active') return refuse('no_register');
+  // only this till's own offline numbers ('T1-047'); unprefixed numbers come from the server alone
+  const deviceNumber = s.food?.orderNumber;
+  const deviceNumberOk = deviceNumber === undefined || (ORDER_NUMBER.test(deviceNumber) && deviceNumber.startsWith(`${reg.registerCode}-`));
 
-      const existing = await findSale(tx, s.saleId);
-      if (existing) return repeat(tx, ctx, existing, deviceNumberOk ? deviceNumber : undefined, now);
-      if (receipt.branchCode !== reg.branchCode || receipt.registerCode !== reg.registerCode) return refuse('wrong_receipt_prefix');
+  const existing = await findSale(tx, s.saleId);
+  if (existing) return repeat(tx, ctx, existing, deviceNumberOk ? deviceNumber : undefined, now);
+  if (receipt.branchCode !== reg.branchCode || receipt.registerCode !== reg.registerCode) return refuse('wrong_receipt_prefix');
 
-      const people = await tx.select({ id: users.id, status: users.status, permissions: users.permissions, branchIds: users.branchIds }).from(users)
-        .where(inArray(users.id, [ctx.userId, ...(s.cashierId ? [s.cashierId] : [])]));
-      const me = people.find((u) => u.id === ctx.userId);
-      if (!me || !me.branchIds.includes(reg.branchId)) return refuse('not_assigned');
-      const reasons = new Set<string>();
-      let cashierId = ctx.userId;
-      let cashierPermissions: readonly string[] = ctx.permissions;
-      if (s.cashierId && s.cashierId !== ctx.userId) {
-        // an outbox may sync one cashier's sale under a later session (6.10); the recorded cashier must still be allowed to sell here
-        const c = people.find((u) => u.id === s.cashierId);
-        if (!outbox || !c || c.status !== 'active' || !c.permissions.includes('make_sale') || !c.branchIds.includes(reg.branchId)) return refuse('cashier_not_allowed');
-        cashierId = c.id;
-        reasons.add('cashier_override'); // the sale is recorded under someone other than the signed-in user
-        cashierPermissions = c.permissions as Permission[];
-      }
-
-      const [taken] = await tx.select({ id: sales.id }).from(sales).where(eq(sales.receiptNumber, s.receiptNumber));
-      if (taken) return refuse('duplicate_receipt_number');
-      if (s.tenders.length) {
-        const [used] = await tx.select({ id: payments.id }).from(payments).where(inArray(payments.id, s.tenders.map((t) => t.id))).limit(1);
-        if (used) return refuse('duplicate_tender_id');
-      }
-      const [customer] = s.customerId ? await tx.select({ id: customers.id, priceListId: customers.priceListId }).from(customers).where(eq(customers.id, s.customerId)) : [];
-      if (s.customerId && !customer) return refuse('unknown_customer');
-
-      const [shop] = await tx.select({
-        serviceChargeBp: tenants.serviceChargeBp, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
-      }).from(tenants).where(eq(tenants.id, ctx.tenantId));
-      const today = todayIn(shop.timezone, now);
-      const deviceAt = new Date(s.deviceCreatedAt);
-      const happenedAt = deviceAt.getTime() > now.getTime() ? now : deviceAt; // a device clock ahead of ours never moves a sale into the future
-      const saleDay = businessDate(shop.timezone, shop.cutoff, happenedAt);
-      // the kitchen works on the server clock: a till whose clock is behind must not file a paid order under yesterday
-      const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
-      const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
-      const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
-      // collecting a phone order: its channel, customer, and lines come from the order taken on the phone (spec 6.57)
-      const collecting = s.food?.kitchenOrderId ? await openPhoneOrder(tx, s.food, reg.branchId) : null;
-      if (collecting) await checkCollectedLines(tx, s.lines, collecting.pendingLines!);
-      // paying a table ticket: the sale is exactly its live lines, priced from the catalogue now (spec 6.37)
-      const paying = s.food?.ticketId ? await openTicketForSale(tx, s.food, reg.branchId) : null;
-      if (paying) await checkCollectedLines(tx, s.lines, paying.lines);
-      const channelFood = collecting ? {
-        ...s.food!, customer: { name: collecting.customerName!, phone: collecting.customerPhone! },
-        pickupAt: collecting.pickupAt?.toISOString(), deliveryAddress: collecting.deliveryAddress ?? undefined,
-      } : s.food;
-      const order = channelFood?.channelId ? await checkChannel(tx, channelFood, { ctxPermissions: ctx.permissions, cashierPermissions, lenient }) : null;
-      const channel = order?.channel ?? null;
-      const list = choosePriceList(await loadPriceRules(tx), { cartListId: channel?.priceListId ?? null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
-
-      const priced = [];
-      for (const [i, l] of s.lines.entries()) {
-        const quantity = quantities[i]!;
-        const [item] = await tx.select({
-          unitName: variantUnits.name, factor: variantUnits.factor, isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, unitPrice: variantUnits.pricePesewas,
-          kind: variants.kind, variantName: variants.name, allowsFractions: variants.allowsFractions, basePrice: variants.basePricePesewas,
-          sellable: variants.sellable, variantStatus: variants.status, productName: products.name, productStatus: products.status,
-          taxRuleId: products.taxRuleId, tracking: products.tracking, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
-        }).from(variantUnits)
-          .innerJoin(variants, eq(variants.id, variantUnits.variantId))
-          .innerJoin(products, eq(products.id, variants.productId))
-          .where(and(eq(variantUnits.id, l.unitId), eq(variantUnits.variantId, l.variantId)));
-        if (!item) return refuse('unknown_item');
-        if (item.productStatus === 'archived' || item.variantStatus === 'archived') lenient('item_unavailable', 'item_archived');
-        if (!item.sellable || !item.unitSellable) return refuse('not_sellable');
-        if (!validSaleQuantity(quantity, item.isBase && item.allowsFractions)) return refuse('invalid_quantity');
-        // spec 6.53: rice or stew sold by cedi amount is one line at the amount typed; its stock moves with the pots
-        if (item.sellByAmount && !l.byAmount) return refuse('amount_required');
-        if (l.byAmount && !item.sellByAmount) return refuse('not_sold_by_amount');
-        if (l.byAmount && quantity !== '1.000') return refuse('invalid_quantity');
-        if (item.kind !== 'combo' && l.choices?.length) return refuse('invalid_choices');
-        if (item.kind !== 'standard') {
-          const [{ n }] = await tx.select({ n: count() }).from(components).where(eq(components.parentVariantId, l.variantId));
-          const [{ slots }] = item.kind === 'combo' ? await tx.select({ slots: count() }).from(comboSlots).where(eq(comboSlots.comboVariantId, l.variantId)) : [{ slots: 0 }];
-          if (n === 0 && slots === 0) return refuse('empty_bundle');
-        }
-        // a phone order being collected was cooked already: selling out since then must not stop its payment
-        const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay, collecting === null && paying === null) : null;
-        if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
-        if (combo === 'stale_choices') lenient('invalid_choices', 'combo_changed'); // a paid offline sale from before a combo edit is kept for review
-        if (combo === 'sold_out') lenient('sold_out', 'sold_out');
-        const comboPriced = typeof combo === 'object' ? combo : combo === 'stale_choices' ? await choicesAsSent(tx, l.choices ?? []) : null;
-        const listPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
-        // spec 4.24: add-ons are checked against the item's groups and add their prices; a combo or a by-amount line has none
-        if (l.addOns?.length && (l.byAmount || item.kind === 'combo')) return refuse('invalid_add_ons');
-        const addOnGroupsOfItem = l.byAmount || item.kind === 'combo' ? [] : await loadAddOnGroups(tx, l.variantId);
-        const addOnCheck = checkAddOns(addOnGroupsOfItem, l.addOns ?? []);
-        if (addOnCheck === 'invalid_add_ons') return refuse('invalid_add_ons'); // the device built a bad cart: never lenient
-        if (addOnCheck === 'stale_add_ons') lenient('invalid_add_ons', 'add_ons_changed'); // a paid offline sale from before an add-on edit is kept for review
-        const addOns = await addOnsAsSold(tx, addOnGroupsOfItem, l.addOns ?? [], addOnCheck === 'ok');
-        const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
-        if (paying && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
-        if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
-        if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
-        const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
-        // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
-        if (l.discountPesewas > 0 && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
-        if (l.discountPesewas > gross) return refuse('discount_too_large');
-        const baseQty = multiplyQty(quantity, item.factor);
-        const lineSerials = l.serials ?? [];
-        if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
-        const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
-        priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
-      }
-
-      const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
-      // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
-      const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
-      const saleTotal = totals.totalPesewas + serviceCharge;
-      // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
-      const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
-      if (channel?.collectedBy === 'app') {
-        if (s.tenders.length !== 1 || settlements.length !== 1 || settlements[0].amountPesewas !== saleTotal || !settlements[0].reference) refuse('channel_settlement_required');
-      } else if (settlements.length) refuse('invalid_tender');
-      if (s.tenders.some((t) => NEEDS_REFERENCE.includes(t.method) && !t.reference)) return refuse('reference_required');
-      const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
-      if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
-      if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
-      const paid = s.tenders.reduce((a, t) => a + t.amountPesewas, 0);
-      if (paid < saleTotal) lenient('payment_incomplete', 'underpaid');
-      const changeDue = Math.max(0, paid - saleTotal);
-      const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
-      if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null || paying !== null });
-
-      const commission = channel ? commissionPesewas(saleTotal, channel.commissionBp) : 0;
-      const [saved] = await tx.insert(sales).values({
-        id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
-        receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
-        discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, paidPesewas: paid,
-        changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
-        businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
-        serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
-        channelId: channel?.id ?? null, externalOrderId: order?.externalOrderId ?? null, commissionPesewas: commission,
-      }).onConflictDoNothing({ target: sales.id }).returning({ id: sales.id });
-      if (!saved) {
-        const again = await findSale(tx, s.saleId); // row-level security hides another shop's sale with this id
-        return again ? repeat(tx, ctx, again, deviceNumberOk ? deviceNumber : undefined, now) : refuse('sale_id_taken');
-      }
-      await tx.insert(saleLines).values(priced.map((l, i) => ({
-        tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
-        quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
-        discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
-        taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note,
-      })));
-      for (const t of s.tenders) {
-        if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
-          refuse('insufficient_store_credit');
-        }
-        const [paidRow] = await tx.insert(payments).values({
-          id: t.id, tenantId: ctx.tenantId, saleId: s.saleId, method: t.method, amountPesewas: t.amountPesewas, reference: t.reference || null,
-          status: 'confirmed', confirmedBy: t.method === 'cash' ? null : ctx.userId, // manual payments: the cashier confirms the money arrived (4.3)
-        }).onConflictDoNothing({ target: payments.id }).returning({ id: payments.id });
-        if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
-      }
-      await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
-      if (channel?.collectedBy === 'app') {
-        await tx.insert(channelReceivables).values({ tenantId: ctx.tenantId, saleId: s.saleId, channelId: channel.id, expectedPesewas: saleTotal - commission });
-      }
-
-      const done = await finaliseSaleTx(tx, ctx.tenantId, s.saleId, now);
-      if (done.problems.onlyExpired) lenient('only_expired_stock', 'only_expired_stock');
-      if (done.problems.serialsMissing) lenient('unknown_serial', 'serials_missing');
-      if (done.problems.negative) {
-        if (outbox) reasons.add('negative_stock');
-        else if (!shop.allowNegativeStock) refuse('not_enough_stock');
-      }
-      let orderNumber: string | null = null;
-      if (paying) {
-        for (const l of paying.due) await tx.update(ticketLines).set({ paidQuantity: sql`${ticketLines.paidQuantity} + ${l.due}::numeric` }).where(eq(ticketLines.id, l.id));
-        // the ticket closes with its last part: nothing live left unpaid
-        const [owing] = await tx.select({ id: ticketLines.id }).from(ticketLines)
-          .where(and(eq(ticketLines.ticketId, paying.ticket.id), ne(ticketLines.kitchenStatus, 'void'), sql`${ticketLines.paidQuantity} < ${ticketLines.quantity}`)).limit(1);
-        if (!owing) {
-          await tx.update(tickets).set({ status: 'paid', saleId: s.saleId, closedAt: now }).where(eq(tickets.id, paying.ticket.id));
-          if (paying.ticket.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, paying.ticket.tableId));
-        }
-      }
-      if (collecting) {
-        orderNumber = collecting.orderNumber; // already in the kitchen under its number: it is paid, not sent again
-        await tx.update(kitchenOrders).set({ saleId: s.saleId }).where(eq(kitchenOrders.id, collecting.id));
-        await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
-      } else if (s.food?.serviceMode === 'counter') {
-        orderNumber = deviceNumber ?? await nextOrderNumber(tx, ctx.tenantId, reg.branchId, kitchenDay);
-        await tx.insert(kitchenOrders).values({
-          tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: kitchenDay, diningOption: dining!,
-          needsPacking: needsPacking(dining!, channel !== null), sentAt: now,
-          channelId: channel?.id ?? null, customerName: order?.customer?.name ?? null, customerPhone: order?.customer?.phone ?? null,
-          pickupAt: order?.pickupAt ?? null, deliveryAddress: order?.deliveryAddress ?? null,
-        });
-        await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
-      }
-      if (reasons.size) await tx.update(sales).set({ needsReview: true, reviewReasons: [...reasons] }).where(eq(sales.id, s.saleId));
-      return { ok: true, saleId: s.saleId, status: done.status, changeDuePesewas: changeDue, alreadyExisted: false, orderNumber };
-    });
-  } catch (e) {
-    if (e instanceof SaleRefused) return { ok: false, error: e.code };
-    if (isUniqueViolation(e, 'sales_channel_order')) return { ok: false, error: 'channel_order_exists' }; // another till saved this platform order first
-    throw e;
+  const people = await tx.select({ id: users.id, status: users.status, permissions: users.permissions, branchIds: users.branchIds }).from(users)
+    .where(inArray(users.id, [ctx.userId, ...(s.cashierId ? [s.cashierId] : [])]));
+  const me = people.find((u) => u.id === ctx.userId);
+  if (!me || !me.branchIds.includes(reg.branchId)) return refuse('not_assigned');
+  const reasons = new Set<string>();
+  let cashierId = ctx.userId;
+  let cashierPermissions: readonly string[] = ctx.permissions;
+  if (s.cashierId && s.cashierId !== ctx.userId) {
+    // an outbox may sync one cashier's sale under a later session (6.10); the recorded cashier must still be allowed to sell here
+    const c = people.find((u) => u.id === s.cashierId);
+    if (!outbox || !c || c.status !== 'active' || !c.permissions.includes('make_sale') || !c.branchIds.includes(reg.branchId)) return refuse('cashier_not_allowed');
+    cashierId = c.id;
+    reasons.add('cashier_override'); // the sale is recorded under someone other than the signed-in user
+    cashierPermissions = c.permissions as Permission[];
   }
+
+  const [taken] = await tx.select({ id: sales.id }).from(sales).where(eq(sales.receiptNumber, s.receiptNumber));
+  if (taken) return refuse('duplicate_receipt_number');
+  if (s.tenders.length) {
+    const [used] = await tx.select({ id: payments.id }).from(payments).where(inArray(payments.id, s.tenders.map((t) => t.id))).limit(1);
+    if (used) return refuse('duplicate_tender_id');
+  }
+  const [customer] = s.customerId ? await tx.select({ id: customers.id, priceListId: customers.priceListId }).from(customers).where(eq(customers.id, s.customerId)) : [];
+  if (s.customerId && !customer) return refuse('unknown_customer');
+
+  const [shop] = await tx.select({
+    serviceChargeBp: tenants.serviceChargeBp, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
+  }).from(tenants).where(eq(tenants.id, ctx.tenantId));
+  const today = todayIn(shop.timezone, now);
+  const deviceAt = new Date(s.deviceCreatedAt);
+  const happenedAt = deviceAt.getTime() > now.getTime() ? now : deviceAt; // a device clock ahead of ours never moves a sale into the future
+  const saleDay = businessDate(shop.timezone, shop.cutoff, happenedAt);
+  // the kitchen works on the server clock: a till whose clock is behind must not file a paid order under yesterday
+  const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
+  const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
+  const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
+  // collecting a phone order: its channel, customer, and lines come from the order taken on the phone (spec 6.57)
+  const collecting = s.food?.kitchenOrderId ? await openPhoneOrder(tx, s.food, reg.branchId) : null;
+  if (collecting) await checkCollectedLines(tx, s.lines, collecting.pendingLines!);
+  // paying a table ticket: the sale is exactly its live lines, priced from the catalogue now (spec 6.37)
+  const paying = s.food?.ticketId ? await openTicketForSale(tx, s.food, reg.branchId) : null;
+  if (paying) await checkCollectedLines(tx, s.lines, paying.lines);
+  const channelFood = collecting ? {
+    ...s.food!, customer: { name: collecting.customerName!, phone: collecting.customerPhone! },
+    pickupAt: collecting.pickupAt?.toISOString(), deliveryAddress: collecting.deliveryAddress ?? undefined,
+  } : s.food;
+  const order = channelFood?.channelId ? await checkChannel(tx, channelFood, { ctxPermissions: ctx.permissions, cashierPermissions, lenient }) : null;
+  const channel = order?.channel ?? null;
+  const list = choosePriceList(await loadPriceRules(tx), { cartListId: channel?.priceListId ?? null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
+
+  const priced = [];
+  for (const [i, l] of s.lines.entries()) {
+    const quantity = quantities[i]!;
+    const [item] = await tx.select({
+      unitName: variantUnits.name, factor: variantUnits.factor, isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, unitPrice: variantUnits.pricePesewas,
+      kind: variants.kind, variantName: variants.name, allowsFractions: variants.allowsFractions, basePrice: variants.basePricePesewas,
+      sellable: variants.sellable, variantStatus: variants.status, productName: products.name, productStatus: products.status,
+      taxRuleId: products.taxRuleId, tracking: products.tracking, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
+    }).from(variantUnits)
+      .innerJoin(variants, eq(variants.id, variantUnits.variantId))
+      .innerJoin(products, eq(products.id, variants.productId))
+      .where(and(eq(variantUnits.id, l.unitId), eq(variantUnits.variantId, l.variantId)));
+    if (!item) return refuse('unknown_item');
+    if (item.productStatus === 'archived' || item.variantStatus === 'archived') lenient('item_unavailable', 'item_archived');
+    if (!item.sellable || !item.unitSellable) return refuse('not_sellable');
+    if (!validSaleQuantity(quantity, item.isBase && item.allowsFractions)) return refuse('invalid_quantity');
+    // spec 6.53: rice or stew sold by cedi amount is one line at the amount typed; its stock moves with the pots
+    if (item.sellByAmount && !l.byAmount) return refuse('amount_required');
+    if (l.byAmount && !item.sellByAmount) return refuse('not_sold_by_amount');
+    if (l.byAmount && quantity !== '1.000') return refuse('invalid_quantity');
+    if (item.kind !== 'combo' && l.choices?.length) return refuse('invalid_choices');
+    if (item.kind !== 'standard') {
+      const [{ n }] = await tx.select({ n: count() }).from(components).where(eq(components.parentVariantId, l.variantId));
+      const [{ slots }] = item.kind === 'combo' ? await tx.select({ slots: count() }).from(comboSlots).where(eq(comboSlots.comboVariantId, l.variantId)) : [{ slots: 0 }];
+      if (n === 0 && slots === 0) return refuse('empty_bundle');
+    }
+    // a phone order being collected was cooked already: selling out since then must not stop its payment
+    const combo = item.kind === 'combo' ? await priceCombo(tx, l.variantId, l.choices ?? [], reg.branchId, kitchenDay, collecting === null && paying === null) : null;
+    if (combo === 'invalid_choices') return refuse('invalid_choices'); // the device built a bad cart: never lenient
+    if (combo === 'stale_choices') lenient('invalid_choices', 'combo_changed'); // a paid offline sale from before a combo edit is kept for review
+    if (combo === 'sold_out') lenient('sold_out', 'sold_out');
+    const comboPriced = typeof combo === 'object' ? combo : combo === 'stale_choices' ? await choicesAsSent(tx, l.choices ?? []) : null;
+    const listPrice = resolvePrice(list, { unitId: l.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice });
+    // spec 4.24: add-ons are checked against the item's groups and add their prices; a combo or a by-amount line has none
+    if (l.addOns?.length && (l.byAmount || item.kind === 'combo')) return refuse('invalid_add_ons');
+    const addOnGroupsOfItem = l.byAmount || item.kind === 'combo' ? [] : await loadAddOnGroups(tx, l.variantId);
+    const addOnCheck = checkAddOns(addOnGroupsOfItem, l.addOns ?? []);
+    if (addOnCheck === 'invalid_add_ons') return refuse('invalid_add_ons'); // the device built a bad cart: never lenient
+    if (addOnCheck === 'stale_add_ons') lenient('invalid_add_ons', 'add_ons_changed'); // a paid offline sale from before an add-on edit is kept for review
+    const addOns = await addOnsAsSold(tx, addOnGroupsOfItem, l.addOns ?? [], addOnCheck === 'ok');
+    const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
+    if (paying && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
+    if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
+    if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
+    const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
+    // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
+    if (l.discountPesewas > 0 && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
+    if (l.discountPesewas > gross) return refuse('discount_too_large');
+    const baseQty = multiplyQty(quantity, item.factor);
+    const lineSerials = l.serials ?? [];
+    if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
+    const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
+    priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
+  }
+
+  const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
+  // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
+  const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
+  const saleTotal = totals.totalPesewas + serviceCharge;
+  // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
+  const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
+  if (channel?.collectedBy === 'app') {
+    if (s.tenders.length !== 1 || settlements.length !== 1 || settlements[0].amountPesewas !== saleTotal || !settlements[0].reference) refuse('channel_settlement_required');
+  } else if (settlements.length) refuse('invalid_tender');
+  if (s.tenders.some((t) => NEEDS_REFERENCE.includes(t.method) && !t.reference)) return refuse('reference_required');
+  const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
+  if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
+  if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
+  const paid = s.tenders.reduce((a, t) => a + t.amountPesewas, 0);
+  if (paid < saleTotal) lenient('payment_incomplete', 'underpaid');
+  const changeDue = Math.max(0, paid - saleTotal);
+  const dining = s.food && (s.food.serviceMode === 'quick' ? 'eat_in' : s.food.diningOption); // quick serve is always eat in
+  if (s.food) await checkFood(tx, { food: s.food, dining: dining!, deviceNumberOk, serviceModes: reg.serviceModes, branchId: reg.branchId, saleDay: kitchenDay, lines: priced, lenient, collecting: collecting !== null || paying !== null });
+
+  const commission = channel ? commissionPesewas(saleTotal, channel.commissionBp) : 0;
+  const [saved] = await tx.insert(sales).values({
+    id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
+    receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
+    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, paidPesewas: paid,
+    changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
+    businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
+    serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
+    channelId: channel?.id ?? null, externalOrderId: order?.externalOrderId ?? null, commissionPesewas: commission,
+  }).onConflictDoNothing({ target: sales.id }).returning({ id: sales.id });
+  if (!saved) {
+    const again = await findSale(tx, s.saleId); // row-level security hides another shop's sale with this id
+    return again ? repeat(tx, ctx, again, deviceNumberOk ? deviceNumber : undefined, now) : refuse('sale_id_taken');
+  }
+  await tx.insert(saleLines).values(priced.map((l, i) => ({
+    tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
+    quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
+    discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
+    taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note,
+  })));
+  for (const t of s.tenders) {
+    if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
+      refuse('insufficient_store_credit');
+    }
+    const [paidRow] = await tx.insert(payments).values({
+      id: t.id, tenantId: ctx.tenantId, saleId: s.saleId, method: t.method, amountPesewas: t.amountPesewas, reference: t.reference || null,
+      status: 'confirmed', confirmedBy: t.method === 'cash' ? null : ctx.userId, // manual payments: the cashier confirms the money arrived (4.3)
+    }).onConflictDoNothing({ target: payments.id }).returning({ id: payments.id });
+    if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
+  }
+  await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
+  if (channel?.collectedBy === 'app') {
+    await tx.insert(channelReceivables).values({ tenantId: ctx.tenantId, saleId: s.saleId, channelId: channel.id, expectedPesewas: saleTotal - commission });
+  }
+
+  const done = await finaliseSaleTx(tx, ctx.tenantId, s.saleId, now);
+  if (done.problems.onlyExpired) lenient('only_expired_stock', 'only_expired_stock');
+  if (done.problems.serialsMissing) lenient('unknown_serial', 'serials_missing');
+  if (done.problems.negative) {
+    if (outbox) reasons.add('negative_stock');
+    else if (!shop.allowNegativeStock) refuse('not_enough_stock');
+  }
+  let orderNumber: string | null = null;
+  if (paying) {
+    for (const l of paying.due) await tx.update(ticketLines).set({ paidQuantity: sql`${ticketLines.paidQuantity} + ${l.due}::numeric` }).where(eq(ticketLines.id, l.id));
+    // the ticket closes with its last part: nothing live left unpaid
+    const [owing] = await tx.select({ id: ticketLines.id }).from(ticketLines)
+      .where(and(eq(ticketLines.ticketId, paying.ticket.id), ne(ticketLines.kitchenStatus, 'void'), sql`${ticketLines.paidQuantity} < ${ticketLines.quantity}`)).limit(1);
+    if (!owing) {
+      await tx.update(tickets).set({ status: 'paid', saleId: s.saleId, closedAt: now }).where(eq(tickets.id, paying.ticket.id));
+      if (paying.ticket.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, paying.ticket.tableId));
+    }
+  }
+  if (collecting) {
+    orderNumber = collecting.orderNumber; // already in the kitchen under its number: it is paid, not sent again
+    await tx.update(kitchenOrders).set({ saleId: s.saleId }).where(eq(kitchenOrders.id, collecting.id));
+    await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
+  } else if (s.food?.serviceMode === 'counter') {
+    orderNumber = deviceNumber ?? await nextOrderNumber(tx, ctx.tenantId, reg.branchId, kitchenDay);
+    await tx.insert(kitchenOrders).values({
+      tenantId: ctx.tenantId, branchId: reg.branchId, saleId: s.saleId, orderNumber, businessDate: kitchenDay, diningOption: dining!,
+      needsPacking: needsPacking(dining!, channel !== null), sentAt: now,
+      channelId: channel?.id ?? null, customerName: order?.customer?.name ?? null, customerPhone: order?.customer?.phone ?? null,
+      pickupAt: order?.pickupAt ?? null, deliveryAddress: order?.deliveryAddress ?? null,
+    });
+    await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
+  }
+  if (reasons.size) await tx.update(sales).set({ needsReview: true, reviewReasons: [...reasons] }).where(eq(sales.id, s.saleId));
+  return { ok: true, saleId: s.saleId, status: done.status, changeDuePesewas: changeDue, alreadyExisted: false, orderNumber };
 }
 
 type PricedLine = { variantId: string; quantity: string };
