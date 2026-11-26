@@ -125,7 +125,7 @@ export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
  * serverPrices: lines are charged today's catalogue price (web screens). exchangeCreditPesewas: returned goods pay up to this much (6.32).
  * quote: an unpaid sale is allowed so a caller can read the totals and roll back.
  */
-export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean };
+export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string }; // salespersonId: 6.39
 
 export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date, opts: SaleOptions = {}): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
@@ -290,7 +290,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const [saved] = await tx.insert(sales).values({
     id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
     receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
-    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, roundingPesewas: rounding, paidPesewas: paid,
+    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, roundingPesewas: rounding, salespersonId: opts.salespersonId ?? null, paidPesewas: paid,
     changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
     businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
     serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
