@@ -8,7 +8,7 @@ it('gives owners every permission and managers all but shop settings', () => {
 });
 
 it('lets cashiers only sell, mark items sold out, and run the kitchen', () => {
-  expect(ROLE_PRESETS.cashier).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return']);
+  expect(ROLE_PRESETS.cashier).toEqual(['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return', 'receive_debt_payment']);
 });
 
 it('a cashier PIN can mark sold out and run the kitchen', () => {
