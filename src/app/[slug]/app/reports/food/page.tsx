@@ -77,6 +77,7 @@ export default async function FoodReportPage({ params, searchParams }: { params:
               ))}</ul>
             )}
           </section>
+          <p className="text-sm">Sales {formatCedis(r.report.totals.salesPesewas)} · refunds {formatCedis(r.report.totals.refundPesewas)} ({r.report.totals.refunds}) · net sales <strong>{formatCedis(r.report.totals.netSalesPesewas)}</strong></p>
           <p className="text-sm">Average kitchen time {minutes(r.report.avgKitchenSeconds)} · average counter wait {minutes(r.report.avgCounterWaitSeconds)}</p>
         </>
       )}

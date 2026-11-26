@@ -156,7 +156,7 @@ export async function processReturnTx(tx: Tx, ctx: Ctx, input: Parameters<typeof
   const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
   if (needed && !approval) return fail<ProcessError>('approval_required');
 
-  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: s.refundMethod, reference, approvedBy: approval?.approverId ?? null });
+  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: s.refundMethod, reference, approvedBy: approval?.approverId ?? null }, now);
   await payRefund(tx, ctx, loaded, s.refundMethod, plan.total, s.reason);
   await writeAudit(tx, {
     tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'return_processed', recordType: 'sale', recordId: loaded.sale.id,
@@ -178,10 +178,10 @@ async function payRefund(tx: Tx, ctx: Ctx, loaded: Loaded, method: RefundMethod,
 }
 
 /** The return, its lines, and saleable items back on hand; shared by returns and exchanges. */
-async function recordReturn(tx: Tx, ctx: Ctx, loaded: Loaded, plan: Plan, f: { reason: string; refundMethod: string; reference: string | null; approvedBy: string | null }) {
+async function recordReturn(tx: Tx, ctx: Ctx, loaded: Loaded, plan: Plan, f: { reason: string; refundMethod: string; reference: string | null; approvedBy: string | null }, now: Date) {
   const [ret] = await tx.insert(returns).values({
     tenantId: ctx.tenantId, branchId: loaded.sale.branchId, saleId: loaded.sale.id, customerId: loaded.sale.customerId, kind: 'receipt', reason: f.reason,
-    refundMethod: f.refundMethod, refundPesewas: plan.total, reference: f.reference, requestedBy: ctx.userId, approvedBy: f.approvedBy,
+    refundMethod: f.refundMethod, refundPesewas: plan.total, reference: f.reference, requestedBy: ctx.userId, approvedBy: f.approvedBy, createdAt: now,
   }).returning({ id: returns.id });
   await tx.insert(returnLines).values(plan.planned.map((x) => ({
     tenantId: ctx.tenantId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, unitId: x.line.unitId,
@@ -396,7 +396,7 @@ async function exchangeTx(
   const plan = planReturn(loaded, s.items);
   if (!plan.ok) return refuse(plan.error);
   // the returned goods come back first, so the new items can be sold from them
-  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: 'exchange', reference: null, approvedBy: null });
+  const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: 'exchange', reference: null, approvedBy: null }, now);
   const sold = await completeSaleTx(tx, ctx, {
     saleId, receiptNumber, deviceCreatedAt: now.toISOString(), customerId: loaded.sale.customerId ?? undefined, tenders: s.tenders,
     lines: s.newLines.map((l) => ({ ...l, unitPricePesewas: 0, discountPesewas: 0 })),

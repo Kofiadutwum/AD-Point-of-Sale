@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
+import { saleLines } from '@/db/schema';
+import { asPlatform } from '@/db/tenant';
 import { saveChannel } from '@/server/channels';
 import { getComboSlots, saveComboSlots } from '@/server/combos';
 import type { Ctx } from '@/server/context';
@@ -8,6 +11,7 @@ import { foodReport, type FoodReport, foodReportCsv } from '@/server/food-report
 import { handOverOrder, listKitchenOrders, markOrderReady } from '@/server/kitchen';
 import { createProduct } from '@/server/products';
 import { completeSale, type SaleInput } from '@/server/sales';
+import { processReturn } from '@/server/returns';
 import { addComponent } from '@/server/variants';
 import { recordWastage } from '@/server/wastage';
 import { ctxFor, foodShop, productFor, saleInput, type SeededShop, tillCtxFor } from '../helpers/fixtures';
@@ -122,4 +126,16 @@ it('the CSV export neutralises formula cells', async () => {
   expect(r.ok && r.csv).toContain("'=cmd");
   expect(r.ok && r.csv).not.toMatch(/(^|,)=cmd/m);
   expect(r.ok && r.csv).toContain('Bolt Food,1,4600,920,3680');
+});
+
+it('refunds reduce net sales in the food report', async () => {
+  const before = (await foodReport(db, owner, day, at(200)) as { ok: true; report: FoodReport }).report.totals;
+  expect(before.refundPesewas).toBe(0);
+  const [jollofLine] = await asPlatform(db, (tx) => tx.select().from(saleLines).where(eq(saleLines.name, 'Jollof')));
+  const back = await processReturn(db, owner, {
+    saleId: jollofLine.saleId, items: [{ saleLineId: jollofLine.id, quantity: '1', condition: 'damaged' }], reason: 'cold', refundMethod: 'cash',
+  }, at(200));
+  expect(back).toMatchObject({ ok: true, refundPesewas: 4500 });
+  const after = (await foodReport(db, owner, day, at(200)) as { ok: true; report: FoodReport }).report.totals;
+  expect(after).toEqual({ salesPesewas: before.salesPesewas, refunds: 1, refundPesewas: 4500, netSalesPesewas: before.salesPesewas - 4500 });
 });
