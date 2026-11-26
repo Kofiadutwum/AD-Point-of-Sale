@@ -39,7 +39,8 @@ export async function stockOnHand(tx: Tx, branchId: string, variantId: string): 
   return b?.onHand ?? '0.000';
 }
 
-async function shopOnHand(tx: Tx, variantId: string): Promise<string> {
+/** On-hand across all branches; average cost is per variant shop-wide. */
+export async function shopOnHand(tx: Tx, variantId: string): Promise<string> {
   const [r] = await tx.select({ total: sql<string>`coalesce(sum(${stockBalances.onHand}), 0)::numeric(14,3)::text` })
     .from(stockBalances).where(eq(stockBalances.variantId, variantId));
   return r.total;
@@ -285,7 +286,7 @@ export async function lookupStockItem(
  */
 export async function deductRecipe(
   tx: Tx, s: { tenantId: string; branchId: string; userId: string }, variantId: string, qty: string,
-  type: 'used_in_production' | 'waste', ref: { type: 'pot_record' | 'wastage'; id: string },
+  type: 'used_in_production' | 'waste', ref: { type: 'pot_record' | 'wastage' | 'production'; id: string },
 ): Promise<{ negative: boolean }> {
   const [v] = await tx.select({ kind: variants.kind }).from(variants).where(eq(variants.id, variantId));
   if (!v) throw new Error(`unknown variant ${variantId}`);
