@@ -67,7 +67,7 @@ it('gives a registered device its catalogue, settings, and branch staff with PIN
 
 it('limits an owner to till permissions in the cache', async () => {
   const c = await getDeviceCache(db, dev(), t0);
-  expect(c!.staff.find((s) => s.name === 'owner')!.permissions.sort()).toEqual(['approve_actions', 'dispense_prescription', 'enter_channel_orders', 'give_discount', 'make_sale', 'mark_sold_out', 'process_return', 'record_kitchen_stock', 'run_kitchen', 'take_orders']);
+  expect(c!.staff.find((s) => s.name === 'owner')!.permissions.sort()).toEqual(['approve_actions', 'dispense_prescription', 'enter_channel_orders', 'give_discount', 'make_sale', 'mark_sold_out', 'process_return', 'record_kitchen_stock', 'record_production', 'run_kitchen', 'take_orders']);
 });
 
 it('sends no PIN hashes when the shop switched offline off', async () => {
