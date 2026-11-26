@@ -238,3 +238,16 @@ it("a tender id used by another shop is a 409-style refusal, not a crash", async
   expect(await completeSale(db, cashier, saleInput({ lines: [line(p, '1', 500)], tenders: [tender] }), t0)).toEqual(fail('duplicate_tender_id'));
   expect(await onHand()).toBe('10.000');
 });
+
+it('change uses the rounded cash amount; no rounding without cash (spec 6.40)', async () => {
+  await asPlatform(db, (tx) => tx.update(tenants).set({ cashRoundingStep: 10 }).where(eq(tenants.id, shop.tenantId)));
+  const odd = await productFor(db, owner, { variants: [{ basePricePesewas: 497, costPesewas: 100 }] }); // GHS 4.97, tax included
+  await stockFor(db, owner, shop.branchId, { variantId: odd.variantId, unitId: odd.baseUnitId, quantity: '5', totalCostPesewas: 500 }, t0);
+  const r = await completeSale(db, cashier, saleInput({ lines: [line(odd, '1', 497)], tenders: [cash(1000)] }), t0);
+  expect(r).toMatchObject({ ok: true, changeDuePesewas: 500 }); // due 5.00
+  expect(await completeSale(db, cashier, saleInput({ lines: [line(odd, '1', 497)], tenders: [cash(495)] }), t0)).toEqual(fail('payment_incomplete'));
+  const m = await completeSale(db, cashier, saleInput({ lines: [line(odd, '1', 497)], tenders: [momo(497, 'MP1')] }), t0);
+  expect(m).toMatchObject({ ok: true, changeDuePesewas: 0 });
+  const rows = await allSales();
+  expect(rows.map((s) => s.roundingPesewas).sort()).toEqual([0, 3]);
+});

@@ -35,6 +35,7 @@ export type DeviceCache = {
   shop: {
     name: string; timezone: string; taxMode: 'inclusive' | 'exclusive'; taxEnabled: boolean; scaleLayout: ScaleLayout | null;
     offlineEnabled: boolean; canSell: boolean; businessDayCutoff: string;
+    cashRoundingStep?: number; // spec 6.40; missing in caches saved before it existed = no rounding
   };
   register: { id: string; name: string; registerCode: string; branchId: string; branchCode: string; branchName: string };
   staff: CachedStaff[];

@@ -100,7 +100,7 @@ export function useDevice(slug: string) {
       const block = offlineBlock(cache, meta, Date.now());
       if (block) return { ok: false, error: block };
     }
-    const paid = checkTenders(tenders, totals.totalPesewas);
+    const paid = checkTenders(tenders, totals.totalPesewas, cache.shop.cashRoundingStep ?? 0);
     if (!paid.ok) return paid;
     if (foodChoice?.channelId) {
       if (!cache.staff.find((s) => s.id === cashier.staffId)?.permissions.includes('enter_channel_orders')) return { ok: false, error: 'You are not set up to enter channel orders.' };

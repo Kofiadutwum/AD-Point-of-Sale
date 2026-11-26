@@ -35,6 +35,7 @@ export function ReceiptBody({ r }: { r: ReceiptView }) {
       {r.taxPesewas > 0 && <p className="flex justify-between"><span>{r.taxMode === 'inclusive' ? 'Tax included' : 'Tax'}</span><span>{formatCedis(r.taxPesewas)}</span></p>}
       {r.serviceChargePesewas > 0 && <p className="flex justify-between"><span>Service charge</span><span>{formatCedis(r.serviceChargePesewas)}</span></p>}
       <p className="flex justify-between text-sm font-bold"><span>TOTAL</span><span>{formatCedis(r.totalPesewas)}</span></p>
+      {r.roundingPesewas !== 0 && <p className="flex justify-between"><span>Cash rounding</span><span>{formatCedis(r.roundingPesewas)}</span></p>}
       {r.taxMode === 'inclusive' && r.taxPesewas > 0 && <p>Prices include tax</p>}
       <hr className="my-1 border-dashed border-black" />
       {r.payments.map((p, i) => (

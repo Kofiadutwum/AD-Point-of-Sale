@@ -68,9 +68,9 @@ it('needs manage_shop_settings', async () => {
 });
 
 it('saves the sales settings and audits them', async () => {
-  expect(await saveSalesSettings(db, owner, { allowNegativeStock: false, taxNumber: ' C0001234567 ', receiptFooter: 'No returns after 7 days.' })).toEqual({ ok: true });
-  expect(await getSalesSettings(db, owner)).toEqual({ allowNegativeStock: false, taxNumber: 'C0001234567', receiptFooter: 'No returns after 7 days.' });
-  expect(await saveSalesSettings(db, owner, { allowNegativeStock: true, taxNumber: '  ', receiptFooter: 'x'.repeat(301) })).toEqual({ ok: false, error: 'invalid_input' });
+  expect(await saveSalesSettings(db, owner, { allowNegativeStock: false, taxNumber: ' C0001234567 ', receiptFooter: 'No returns after 7 days.', cashRoundingStep: 10 })).toEqual({ ok: true });
+  expect(await getSalesSettings(db, owner)).toEqual({ allowNegativeStock: false, taxNumber: 'C0001234567', receiptFooter: 'No returns after 7 days.', cashRoundingStep: 10 });
+  expect(await saveSalesSettings(db, owner, { allowNegativeStock: true, taxNumber: '  ', receiptFooter: 'x'.repeat(301), cashRoundingStep: 0 })).toEqual({ ok: false, error: 'invalid_input' });
 });
 
 it('saves the refund limit and no-receipt returns', async () => {

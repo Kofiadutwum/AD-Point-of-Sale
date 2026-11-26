@@ -2,7 +2,7 @@ import 'server-only';
 import { and, asc, between, count, eq, inArray, ne, type SQL, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { components, kitchenOrders, potRecords, products, saleLines, sales, salesChannels, tenants, variants, wastageEntries } from '@/db/schema';
+import { components, kitchenOrders, potRecords, products, returns, saleLines, sales, salesChannels, tenants, variants, wastageEntries } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { toCsv } from '@/lib/csv';
 import { fromMilli, multiplyQty, toMilli } from '@/lib/decimal';
@@ -21,6 +21,7 @@ export type FoodReport = {
   pots: Array<{ businessDate: string; name: string; expectedPesewas: number | null; actualPesewas: number | null; variancePesewas: number | null; flagged: boolean }>;
   avgKitchenSeconds: number | null;
   avgCounterWaitSeconds: number | null;
+  totals: { salesPesewas: number; refunds: number; refundPesewas: number; netSalesPesewas: number }; // refunds by return date (6.12)
 };
 type ReportResult = { ok: true; report: FoodReport } | Fail<'invalid_input' | 'range_too_long'>;
 
@@ -50,6 +51,8 @@ export async function foodReportCsv(db: Db, ctx: Ctx, input: FoodReportInput, no
     ['Wastage'], ['Reason', 'Entries', 'Cost (pesewas)'], ...rep.wastage.map((w) => [w.reason, w.entries, w.costPesewas]), [],
     ['Pots'], ['Date', 'Item', 'Expected (pesewas)', 'Actual (pesewas)', 'Variance (pesewas)', 'Flagged'],
     ...rep.pots.map((p) => [p.businessDate, p.name, p.expectedPesewas, p.actualPesewas, p.variancePesewas, p.flagged ? 'yes' : 'no']), [],
+    ['Totals'], ['Sales (pesewas)', 'Refunds', 'Refunded (pesewas)', 'Net sales (pesewas)'],
+    [rep.totals.salesPesewas, rep.totals.refunds, rep.totals.refundPesewas, rep.totals.netSalesPesewas], [],
     ['Kitchen'], ['Average kitchen seconds', 'Average counter wait seconds'], [rep.avgKitchenSeconds, rep.avgCounterWaitSeconds],
   ];
   return { ok: true, csv: toCsv(rows) };
@@ -109,10 +112,17 @@ async function build(db: Db, ctx: Ctx, input: FoodReportInput, _now: Date): Prom
       wait: sql<string | null>`avg(extract(epoch from ${kitchenOrders.closedAt} - ${kitchenOrders.sentAt})) filter (where ${kitchenOrders.status} in ('collected', 'handed_over'))`,
     }).from(kitchenOrders).innerJoin(sales, eq(sales.id, kitchenOrders.saleId)).where(where);
     const seconds = (v: string | null | undefined) => (v === null || v === undefined ? null : Math.round(Number(v)));
+    const [salesSum] = await tx.select({ v: sql<string>`coalesce(sum(${sales.totalPesewas}), 0)` }).from(sales).where(where);
+    const [refunded] = await tx.select({ n: count(), v: sql<string>`coalesce(sum(${returns.refundPesewas}), 0)` }).from(returns)
+      .innerJoin(sales, eq(sales.id, returns.saleId)).where(and(
+        eq(returns.kind, 'receipt'), sql`(${returns.createdAt} at time zone ${shop.timezone})::date between ${f.from}::date and ${f.to}::date`,
+        f.branchId ? eq(returns.branchId, f.branchId) : undefined, f.serviceMode ? eq(sales.serviceMode, f.serviceMode) : undefined,
+      ));
 
     return { ok: true, report: {
       byHour, items: sold, best: sold.slice(0, 10), slowest, channels, wastage, pots,
       avgKitchenSeconds: seconds(times?.kitchen), avgCounterWaitSeconds: seconds(times?.wait),
+      totals: { salesPesewas: num(salesSum?.v), refunds: num(refunded?.n), refundPesewas: num(refunded?.v), netSalesPesewas: num(salesSum?.v) - num(refunded?.v) },
     } };
   });
 }

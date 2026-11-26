@@ -12,12 +12,12 @@ export type ReceiptView = {
   receiptNumber: string; createdAt: Date; timezone: string; cashierName: string; customerName: string | null; customerPhone: string | null;
   status: 'pending' | 'completed'; taxMode: 'inclusive' | 'exclusive';
   lines: Array<{ name: string; unitName: string; quantity: string; unitPricePesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serials: string[]; addOns: string[]; note: string | null }>;
-  subtotalPesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serviceChargePesewas: number;
+  subtotalPesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serviceChargePesewas: number; roundingPesewas: number;
   payments: Array<{ method: TenderMethod; amountPesewas: number; reference: string | null }>; changeDuePesewas: number; shareCode: string;
 };
 
 export const TENDER_LABELS: Record<TenderMethod, string> = {
-  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app',
+  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app', exchange_credit: 'Exchange credit',
 };
 
 async function loadReceipt(tx: Tx, where: SQL): Promise<(ReceiptView & { id: string }) | null> {
@@ -44,7 +44,7 @@ async function loadReceipt(tx: Tx, where: SQL): Promise<(ReceiptView & { id: str
       name: l.name, unitName: l.unitName, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: l.discountPesewas,
       taxPesewas: l.taxPesewas, totalPesewas: l.totalPesewas, serials: l.serials, addOns: l.addOns.map((a) => a.name), note: l.note,
     })),
-    subtotalPesewas: s.subtotalPesewas, discountPesewas: s.discountPesewas, taxPesewas: s.taxPesewas, totalPesewas: s.totalPesewas, serviceChargePesewas: s.serviceChargePesewas,
+    subtotalPesewas: s.subtotalPesewas, discountPesewas: s.discountPesewas, taxPesewas: s.taxPesewas, totalPesewas: s.totalPesewas, serviceChargePesewas: s.serviceChargePesewas, roundingPesewas: s.roundingPesewas,
     payments: paid, changeDuePesewas: s.changeDuePesewas, shareCode: s.shareCode,
   };
 }

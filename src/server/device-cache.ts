@@ -49,7 +49,7 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       generatedAt: now.toISOString(),
       shop: {
         name: shop.t.name, timezone: shop.t.timezone, taxMode: shop.t.taxMode, taxEnabled: shop.t.taxEnabled,
-        scaleLayout: shop.t.scaleBarcode ?? null, offlineEnabled: offline, businessDayCutoff: shop.t.businessDayCutoff,
+        scaleLayout: shop.t.scaleBarcode ?? null, offlineEnabled: offline, businessDayCutoff: shop.t.businessDayCutoff, cashRoundingStep: shop.t.cashRoundingStep,
         canSell: subscriptionState(shop.sub, todayIn(shop.t.timezone, now)) !== 'read_only',
       },
       register: {

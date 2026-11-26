@@ -1,4 +1,5 @@
 'use client';
+import { cashRounding } from '@/lib/cash-rounding';
 import { useCallback, useRef, useState } from 'react';
 import { findCustomersAction, findItemAction, priceItemAction } from '@/app/[slug]/app/sell/actions';
 import { calculateCartTotals } from '@/lib/cart-totals';
@@ -31,7 +32,7 @@ function writeCounter(key: string, n: number) {
   try { localStorage.setItem(key, String(n)); } catch { /* private mode: the server counter still protects uniqueness */ }
 }
 
-export function SellScreen({ slug, till, canDiscount, taxMode }: { slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive' }) {
+export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0 }: { slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive'; roundingStep?: number }) {
   const [lines, setLines] = useState<Line[]>([]);
   const [code, setCode] = useState('');
   const [hits, setHits] = useState<CatalogueHit[]>([]);
@@ -91,7 +92,8 @@ export function SellScreen({ slug, till, canDiscount, taxMode }: { slug: string;
   const cashPesewas = cash.trim() ? parseCedis(cash) : 0;
   const otherPesewas = other.amount.trim() ? parseCedis(other.amount) : 0;
   const paid = (cashPesewas ?? 0) + (otherPesewas ?? 0);
-  const change = totals ? Math.max(0, paid - totals.totalPesewas) : 0;
+  const rounding = totals ? cashRounding(totals.totalPesewas, otherPesewas ?? 0, (cashPesewas ?? 0) > 0, roundingStep) : 0; // spec 6.40
+  const change = totals ? Math.max(0, paid - totals.totalPesewas - rounding) : 0;
 
   async function complete() {
     if (!totals || cashPesewas === null || otherPesewas === null) { setMessage('Check the amounts.'); return; }
@@ -215,6 +217,8 @@ export function SellScreen({ slug, till, canDiscount, taxMode }: { slug: string;
           {totals.discountPesewas > 0 && <p className="flex justify-between"><span>Discounts</span><span>−{formatCedis(totals.discountPesewas)}</span></p>}
           <p className="flex justify-between"><span>{taxMode === 'inclusive' ? 'Tax included' : 'Tax'}</span><span>{formatCedis(totals.taxPesewas)}</span></p>
           <p className="flex justify-between text-xl font-bold"><span>Total</span><span>{formatCedis(totals.totalPesewas)}</span></p>
+          {rounding !== 0 && <p className="flex justify-between"><span>Cash rounding</span><span>{formatCedis(rounding)}</span></p>}
+          {rounding !== 0 && <p className="flex justify-between font-semibold"><span>Cash to pay</span><span>{formatCedis(totals.totalPesewas + rounding)}</span></p>}
         </section>
       ) : <p role="alert" className="text-sm text-red-700">A discount is larger than its line amount.</p>}
 

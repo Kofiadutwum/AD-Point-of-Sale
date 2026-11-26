@@ -5,7 +5,7 @@ import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit'; // exchange_credit: server only (spec 6.32)
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
@@ -102,6 +102,8 @@ export const sales = pgTable('sales', {
   externalOrderId: text('external_order_id'), // the platform order ID
   commissionPesewas: integer('commission_pesewas').notNull().default(0),
   serviceChargePesewas: integer('service_charge_pesewas').notNull().default(0), // untaxed, added to the total (spec 6.6)
+  roundingPesewas: integer('rounding_pesewas').notNull().default(0), // cash rounding added to the amount due, may be negative (spec 6.40)
+  salespersonId: uuid('salesperson_id'), // who built the order at another counter (spec 6.39)
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
@@ -116,6 +118,7 @@ export const sales = pgTable('sales', {
   foreignKey({ name: 'sales_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
   foreignKey({ name: 'sales_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),
   foreignKey({ name: 'sales_cashier_fk', columns: [t.tenantId, t.cashierId], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'sales_salesperson_fk', columns: [t.tenantId, t.salespersonId], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'sales_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
   check('sales_status', sql`${t.status} in ('pending', 'completed')`),
   check('sales_tax_mode', sql`${t.taxMode} in ('inclusive', 'exclusive')`),
@@ -166,8 +169,8 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement')`),
-  check('payments_reference', sql`${t.method} in ('cash', 'store_credit') or ${t.reference} is not null`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit')`),
+  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),
 ]);
@@ -188,6 +191,8 @@ export const returns = pgTable('returns', {
   reference: text('reference'),
   requestedBy: uuid('requested_by').notNull(),
   approvedBy: uuid('approved_by'),
+  exchangeSaleId: uuid('exchange_sale_id'), // the sale the returned items paid towards (spec 6.32)
+  exchangeCreditPesewas: integer('exchange_credit_pesewas').notNull().default(0),
   createdAt: createdAt(),
 }, (t) => [
   unique('returns_tenant_id').on(t.tenantId, t.id),
@@ -196,6 +201,8 @@ export const returns = pgTable('returns', {
   foreignKey({ name: 'returns_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
   foreignKey({ name: 'returns_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'returns_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'returns_exchange_sale_fk', columns: [t.tenantId, t.exchangeSaleId], foreignColumns: [sales.tenantId, sales.id] }),
+  check('returns_exchange_credit', sql`${t.exchangeCreditPesewas} between 0 and ${t.refundPesewas}`),
   check('returns_kind', sql`${t.kind} in ('receipt', 'no_receipt') and (${t.kind} = 'no_receipt' or ${t.saleId} is not null)`),
   check('returns_refund', sql`${t.refundPesewas} >= 0`),
 ]);
@@ -236,4 +243,29 @@ export const approvals = pgTable('approvals', {
   unique('approvals_token').on(t.tokenHash),
   foreignKey({ name: 'approvals_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'approvals_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+export type CounterOrderLine = { variantId: string; unitId: string; quantity: string };
+export type CounterOrderStatus = 'awaiting_payment' | 'paid' | 'cancelled';
+
+/** Spec 6.39: an order built at one counter and paid at another; stock moves only when it is paid. */
+export const counterOrders = pgTable('counter_orders', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  orderNumber: text('order_number').notNull(), // 4 digits, per branch and business day
+  businessDate: date('business_date', { mode: 'string' }).notNull(),
+  lines: jsonb('lines').$type<CounterOrderLine[]>().notNull(),
+  createdBy: uuid('created_by').notNull(),
+  status: text('status').$type<CounterOrderStatus>().notNull().default('awaiting_payment'),
+  saleId: uuid('sale_id'),
+  expiresAt: timestamptz('expires_at').notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('counter_orders_tenant_id').on(t.tenantId, t.id),
+  unique('counter_orders_number').on(t.tenantId, t.branchId, t.businessDate, t.orderNumber),
+  check('counter_orders_status', sql`${t.status} in ('awaiting_payment', 'paid', 'cancelled')`),
+  foreignKey({ name: 'counter_orders_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'counter_orders_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'counter_orders_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
 ]);

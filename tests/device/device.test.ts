@@ -38,7 +38,7 @@ it('refuses a platform order ID already waiting in the outbox', () => {
 
 it('a channel settlement needs the platform order ID as its reference', () => {
   expect(checkTenders([{ method: 'channel_settlement', amountPesewas: 500, reference: ' ' }], 500)).toMatchObject({ ok: false });
-  expect(checkTenders([{ method: 'channel_settlement', amountPesewas: 500, reference: 'BF-12' }], 500)).toEqual({ ok: true, changeDuePesewas: 0 });
+  expect(checkTenders([{ method: 'channel_settlement', amountPesewas: 500, reference: 'BF-12' }], 500)).toEqual({ ok: true, changeDuePesewas: 0, roundingPesewas: 0 });
 });
 
 it('hands out receipt counters in order and never lowers them', async () => {
@@ -75,13 +75,13 @@ it('blocks offline selling when switched off, read-only, never synced, or last s
 });
 
 it('only cash gives change, and manual payments need a reference', () => {
-  expect(checkTenders([{ method: 'cash', amountPesewas: 2000, reference: '' }], 1725)).toEqual({ ok: true, changeDuePesewas: 275 });
+  expect(checkTenders([{ method: 'cash', amountPesewas: 2000, reference: '' }], 1725)).toEqual({ ok: true, changeDuePesewas: 275, roundingPesewas: 0 });
   expect(checkTenders([{ method: 'momo_manual', amountPesewas: 2000, reference: 'MP123' }], 1725).ok).toBe(false);
   expect(checkTenders([{ method: 'momo_manual', amountPesewas: 1725, reference: ' ' }], 1725).ok).toBe(false);
   expect(checkTenders([{ method: 'cash', amountPesewas: 1000, reference: '' }], 1725).ok).toBe(false);
   expect(checkTenders([{ method: 'cash', amountPesewas: 1.5, reference: '' }], 1).ok).toBe(false);
   expect(checkTenders([{ method: 'card_terminal', amountPesewas: 725, reference: 'S1' }, { method: 'cash', amountPesewas: 1000, reference: '' }], 1725))
-    .toEqual({ ok: true, changeDuePesewas: 0 });
+    .toEqual({ ok: true, changeDuePesewas: 0, roundingPesewas: 0 });
 });
 
 it('formats receipt numbers', () => {
@@ -142,4 +142,10 @@ it('two device stores give different numbers on the same day', async () => {
   const n1 = await t1.takeOrderNumber('2026-10-26');
   const n2 = await t2.takeOrderNumber('2026-10-26');
   expect([offlineOrderNumber('T1', n1), offlineOrderNumber('T2', n2)]).toEqual(['T1-001', 'T2-001']);
+});
+
+it('rounds what cash pays to the shop step (spec 6.40)', () => {
+  expect(checkTenders([{ method: 'cash', amountPesewas: 1000, reference: '' }], 997, 10)).toEqual({ ok: true, changeDuePesewas: 0, roundingPesewas: 3 });
+  expect(checkTenders([{ method: 'cash', amountPesewas: 994, reference: '' }], 994, 10)).toEqual({ ok: true, changeDuePesewas: 4, roundingPesewas: -4 });
+  expect(checkTenders([{ method: 'momo_manual', amountPesewas: 997, reference: 'M1' }], 997, 10)).toEqual({ ok: true, changeDuePesewas: 0, roundingPesewas: 0 });
 });
