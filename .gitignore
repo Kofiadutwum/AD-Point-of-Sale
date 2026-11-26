@@ -50,3 +50,6 @@ next-env.d.ts
 # landing page source pictures; only the compressed copies in public/landing/web are committed
 /public/landing/*
 !/public/landing/web/
+
+# print helper config holds the pairing token
+print-helper/config.json

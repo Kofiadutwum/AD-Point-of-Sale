@@ -7,6 +7,7 @@ import { getServiceChargeBp } from '@/server/tables';
 import { formatCedis } from '@/lib/money';
 import { currentTicketBranch, getTicket, listApprovers, listOpenTickets, listTicketItems, quoteTicket } from '@/server/tickets';
 import { pageCtx } from '../../page-ctx';
+import { PrintSlips } from './print-slips';
 import {
   addLineAction, cancelAction, moveAction, payAction, payEqualAction, payPartAction, printBillAction, removeLineAction, sendAction, voidAction,
 } from './actions';
@@ -60,6 +61,9 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
   const shares = Math.min(20, Math.max(0, Number(search.shares) || 0));
   const seats = [...new Set(live.filter((l) => l.seat && unpaid(l) > 0).map((l) => l.seat!))].sort((a, b) => a - b);
   const canPay = ctx.permissions.includes('make_sale');
+  // spec 4.24: the latest kitchen send, for the print helper
+  const lastSent = live.reduce<Date | null>((m, l) => (l.sentAt && (!m || l.sentAt > m) ? l.sentAt : m), null);
+  const batch = lastSent ? live.filter((l) => l.sentAt?.getTime() === lastSent.getTime()) : [];
   return (
     <main className="flex max-w-2xl flex-col gap-6">
       <a href={`/${slug}/app/tables`} className="text-sm text-blue-800 underline print:hidden">← Tables</a>
@@ -141,6 +145,10 @@ export default async function TicketPage({ params, searchParams }: { params: Pro
           </section>
           <div className="flex flex-wrap gap-2">
             <ActionForm action={sendAction.bind(null, slug, ticket.id)} submitLabel="Send to kitchen">{null}</ActionForm>
+            <PrintSlips slug={slug} batchKey={lastSent ? `${ticket.id}-${lastSent.getTime()}` : null} order={{
+              kind: 'new', orderNumber: null, label: ticket.label, dining: ticket.diningOption, at: (lastSent ?? new Date()).toISOString(), timezone: ctx.timezone, by: ticket.waiterName,
+              lines: batch.map((l) => ({ name: l.name, quantity: l.quantity, station: l.station, addOns: l.addOns, note: l.note })),
+            }} />
             <ActionForm action={printBillAction.bind(null, slug, ticket.id)} submitLabel="Mark bill printed">{null}</ActionForm>
             <PrintButton />
           </div>

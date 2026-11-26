@@ -63,7 +63,7 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       taxRules: (await tx.select().from(taxRules)).map((r) => ({ id: r.id, isDefault: r.isDefault, rateBp: effectiveRateBp(r) })),
       priceRules: await loadPriceRules(tx),
       products: (await tx.select().from(products)).map((p) => ({
-        id: p.id, name: p.name, genericName: p.genericName, taxRuleId: p.taxRuleId, tracking: p.tracking, status: p.status, prescriptionOnly: p.prescriptionOnly,
+        id: p.id, name: p.name, genericName: p.genericName, taxRuleId: p.taxRuleId, tracking: p.tracking, status: p.status, prescriptionOnly: p.prescriptionOnly, kitchenStation: p.kitchenStation,
         imageId: photos.find((i) => i.productId === p.id)?.id ?? null,
       })),
       variants: await tx.select({

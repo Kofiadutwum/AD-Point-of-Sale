@@ -27,7 +27,7 @@ import { costOf } from './variants';
 
 export type TicketView = {
   id: string; label: string; tableId: string | null; status: TicketStatus; diningOption: DiningOption; waiterName: string; openedAt: Date;
-  lines: Array<{ id: string; lineNo: number; name: string; quantity: string; addOns: string[]; note: string | null; station: KitchenStation; kitchenStatus: TicketLineStatus; seat: number | null; paidQuantity: string }>;
+  lines: Array<{ id: string; lineNo: number; name: string; quantity: string; addOns: string[]; note: string | null; station: KitchenStation; kitchenStatus: TicketLineStatus; seat: number | null; paidQuantity: string; sentAt: Date | null }>;
 };
 
 const myBranches = async (tx: Tx, ctx: Ctx) => (await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId)))[0]?.branchIds ?? [];
@@ -94,7 +94,7 @@ export async function getTicket(db: Db, ctx: Ctx, ticketId: string): Promise<Tic
     return {
       id: t.ticket.id, label: t.ticket.label, tableId: t.ticket.tableId, status: t.ticket.status, diningOption: t.ticket.diningOption, waiterName: t.waiterName, openedAt: t.ticket.openedAt,
       lines: lines.map(({ line: l, productName, variantName }) => ({
-        id: l.id, lineNo: l.lineNo, name: itemLabel(productName, variantName), quantity: l.quantity, note: l.note, station: l.station, kitchenStatus: l.kitchenStatus, seat: l.seat, paidQuantity: l.paidQuantity,
+        id: l.id, lineNo: l.lineNo, name: itemLabel(productName, variantName), quantity: l.quantity, note: l.note, station: l.station, kitchenStatus: l.kitchenStatus, seat: l.seat, paidQuantity: l.paidQuantity, sentAt: l.sentAt,
         addOns: l.addOns.map((a) => names.find((n) => n.id === a.optionId)?.name ?? 'Add-on'),
       })),
     };

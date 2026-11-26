@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { addOnGroupsOf, canAdd, type CartLine, comboSlotsOf, findByCode, mergeLine, priceCart, searchCatalogue, withPackLine } from '@/device/catalogue';
 import type { DeviceCache } from '@/lib/device-contract';
 import { isPrescriptionOnly, type TenderInput } from '@/device/sale';
+import { loadPrinterSettings, printKitchenSlips } from '@/lib/print-client';
 import { businessDate, todayIn } from '@/lib/dates';
 import type { AddOnChoice, ComboChoice, DiningOption } from '@/lib/food';
 import { formatCedis, parseCedis } from '@/lib/money';
@@ -60,6 +61,7 @@ function StatusBar({ d }: { d: Device }) {
       {waiting > 0 && <span>{waiting} waiting</span>}
       {review > 0 && <span className="text-red-700">{review} need review</span>}
       <span className="text-gray-600">Last sync {synced}</span>
+      <a href="printers" className="text-blue-800 underline">Printers</a>
       {d.cashier && (
         <span className="ml-auto flex items-center gap-2">
           {d.cashier.name}
@@ -250,6 +252,18 @@ function Selling({ d, slug }: { d: Device; slug: string }) {
     setBusy(false);
     if (!r.ok) return setMessage(r.error);
     setReceipt(r.receipt);
+    if (mode) {
+      // spec 4.24: kitchen slips through the local print helper; works offline too
+      const stationOf = (variantId: string) => cache.products.find((p) => p.id === cache.variants.find((v) => v.id === variantId)?.productId)?.kitchenStation ?? 'kitchen';
+      const kitchenLines = priced.lines.filter((l) => l.variantId !== cache.food?.packVariantId).map((l) => ({
+        name: l.label, quantity: l.quantity, station: stationOf(l.variantId), note: l.note ?? null,
+        addOns: (l.addOns ?? []).map((a) => cache.addOnGroups.find((g) => g.id === a.groupId)?.optionNames[a.optionId] ?? 'Add-on'),
+      }));
+      void printKitchenSlips(loadPrinterSettings(slug), {
+        kind: 'new', orderNumber: r.receipt.orderNumber, dining: r.receipt.diningOption ?? 'eat_in', at: new Date(), timezone: cache.shop.timezone,
+        by: d.cashier?.name, lines: kitchenLines,
+      }).then((p) => { if (p.failed.length) setMessage(`Kitchen printer not reachable (${p.failed.join(', ')}). The kitchen display still has the order.`); });
+    }
     setLines([]);
     setDining('eat_in');
     setTenders([{ method: 'cash', amount: '', reference: '' }]);
