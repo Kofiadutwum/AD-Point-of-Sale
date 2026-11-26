@@ -1,7 +1,7 @@
 import 'server-only';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
-import { cashMovements, payments, registers, returns, sales, shifts, tenants, users } from '@/db/schema';
+import { cashMovements, customerLedger, payments, registers, returns, sales, shifts, tenants, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { consumeApproval } from './approvals';
 import { writeAudit } from './audit';
@@ -13,7 +13,7 @@ const MAX = 100_000_000; // GHS 1,000,000
 
 export type ShiftSummary = {
   shiftId: string; openedAt: Date; openedBy: string; openingCashPesewas: number;
-  cashTakenPesewas: number; changeGivenPesewas: number; paidInPesewas: number; paidOutPesewas: number; cashRefundsPesewas: number;
+  cashTakenPesewas: number; changeGivenPesewas: number; paidInPesewas: number; paidOutPesewas: number; cashRefundsPesewas: number; debtPaymentsPesewas: number;
   expectedCashPesewas: number; sales: number;
 };
 
@@ -32,13 +32,16 @@ export async function summarise(tx: Tx, shiftId: string): Promise<ShiftSummary |
   // the cash part of a return; on an exchange only what was given back beyond the credit used for the new items
   const [refunds] = await tx.select({ v: sql<string>`coalesce(sum(${returns.refundPesewas} - ${returns.exchangeCreditPesewas}), 0)` }).from(returns)
     .where(and(eq(returns.shiftId, shiftId), eq(returns.refundMethod, 'cash')));
+  // cash paid towards what customers owe, taken at this till during the shift (spec 6.13)
+  const [debts] = await tx.select({ v: sql<string>`coalesce(sum(-${customerLedger.amountPesewas}), 0)` }).from(customerLedger)
+    .where(and(eq(customerLedger.shiftId, shiftId), eq(customerLedger.type, 'payment'), eq(customerLedger.method, 'cash')));
   const n = (v: string | undefined) => Number(v ?? 0);
   const r = {
-    cashTakenPesewas: n(cash.v), changeGivenPesewas: n(change.v), paidInPesewas: n(moves.paidIn), paidOutPesewas: n(moves.paidOut), cashRefundsPesewas: n(refunds.v),
+    cashTakenPesewas: n(cash.v), changeGivenPesewas: n(change.v), paidInPesewas: n(moves.paidIn), paidOutPesewas: n(moves.paidOut), cashRefundsPesewas: n(refunds.v), debtPaymentsPesewas: n(debts.v),
   };
   return {
     shiftId, openedAt: s.shift.openedAt, openedBy: s.openedBy, openingCashPesewas: s.shift.openingCashPesewas, ...r, sales: n(change.n),
-    expectedCashPesewas: s.shift.openingCashPesewas + r.cashTakenPesewas - r.changeGivenPesewas + r.paidInPesewas - r.paidOutPesewas - r.cashRefundsPesewas,
+    expectedCashPesewas: s.shift.openingCashPesewas + r.cashTakenPesewas - r.changeGivenPesewas + r.paidInPesewas - r.paidOutPesewas - r.cashRefundsPesewas + r.debtPaymentsPesewas,
   };
 }
 

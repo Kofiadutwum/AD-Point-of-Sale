@@ -17,6 +17,7 @@ export default async function CustomersPage({ params, searchParams }: { params: 
     <main className="flex flex-col gap-6">
       <a href={`/${slug}/app`} className="text-sm text-blue-800 underline">← Home</a>
       <h1 className="text-2xl font-semibold">Customers</h1>
+      <a href={`/${slug}/app/customers/owing`} className="text-sm text-blue-800 underline">Who owes</a>
       <form className="flex gap-2">
         <input name="q" defaultValue={q} placeholder="Name or phone" aria-label="Search" className="min-w-0 flex-1 rounded border border-gray-400 px-3 py-2" />
         <button type="submit" className="rounded border px-4 py-2">Search</button>
@@ -24,7 +25,7 @@ export default async function CustomersPage({ params, searchParams }: { params: 
       <ul className="divide-y rounded border">
         {found.map((c) => (
           <li key={c.id} className="flex flex-col gap-2 p-3">
-            <span className="flex justify-between"><span>{c.name} · {c.phone}</span><span>Store credit {formatCedis(c.storeCreditPesewas)}</span></span>
+            <span className="flex justify-between"><span>{c.name} · {c.phone} · <a className="text-blue-800 underline" href={`/${slug}/app/customers/${c.id}`}>Account</a></span><span>Store credit {formatCedis(c.storeCreditPesewas)}</span></span>
             {canCredit && (
               <details>
                 <summary className="cursor-pointer text-sm text-blue-800">Give store credit</summary>

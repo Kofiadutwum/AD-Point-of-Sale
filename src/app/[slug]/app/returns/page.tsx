@@ -80,6 +80,7 @@ export default async function ReturnsPage({ params, searchParams }: { params: Pr
                   <option value="card_terminal">Card</option>
                   <option value="bank_transfer">Bank transfer</option>
                   {sale.customerId && <option value="store_credit">Store credit</option>}
+                  {sale.method === 'credit' && <option value="credit">Off what they owe</option>}
                 </select>
               </label>
               <Field label="Reference (MoMo, card, or bank)" name="reference" required={false} maxLength={100} />
@@ -126,6 +127,7 @@ export default async function ReturnsPage({ params, searchParams }: { params: Pr
                 <option value="">Choose how</option><option value="cash">Cash</option><option value="momo_manual">MoMo</option>
                 <option value="card_terminal">Card</option><option value="bank_transfer">Bank transfer</option>
                 {sale.customerId && <option value="store_credit">Store credit</option>}
+                {sale.method === 'credit' && <option value="credit">Off what they owe</option>}
               </select>
               <Field label="Reference (MoMo, card, or bank)" name="reference" required={false} maxLength={100} />
             </fieldset>

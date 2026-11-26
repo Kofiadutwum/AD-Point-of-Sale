@@ -31,6 +31,7 @@ export default async function ShiftPage({ params }: { params: Promise<{ slug: st
             {row('Paid in', shift.paidInPesewas, '+')}
             {row('Paid out', shift.paidOutPesewas, '−')}
             {row('Cash refunds', shift.cashRefundsPesewas, '−')}
+            {row('Debt payments in cash', shift.debtPaymentsPesewas, '+')}
             <p className="flex justify-between text-lg font-semibold"><span>Should be in the drawer</span><span>{formatCedis(shift.expectedCashPesewas)}</span></p>
           </section>
           {ctx.permissions.includes('manage_cash') && (

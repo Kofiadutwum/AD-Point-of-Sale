@@ -10,8 +10,8 @@ import { verifyStaffPin } from './devices';
 import type { Permission } from '@/lib/permissions';
 import { type Fail, fail, isUuid } from './products';
 
-export type ApprovalAction = 'refund' | 'refund_other_method' | 'no_receipt_return' | 'dispense_prescription' | 'cash_variance' | 'expense';
-const ACTIONS: readonly ApprovalAction[] = ['refund', 'refund_other_method', 'no_receipt_return', 'dispense_prescription', 'cash_variance', 'expense'];
+export type ApprovalAction = 'refund' | 'refund_other_method' | 'no_receipt_return' | 'dispense_prescription' | 'cash_variance' | 'expense' | 'credit_over_limit';
+const ACTIONS: readonly ApprovalAction[] = ['refund', 'refund_other_method', 'no_receipt_return', 'dispense_prescription', 'cash_variance', 'expense', 'credit_over_limit'];
 /** A pharmacist approves prescription-only medicine (spec 6.36); managers approve everything else. */
 const approverPermission = (action: ApprovalAction): Permission => (action === 'dispense_prescription' ? 'dispense_prescription' : 'approve_actions');
 const VALID_MS = 2 * 60_000;

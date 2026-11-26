@@ -22,7 +22,7 @@ const MESSAGES: Record<string, string> = {
   no_register: 'Exchanges are made at a till: sign in with your PIN on a registered till.', payment_incomplete: 'Not enough paid yet.',
   not_enough_stock: 'Not enough stock of a new item.', reduce_non_cash_amount: 'Only cash can give change. Reduce the MoMo, card, or bank amount.',
 };
-const METHODS: Record<RefundMethod, string> = { cash: 'cash', momo_manual: 'MoMo', card_terminal: 'card', bank_transfer: 'bank transfer', store_credit: 'store credit' };
+const METHODS: Record<RefundMethod, string> = { cash: 'cash', momo_manual: 'MoMo', card_terminal: 'card', bank_transfer: 'bank transfer', store_credit: 'store credit', credit: "the customer's account" };
 const text = (fd: FormData, k: string) => String(fd.get(k) ?? '').trim();
 
 /** A token when approval is needed and the form names a manager and PIN; a message otherwise. */

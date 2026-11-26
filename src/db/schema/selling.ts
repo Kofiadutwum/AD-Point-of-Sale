@@ -5,11 +5,11 @@ import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit'; // exchange_credit: server only (spec 6.32)
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit' | 'credit'; // exchange_credit: server only (spec 6.32)
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
-export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement'];
+export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'credit'];
 export type ChannelKind = 'delivery_app' | 'phone' | 'whatsapp';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -23,12 +23,16 @@ export const customers = pgTable('customers', {
   phone: text('phone').notNull(), // 233 + 9 digits
   priceListId: uuid('price_list_id'),
   storeCreditPesewas: integer('store_credit_pesewas').notNull().default(0),
+  creditLimitPesewas: integer('credit_limit_pesewas').notNull().default(0), // 0 = no credit (spec 4.5)
+  balancePesewas: integer('balance_pesewas').notNull().default(0), // owed on credit; always the ledger's sum
+  reminderConsent: boolean('reminder_consent').notNull().default(false), // agreed to debt reminders by SMS
   createdAt: createdAt(),
 }, (t) => [
   unique('customers_tenant_id').on(t.tenantId, t.id),
   unique('customers_phone').on(t.tenantId, t.phone),
   foreignKey({ name: 'customers_price_list_fk', columns: [t.tenantId, t.priceListId], foreignColumns: [priceLists.tenantId, priceLists.id] }),
   check('customers_store_credit', sql`${t.storeCreditPesewas} >= 0`),
+  check('customers_credit', sql`${t.creditLimitPesewas} >= 0 and ${t.balancePesewas} >= 0`),
 ]);
 
 /** Every change to a store credit balance (spec 6.31); never edited. */
@@ -202,8 +206,8 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit')`),
-  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit') or ${t.reference} is not null`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit')`),
+  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit', 'credit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),
 ]);
@@ -371,4 +375,36 @@ export const expenses = pgTable('expenses', {
   foreignKey({ name: 'expenses_recorded_by_fk', columns: [t.tenantId, t.recordedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'expenses_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'expenses_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
+]);
+
+export type LedgerType = 'sale' | 'payment' | 'return' | 'adjustment';
+
+/** Spec 4.5, 6.13: what a customer owes on credit, entry by entry. Never edited; corrections are adjustments. */
+export const customerLedger = pgTable('customer_ledger', {
+  id: id(),
+  tenantId: tenantId(),
+  customerId: uuid('customer_id').notNull(),
+  type: text('type').$type<LedgerType>().notNull(),
+  amountPesewas: integer('amount_pesewas').notNull(), // + adds to what they owe, - reduces it
+  balanceAfterPesewas: integer('balance_after_pesewas').notNull(),
+  method: text('method'), // how a payment was made
+  reference: text('reference'),
+  saleId: uuid('sale_id'),
+  returnId: uuid('return_id'),
+  shiftId: uuid('shift_id'),
+  reason: text('reason'),
+  userId: uuid('user_id').notNull(),
+  approvedBy: uuid('approved_by'),
+  createdAt: createdAt(),
+}, (t) => [
+  index('customer_ledger_customer').on(t.tenantId, t.customerId, t.createdAt),
+  check('customer_ledger_type', sql`${t.type} in ('sale', 'payment', 'return', 'adjustment')`),
+  check('customer_ledger_amount', sql`${t.amountPesewas} <> 0 and ${t.balanceAfterPesewas} >= 0`),
+  check('customer_ledger_method', sql`${t.method} is null or ${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer')`),
+  foreignKey({ name: 'customer_ledger_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
+  foreignKey({ name: 'customer_ledger_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'customer_ledger_return_fk', columns: [t.tenantId, t.returnId], foreignColumns: [returns.tenantId, returns.id] }),
+  foreignKey({ name: 'customer_ledger_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
+  foreignKey({ name: 'customer_ledger_user_fk', columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'customer_ledger_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
 ]);

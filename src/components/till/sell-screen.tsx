@@ -11,7 +11,7 @@ import type { TillItem, TillRegister } from '@/server/till';
 import { CameraScanner } from './camera-scanner';
 
 type Line = TillItem & { discountPesewas: number; serials: string };
-type OtherMethod = 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
+type OtherMethod = 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'credit';
 
 const ERRORS: Record<string, string> = {
   price_changed: 'A price changed. Remove the item and scan it again.',
@@ -21,7 +21,9 @@ const ERRORS: Record<string, string> = {
   serials_required: 'Enter one serial number per unit for serial items.', unknown_serial: 'A serial number is not in stock here.',
   reference_required: 'Enter the payment reference (MoMo ID, slip or transfer number).', reduce_non_cash_amount: 'Only cash can be more than the total.',
   payment_incomplete: 'The payments do not cover the total.', insufficient_store_credit: 'Not enough store credit.',
-  store_credit_needs_customer: 'Choose the customer to use store credit.', discount_not_allowed: 'You cannot give discounts.',
+  store_credit_needs_customer: 'Choose the customer to use store credit.',
+  credit_needs_customer: 'Choose the customer to sell on credit.', credit_not_allowed: 'You cannot sell on credit.',
+  credit_over_limit: 'This would take the customer over their credit limit. A manager must raise the limit first.', discount_not_allowed: 'You cannot give discounts.',
   discount_too_large: 'A discount is larger than the line amount.', invalid_quantity: 'Check the quantities.', empty_bundle: 'A bundle has no parts set up.',
 };
 
@@ -283,9 +285,10 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
             <option value="card_terminal">Card</option>
             <option value="bank_transfer">Bank transfer</option>
             {customer && <option value="store_credit">Store credit</option>}
+            {customer && <option value="credit">On credit (customer owes)</option>}
           </select>
           <input aria-label="Other payment amount" placeholder="Amount (GHS)" value={other.amount} onChange={(e) => setOther({ ...other, amount: e.target.value })} inputMode="decimal" className="w-28 rounded border border-gray-400 px-2 py-2" />
-          {other.method !== 'store_credit' && (
+          {other.method !== 'store_credit' && other.method !== 'credit' && (
             <input aria-label="Payment reference" placeholder="Reference" value={other.reference} onChange={(e) => setOther({ ...other, reference: e.target.value })} className="min-w-0 flex-1 rounded border border-gray-400 px-2 py-2" />
           )}
         </div>

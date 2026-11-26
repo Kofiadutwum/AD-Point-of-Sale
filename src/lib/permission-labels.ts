@@ -40,4 +40,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   import_data: 'Import products, customers, and opening stock from CSV',
   manage_cash: 'Put cash into or take cash out of a till',
   record_expenses: 'Record expenses',
+  sell_on_credit: 'Sell on credit to customers with an account',
+  receive_debt_payment: 'Take payments towards what customers owe',
 };
