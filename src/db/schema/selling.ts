@@ -71,6 +71,37 @@ export const salesChannels = pgTable('sales_channels', {
 ]);
 
 /** The id is the UUID made on the device; it is also the idempotency key (spec 6.0, 6.8). */
+export type ShiftStatus = 'open' | 'closed';
+
+/** Spec 6.14: a till's cash from opening float to counted close. One open shift per register. */
+export const shifts = pgTable('shifts', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  registerId: uuid('register_id').notNull(),
+  status: text('status').$type<ShiftStatus>().notNull().default('open'),
+  openedBy: uuid('opened_by').notNull(),
+  openedAt: timestamptz('opened_at').notNull(),
+  openingCashPesewas: integer('opening_cash_pesewas').notNull(),
+  closedBy: uuid('closed_by'),
+  closedAt: timestamptz('closed_at'),
+  expectedCashPesewas: integer('expected_cash_pesewas'),
+  countedCashPesewas: integer('counted_cash_pesewas'),
+  variancePesewas: integer('variance_pesewas'),
+  varianceReason: text('variance_reason'),
+  approvedBy: uuid('approved_by'),
+}, (t) => [
+  unique('shifts_tenant_id').on(t.tenantId, t.id),
+  uniqueIndex('shifts_one_open').on(t.registerId).where(sql`${t.status} = 'open'`),
+  check('shifts_status', sql`${t.status} in ('open', 'closed')`),
+  check('shifts_opening', sql`${t.openingCashPesewas} >= 0`),
+  foreignKey({ name: 'shifts_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'shifts_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),
+  foreignKey({ name: 'shifts_opened_by_fk', columns: [t.tenantId, t.openedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'shifts_closed_by_fk', columns: [t.tenantId, t.closedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'shifts_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
 export const sales = pgTable('sales', {
   id: uuid('id').primaryKey(),
   tenantId: tenantId(),
@@ -104,6 +135,7 @@ export const sales = pgTable('sales', {
   serviceChargePesewas: integer('service_charge_pesewas').notNull().default(0), // untaxed, added to the total (spec 6.6)
   roundingPesewas: integer('rounding_pesewas').notNull().default(0), // cash rounding added to the amount due, may be negative (spec 6.40)
   salespersonId: uuid('salesperson_id'), // who built the order at another counter (spec 6.39)
+  shiftId: uuid('shift_id'), // the register's open shift when the sale was made (spec 6.14)
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
@@ -119,6 +151,7 @@ export const sales = pgTable('sales', {
   foreignKey({ name: 'sales_register_fk', columns: [t.tenantId, t.registerId], foreignColumns: [registers.tenantId, registers.id] }),
   foreignKey({ name: 'sales_cashier_fk', columns: [t.tenantId, t.cashierId], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'sales_salesperson_fk', columns: [t.tenantId, t.salespersonId], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'sales_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
   foreignKey({ name: 'sales_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
   check('sales_status', sql`${t.status} in ('pending', 'completed')`),
   check('sales_tax_mode', sql`${t.taxMode} in ('inclusive', 'exclusive')`),
@@ -193,6 +226,7 @@ export const returns = pgTable('returns', {
   approvedBy: uuid('approved_by'),
   exchangeSaleId: uuid('exchange_sale_id'), // the sale the returned items paid towards (spec 6.32)
   exchangeCreditPesewas: integer('exchange_credit_pesewas').notNull().default(0),
+  shiftId: uuid('shift_id'), // the till's open shift when the money was given back (spec 6.14)
   createdAt: createdAt(),
 }, (t) => [
   unique('returns_tenant_id').on(t.tenantId, t.id),
@@ -202,6 +236,7 @@ export const returns = pgTable('returns', {
   foreignKey({ name: 'returns_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'returns_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'returns_exchange_sale_fk', columns: [t.tenantId, t.exchangeSaleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'returns_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
   check('returns_exchange_credit', sql`${t.exchangeCreditPesewas} between 0 and ${t.refundPesewas}`),
   check('returns_kind', sql`${t.kind} in ('receipt', 'no_receipt') and (${t.kind} = 'no_receipt' or ${t.saleId} is not null)`),
   check('returns_refund', sql`${t.refundPesewas} >= 0`),
@@ -289,4 +324,51 @@ export const prescriptions = pgTable('prescriptions', {
   foreignKey({ name: 'prescriptions_sale_line_fk', columns: [t.tenantId, t.saleLineId], foreignColumns: [saleLines.tenantId, saleLines.id] }),
   foreignKey({ name: 'prescriptions_recorded_by_fk', columns: [t.tenantId, t.recordedBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'prescriptions_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+export type CashMovementType = 'paid_in' | 'paid_out';
+
+/** Cash put into or taken out of a till during a shift, with a reason (spec 6.14). */
+export const cashMovements = pgTable('cash_movements', {
+  id: id(),
+  tenantId: tenantId(),
+  shiftId: uuid('shift_id').notNull(),
+  type: text('type').$type<CashMovementType>().notNull(),
+  amountPesewas: integer('amount_pesewas').notNull(),
+  reason: text('reason').notNull(),
+  userId: uuid('user_id').notNull(),
+  expenseId: uuid('expense_id'),
+  createdAt: createdAt(),
+}, (t) => [
+  check('cash_movements_type', sql`${t.type} in ('paid_in', 'paid_out')`),
+  check('cash_movements_amount', sql`${t.amountPesewas} > 0`),
+  foreignKey({ name: 'cash_movements_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
+  foreignKey({ name: 'cash_movements_user_fk', columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+export type ExpenseMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer';
+
+/** Spec 6.43: money the shop spent; a cash expense at a till with an open shift is also paid out of that shift. */
+export const expenses = pgTable('expenses', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  category: text('category').notNull(),
+  amountPesewas: integer('amount_pesewas').notNull(),
+  method: text('method').$type<ExpenseMethod>().notNull(),
+  reference: text('reference'),
+  note: text('note'),
+  recordedBy: uuid('recorded_by').notNull(),
+  approvedBy: uuid('approved_by'),
+  shiftId: uuid('shift_id'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('expenses_tenant_id').on(t.tenantId, t.id),
+  check('expenses_amount', sql`${t.amountPesewas} > 0`),
+  check('expenses_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer')`),
+  check('expenses_reference', sql`${t.method} = 'cash' or ${t.reference} is not null`),
+  foreignKey({ name: 'expenses_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'expenses_recorded_by_fk', columns: [t.tenantId, t.recordedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'expenses_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'expenses_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
 ]);

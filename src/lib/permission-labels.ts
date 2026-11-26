@@ -38,4 +38,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   dispense_prescription: 'Sell prescription-only medicine (or approve it)',
   record_production: 'Record items made in advance (production)',
   import_data: 'Import products, customers, and opening stock from CSV',
+  manage_cash: 'Put cash into or take cash out of a till',
+  record_expenses: 'Record expenses',
 };
