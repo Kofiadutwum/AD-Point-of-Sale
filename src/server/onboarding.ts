@@ -48,7 +48,7 @@ class Rollback extends Error {
 
 /** Spec 6.2 and 6.48: one transaction creates the shop, its subscription, branch, till, owner, and activation token. */
 export async function onboardShop(
-  db: Db, adminId: string, input: OnboardInput, now: Date,
+  db: Db, adminId: string | null, input: OnboardInput, now: Date, opts: { emailActivation?: boolean } = {},
 ): Promise<{ ok: true; tenantId: string; slug: string; activationUrl: string } | ({ ok: false } & OnboardError)> {
   const shopName = input.name.trim();
   const ownerName = input.owner.name.trim();
@@ -75,6 +75,7 @@ export async function onboardShop(
       } else {
         // applyManualPayment sets the paid plan and extends from today
         await tx.insert(subscriptions).values({ tenantId: tenant.id, planId: 'trial', status: 'active', endDate: today });
+        if (!adminId) throw new Error('a paid start needs a platform admin');
         const paid = await applyManualPayment(tx, adminId, tenant.id, input.start.payment, now);
         if (!paid.ok) throw new Rollback({ error: paid.error });
       }
@@ -86,7 +87,7 @@ export async function onboardShop(
       }).returning();
       const token = await issueToken(tx, tenant.id, owner.id, 'activation', now);
       await writeAudit(tx, {
-        tenantId: tenant.id, actorType: 'platform', actorId: adminId, action: 'shop_created',
+        tenantId: tenant.id, actorType: adminId ? 'platform' : 'anonymous', actorId: adminId, action: 'shop_created', // anonymous = self sign-up
         changes: { slug, shopType: input.shopType, start: input.start.kind },
       });
       return { token, tenantId: tenant.id };
@@ -97,7 +98,7 @@ export async function onboardShop(
   }
 
   const url = activationUrl(created.token);
-  if (email) {
+  if (email && opts.emailActivation !== false) {
     try {
       await sendEmail({
         to: email,

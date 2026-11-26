@@ -465,7 +465,7 @@ export const invoices = pgTable('invoices', {
   foreignKey({ name: 'invoices_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
 ]);
 
-export type NotificationKind = 'report' | 'marketing';
+export type NotificationKind = 'report' | 'marketing' | 'billing'; // billing notices are the platform's and do not use the shop's allowance
 export type NotificationStatus = 'queued' | 'sent' | 'failed' | 'blocked_quota';
 
 /** Spec 4.8, 6.17: one SMS to one phone; the key makes a job that runs twice queue it once. */
@@ -486,7 +486,7 @@ export const notifications = pgTable('notifications', {
 }, (t) => [
   unique('notifications_key').on(t.tenantId, t.key),
   index('notifications_queue').on(t.status, t.sendAfter),
-  check('notifications_kind', sql`${t.kind} in ('report', 'marketing')`),
+  check('notifications_kind', sql`${t.kind} in ('report', 'marketing', 'billing')`),
   check('notifications_status', sql`${t.status} in ('queued', 'sent', 'failed', 'blocked_quota')`),
 ]);
 

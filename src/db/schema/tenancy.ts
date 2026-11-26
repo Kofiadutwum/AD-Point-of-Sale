@@ -69,6 +69,9 @@ export const subscriptions = pgTable('subscriptions', {
   endDate: date('end_date', { mode: 'string' }).notNull(),
   graceDays: integer('grace_days').notNull().default(14),
   autoRenew: boolean('auto_renew').notNull().default(false),
+  authorizationCode: text('authorization_code'), // sealed Paystack card authorisation for renewal; never card numbers (spec 5)
+  cardLabel: text('card_label'), // e.g. "visa ending 4081", for the owner
+  billingEmail: text('billing_email'), // the email Paystack knows the card by
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 }, (t) => [check('subscriptions_status', sql`${t.status} in ('trial', 'active', 'cancelled')`)]);
 
@@ -86,6 +89,30 @@ export const subscriptionPayments = pgTable('subscription_payments', {
   check('subscription_payments_method', sql`${t.method} in ('momo', 'bank_transfer', 'cash', 'card_terminal', 'paystack')`),
   check('subscription_payments_amount', sql`${t.amountPesewas} > 0`),
   check('subscription_payments_period', sql`${t.periodMonths} between 1 and 36`),
+]);
+
+export type CheckoutStatus = 'pending' | 'applied' | 'failed' | 'mismatch';
+
+/** Spec 6.20: a Paystack payment the platform is waiting on; applied once, by reference, after server-side verification. */
+export const subscriptionCheckouts = pgTable('subscription_checkouts', {
+  id: id(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  reference: text('reference').notNull().unique(),
+  planId: text('plan_id').notNull().references(() => plans.id),
+  amountPesewas: integer('amount_pesewas').notNull(),
+  periodMonths: integer('period_months').notNull(),
+  kind: text('kind').$type<'checkout' | 'renewal'>().notNull(),
+  status: text('status').$type<CheckoutStatus>().notNull().default('pending'),
+  autoRenew: boolean('auto_renew').notNull().default(false),
+  consentText: text('consent_text'), // the exact wording the owner agreed to (spec 6.20)
+  consentBy: uuid('consent_by'),
+  failureReason: text('failure_reason'),
+  createdAt: createdAt(),
+  appliedAt: timestamptz('applied_at'),
+}, (t) => [
+  check('subscription_checkouts_kind', sql`${t.kind} in ('checkout', 'renewal')`),
+  check('subscription_checkouts_status', sql`${t.status} in ('pending', 'applied', 'failed', 'mismatch')`),
+  check('subscription_checkouts_amount', sql`${t.amountPesewas} > 0`),
 ]);
 
 export const branches = pgTable('branches', {
