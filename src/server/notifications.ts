@@ -52,7 +52,7 @@ export async function weeklyStockSummary(tx: Tx, shopName: string, today: string
     .filter(Boolean).join('\n');
 }
 
-export async function queue(tx: Tx, tenantId: string, n: { key: string; kind: 'report' | 'marketing' | 'billing'; toPhone: string; body: string; sendAfter: Date }) {
+export async function queue(tx: Tx, tenantId: string, n: { key: string; kind: 'report' | 'marketing' | 'billing' | 'order'; toPhone: string; body: string; sendAfter: Date }) {
   await tx.insert(notifications).values({ tenantId, ...n, parts: smsParts(n.body) }).onConflictDoNothing();
 }
 const queued = async (tx: Tx, key: string) => (await tx.select({ id: notifications.id }).from(notifications).where(eq(notifications.key, key))).length > 0;

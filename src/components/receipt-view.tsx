@@ -1,3 +1,4 @@
+import { code128Svg } from '@/lib/code128';
 import { formatCedis } from '@/lib/money';
 import { TENDER_LABELS, type ReceiptView } from '@/server/receipts';
 
@@ -42,6 +43,14 @@ export function ReceiptBody({ r }: { r: ReceiptView }) {
         <p key={i} className="flex justify-between"><span>{TENDER_LABELS[p.method]}{p.reference ? ` (${p.reference})` : ''}</span><span>{formatCedis(p.amountPesewas)}</span></p>
       ))}
       {r.changeDuePesewas > 0 && <p className="flex justify-between"><span>Change</span><span>{formatCedis(r.changeDuePesewas)}</span></p>}
+      {r.giftCards?.map((g) => (
+        <div key={g.code} className="my-1 flex flex-col items-center border border-dashed border-black p-1 text-center">
+          <span className="font-semibold">Gift card {formatCedis(g.amountPesewas)}</span>
+          <span className="font-mono">{g.code}</span>
+          {g.expiresOn && <span>Valid until {g.expiresOn}</span>}
+          {code128Svg(g.code.replaceAll('-', '')) && <div dangerouslySetInnerHTML={{ __html: code128Svg(g.code.replaceAll('-', ''), { module: 1.2, height: 36 })! }} />}
+        </div>
+      ))}
       {r.footer && <><hr className="my-1 border-dashed border-black" /><p className="text-center">{r.footer}</p></>}
       <p className="mt-1 text-center">Thank you</p>
     </div>

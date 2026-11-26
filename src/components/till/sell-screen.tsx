@@ -1,9 +1,10 @@
 'use client';
 import { cashRounding } from '@/lib/cash-rounding';
-import { useCallback, useRef, useState } from 'react';
-import { findCustomersAction, findItemAction, priceItemAction, rxApprovalAction } from '@/app/[slug]/app/sell/actions';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { checkCouponAction, findCustomersAction, findItemAction, priceItemAction, rxApprovalAction } from '@/app/[slug]/app/sell/actions';
 import { calculateCartTotals } from '@/lib/cart-totals';
-import { formatCedis, parseCedis } from '@/lib/money';
+import { formatCedis, parseCedis, pesewasTimesQty } from '@/lib/money';
+import { applyPromotions, type Promo, promoRunning } from '@/lib/promotions';
 import { formatReceiptNumber } from '@/lib/receipt';
 import type { Customer } from '@/server/customers';
 import type { CatalogueHit } from '@/server/products';
@@ -11,7 +12,7 @@ import type { TillItem, TillRegister } from '@/server/till';
 import { CameraScanner } from './camera-scanner';
 
 type Line = TillItem & { discountPesewas: number; serials: string };
-type OtherMethod = 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'credit';
+type OtherMethod = 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'credit' | 'gift_card' | 'points';
 
 const ERRORS: Record<string, string> = {
   price_changed: 'A price changed. Remove the item and scan it again.',
@@ -25,7 +26,17 @@ const ERRORS: Record<string, string> = {
   credit_needs_customer: 'Choose the customer to sell on credit.', credit_not_allowed: 'You cannot sell on credit.',
   credit_over_limit: 'This would take the customer over their credit limit. A manager must raise the limit first.', discount_not_allowed: 'You cannot give discounts.',
   discount_too_large: 'A discount is larger than the line amount.', invalid_quantity: 'Check the quantities.', empty_bundle: 'A bundle has no parts set up.',
+  invalid_coupon: 'That coupon cannot be used.', invalid_gift_card: 'That gift card code is not valid or has expired.', insufficient_gift_card: 'Not enough on the gift card.',
+  try_again_later: 'Too many wrong gift card codes. Wait a few minutes.', insufficient_points: 'Not enough points (or below the minimum to spend).', loyalty_off: 'Loyalty points are off.',
+  points_need_customer: 'Choose the customer to spend points.', gift_card_discount: 'Gift cards cannot be discounted.',
 };
+
+/** The shop's local date, weekday, and time, as the server checks promotion windows. */
+function clockIn(timeZone: string, at: Date) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short', hourCycle: 'h23' }).formatToParts(at);
+  const g = (t: string) => parts.find((x) => x.type === t)?.value ?? '';
+  return { date: `${g('year')}-${g('month')}-${g('day')}`, time: `${g('hour')}:${g('minute')}`, weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(g('weekday')) };
+}
 
 const qtyText = (q: string) => q.replace(/\.?0+$/, '');
 
@@ -36,8 +47,9 @@ function writeCounter(key: string, n: number) {
   try { localStorage.setItem(key, String(n)); } catch { /* private mode: the server counter still protects uniqueness */ }
 }
 
-export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0, canDispense = true, pharmacists = [] }: {
+export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0, canDispense = true, pharmacists = [], promotions = [], timeZone = 'Africa/Accra' }: {
   slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive'; roundingStep?: number;
+  promotions?: Promo[]; timeZone?: string; // spec 6.29: the till works out the same automatic promotions as the server
   canDispense?: boolean; pharmacists?: Array<{ id: string; name: string }>; // spec 6.36
 }) {
   const [lines, setLines] = useState<Line[]>([]);
@@ -52,7 +64,11 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
   const [message, setMessage] = useState<string | null>(null);
   const [rx, setRx] = useState({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' });
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ saleId: string; change: number; receiptNumber: string; total: number } | null>(null);
+  const [coupon, setCoupon] = useState<{ code: string; promo: Promo } | null>(null);
+  const [couponText, setCouponText] = useState('');
+  const [clock, setClock] = useState(() => new Date()); // promotion windows (happy hours) move with the time
+  useEffect(() => { const t = setInterval(() => setClock(new Date()), 60_000); return () => clearInterval(t); }, []);
+  const [done, setDone] = useState<{ saleId: string; change: number; receiptNumber: string; total: number; giftCards?: Array<{ code: string; amountPesewas: number }> } | null>(null);
   const saleId = useRef<string | null>(null);
   const codeInput = useRef<HTMLInputElement>(null);
   const counterKey = `receipt-counter:${till.registerId}`;
@@ -70,7 +86,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     });
     setHits([]);
     setMessage(null);
-  }, []);
+  }, [setMessage]);
 
   const find = useCallback(async (text: string) => {
     if (!text.trim()) return;
@@ -80,7 +96,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     else setMessage('Product not found.');
     setCode('');
     codeInput.current?.focus();
-  }, [slug, till.branchId, customer, add]);
+  }, [slug, till.branchId, customer, add, setMessage]);
 
   const onCamera = useCallback((c: string) => { setCamera(false); void find(c); }, [find]);
 
@@ -91,12 +107,28 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     setLines((ls) => ls.map((x, j) => (j === i ? { ...x, quantity: priced.quantity, unitPricePesewas: priced.unitPricePesewas } : x)));
   }
 
+  const at = { ...clockIn(timeZone, clock), branchId: till.branchId };
+  const running = [...promotions.filter((x) => promoRunning(x, at)), ...(coupon ? [coupon.promo] : [])];
+  const promo = running.length ? applyPromotions(lines.map((l) => ({
+    productId: l.productId, categoryId: l.categoryId, unitPricePesewas: l.unitPricePesewas, quantity: l.quantity,
+    grossPesewas: pesewasTimesQty(l.unitPricePesewas, l.quantity), manualDiscountPesewas: l.discountPesewas,
+  })), running).discounts : lines.map(() => 0);
   let totals: ReturnType<typeof calculateCartTotals> | null = null;
   try {
-    totals = calculateCartTotals(lines, { taxMode });
+    totals = calculateCartTotals(lines.map((l, i) => ({ ...l, discountPesewas: l.discountPesewas + promo[i] })), { taxMode });
   } catch {
     totals = null; // a discount above its line; shown as an error below
   }
+  // spec 6.50: the paired customer display follows this cart (best effort; a missing display is fine)
+  const displayCart = totals && lines.length ? JSON.stringify({
+    lines: lines.map((l, i) => ({ name: l.name, quantity: l.quantity, totalPesewas: totals!.lines[i].totalPesewas })), discountPesewas: totals.discountPesewas, totalPesewas: totals.totalPesewas, paidPesewas: 0, changePesewas: 0,
+  }) : null;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void fetch(`/api/${slug}/display/cart`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: `{"cart":${done ? 'null' : displayCart ?? 'null'}}` }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [slug, displayCart, done]);
   const cashPesewas = cash.trim() ? parseCedis(cash) : 0;
   const otherPesewas = other.amount.trim() ? parseCedis(other.amount) : 0;
   const paid = (cashPesewas ?? 0) + (otherPesewas ?? 0);
@@ -130,8 +162,10 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           saleId: saleId.current, receiptNumber, tenders, customerId: customer?.id, deviceCreatedAt: new Date().toISOString(), prescriptionApprovalToken,
-          lines: lines.map((l) => ({
+          ...(coupon ? { couponCode: coupon.code } : {}),
+          lines: lines.map((l, i) => ({
             variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: l.discountPesewas,
+            ...(promo[i] ? { promotionDiscountPesewas: promo[i] } : {}),
             ...(l.tracking === 'serial' ? { serials: l.serials.split(/[\s,]+/).filter(Boolean) } : {}), ...(l.prescriptionOnly ? { prescription } : {}),
           })),
         }),
@@ -139,7 +173,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
       const r = await res.json().catch(() => ({ ok: false, error: 'network' }));
       if (r.ok) {
         writeCounter(counterKey, counter);
-        setDone({ saleId: r.saleId, change: r.changeDuePesewas, receiptNumber, total: totals.totalPesewas });
+        setDone({ saleId: r.saleId, change: r.changeDuePesewas, receiptNumber, total: totals.totalPesewas, giftCards: r.giftCards });
         setRx({ patientName: '', prescriberName: '', facility: '', prescriptionDate: '', approverId: '', pin: '' });
         setBusy(false);
         return;
@@ -152,7 +186,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
   }
 
   function newSale() {
-    setLines([]); setCustomer(null); setCash(''); setOther({ method: 'momo_manual', amount: '', reference: '' });
+    setLines([]); setCustomer(null); setCash(''); setOther({ method: 'momo_manual', amount: '', reference: '' }); setCoupon(null); setCouponText('');
     setDone(null); saleId.current = null; setMessage(null);
     setTimeout(() => codeInput.current?.focus(), 0);
   }
@@ -163,6 +197,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
         <h1 className="text-2xl font-semibold">Sale complete</h1>
         <p className="text-lg">Receipt {done.receiptNumber} · Total {formatCedis(done.total)}</p>
         <p className="text-3xl font-bold" role="status">Change: {formatCedis(done.change)}</p>
+        {done.giftCards?.map((g) => <p key={g.code} className="rounded border border-green-700 p-2 font-mono text-lg">Gift card {g.code} · {formatCedis(g.amountPesewas)} (also on the receipt)</p>)}
         <nav className="flex flex-wrap gap-3">
           <a href={`/${slug}/app/receipts/${done.saleId}?w=80`} className="rounded border px-4 py-2">Print 80 mm</a>
           <a href={`/${slug}/app/receipts/${done.saleId}?w=58`} className="rounded border px-4 py-2">Print 58 mm</a>
@@ -234,7 +269,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
       {totals ? (
         <section className="flex flex-col gap-1 text-sm">
           <p className="flex justify-between"><span>Subtotal</span><span>{formatCedis(totals.subtotalPesewas)}</span></p>
-          {totals.discountPesewas > 0 && <p className="flex justify-between"><span>Discounts</span><span>−{formatCedis(totals.discountPesewas)}</span></p>}
+          {totals.discountPesewas > 0 && <p className="flex justify-between"><span>Discounts{promo.some((d) => d > 0) ? ' (with promotions)' : ''}</span><span>−{formatCedis(totals.discountPesewas)}</span></p>}
           <p className="flex justify-between"><span>{taxMode === 'inclusive' ? 'Tax included' : 'Tax'}</span><span>{formatCedis(totals.taxPesewas)}</span></p>
           <p className="flex justify-between text-xl font-bold"><span>Total</span><span>{formatCedis(totals.totalPesewas)}</span></p>
           {rounding !== 0 && <p className="flex justify-between"><span>Cash rounding</span><span>{formatCedis(rounding)}</span></p>}
@@ -247,6 +282,15 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
           <input value={customerQuery} onChange={(e) => setCustomerQuery(e.target.value)} placeholder="Customer phone or name (optional)"
             aria-label="Customer" className="min-w-0 flex-1 rounded border border-gray-400 px-3 py-2" />
           <button type="button" className="rounded border px-3" onClick={async () => setCustomerHits(await findCustomersAction(slug, customerQuery))}>Find</button>
+        </div>
+        <div className="flex gap-2 text-sm">
+          <input value={couponText} onChange={(e) => setCouponText(e.target.value)} placeholder="Coupon code" aria-label="Coupon code" className="w-40 rounded border border-gray-400 px-2 py-1" />
+          {coupon ? <button type="button" className="text-blue-800 underline" onClick={() => setCoupon(null)}>Remove coupon {coupon.code}</button> : (
+            <button type="button" className="rounded border px-3" onClick={async () => {
+              const found = await checkCouponAction(slug, { code: couponText, customerId: customer?.id ?? null, branchId: till.branchId });
+              if (found) setCoupon({ code: couponText.trim().toUpperCase(), promo: found }); else setMessage(ERRORS.invalid_coupon);
+            }}>Apply</button>
+          )}
         </div>
         {customer && <p className="text-sm">Customer: {customer.name} · store credit {formatCedis(customer.storeCreditPesewas)} <button type="button" className="text-blue-800 underline" onClick={() => setCustomer(null)}>remove</button></p>}
         {customerHits.map((c) => (
@@ -286,10 +330,12 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
             <option value="bank_transfer">Bank transfer</option>
             {customer && <option value="store_credit">Store credit</option>}
             {customer && <option value="credit">On credit (customer owes)</option>}
+            <option value="gift_card">Gift card</option>
+            {customer && <option value="points">Loyalty points</option>}
           </select>
           <input aria-label="Other payment amount" placeholder="Amount (GHS)" value={other.amount} onChange={(e) => setOther({ ...other, amount: e.target.value })} inputMode="decimal" className="w-28 rounded border border-gray-400 px-2 py-2" />
-          {other.method !== 'store_credit' && other.method !== 'credit' && (
-            <input aria-label="Payment reference" placeholder="Reference" value={other.reference} onChange={(e) => setOther({ ...other, reference: e.target.value })} className="min-w-0 flex-1 rounded border border-gray-400 px-2 py-2" />
+          {other.method !== 'store_credit' && other.method !== 'credit' && other.method !== 'points' && (
+            <input aria-label="Payment reference" placeholder={other.method === 'gift_card' ? 'Gift card code' : 'Reference'} value={other.reference} onChange={(e) => setOther({ ...other, reference: e.target.value })} className="min-w-0 flex-1 rounded border border-gray-400 px-2 py-2" />
           )}
         </div>
         {totals && paid > 0 && <p className="text-lg">Change due: <strong>{formatCedis(change)}</strong></p>}

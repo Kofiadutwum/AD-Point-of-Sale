@@ -5,11 +5,11 @@ import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit' | 'credit'; // exchange_credit: server only (spec 6.32)
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit' | 'credit' | 'points' | 'gift_card' | 'deposit'; // exchange_credit and deposit: server only (6.32, 6.34)
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
-export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'credit'];
+export const TENDER_METHODS: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'credit', 'points', 'gift_card'];
 export type ChannelKind = 'delivery_app' | 'phone' | 'whatsapp';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -29,6 +29,8 @@ export const customers = pgTable('customers', {
   address: text('address'), // business customers on invoices (spec 4.22)
   tin: text('tin'), // taxpayer identification number on invoices
   marketingConsent: boolean('marketing_consent').notNull().default(false), // agreed to promotional SMS (spec 4.25)
+  loyaltyPoints: integer('loyalty_points').notNull().default(0), // may go below zero after a return (spec 6.30)
+  loyaltyCode: text('loyalty_code'), // a loyalty card barcode
   createdAt: createdAt(),
 }, (t) => [
   unique('customers_tenant_id').on(t.tenantId, t.id),
@@ -143,6 +145,7 @@ export const sales = pgTable('sales', {
   roundingPesewas: integer('rounding_pesewas').notNull().default(0), // cash rounding added to the amount due, may be negative (spec 6.40)
   salespersonId: uuid('salesperson_id'), // who built the order at another counter (spec 6.39)
   shiftId: uuid('shift_id'), // the register's open shift when the sale was made (spec 6.14)
+  couponId: uuid('coupon_id'), // spec 6.29
 }, (t) => [
   unique('sales_tenant_id').on(t.tenantId, t.id),
   unique('sales_receipt_number').on(t.tenantId, t.receiptNumber),
@@ -188,6 +191,7 @@ export const saleLines = pgTable('sale_lines', {
   choices: jsonb('choices').$type<SaleLineChoice[]>().notNull().default(sql`'[]'::jsonb`), // combo choices as sold (spec 6.52)
   addOns: jsonb('add_ons').$type<SaleLineAddOn[]>().notNull().default(sql`'[]'::jsonb`), // add-ons as sold (spec 4.24)
   note: text('note'), // e.g. "no onions", for the kitchen
+  promotionDiscountPesewas: integer('promotion_discount_pesewas').notNull().default(0), // the automatic part of discount_pesewas (6.29)
 }, (t) => [
   check('sale_lines_note', sql`length(${t.note}) <= 140`),
   unique('sale_lines_tenant_id').on(t.tenantId, t.id),
@@ -209,8 +213,8 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit')`),
-  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit', 'credit') or ${t.reference} is not null`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit', 'points', 'gift_card', 'deposit')`),
+  check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit', 'credit', 'points', 'deposit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),
 ]);
@@ -465,7 +469,7 @@ export const invoices = pgTable('invoices', {
   foreignKey({ name: 'invoices_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
 ]);
 
-export type NotificationKind = 'report' | 'marketing' | 'billing'; // billing notices are the platform's and do not use the shop's allowance
+export type NotificationKind = 'report' | 'marketing' | 'billing' | 'order'; // billing notices are the platform's and do not use the shop's allowance
 export type NotificationStatus = 'queued' | 'sent' | 'failed' | 'blocked_quota';
 
 /** Spec 4.8, 6.17: one SMS to one phone; the key makes a job that runs twice queue it once. */
@@ -486,7 +490,7 @@ export const notifications = pgTable('notifications', {
 }, (t) => [
   unique('notifications_key').on(t.tenantId, t.key),
   index('notifications_queue').on(t.status, t.sendAfter),
-  check('notifications_kind', sql`${t.kind} in ('report', 'marketing', 'billing')`),
+  check('notifications_kind', sql`${t.kind} in ('report', 'marketing', 'billing', 'order')`),
   check('notifications_status', sql`${t.status} in ('queued', 'sent', 'failed', 'blocked_quota')`),
 ]);
 

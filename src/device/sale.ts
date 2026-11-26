@@ -44,7 +44,7 @@ export function buildSaleRequest(i: {
   saleId: string; receiptNumber: string; cashierId: string;
   lines: Array<{
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; amountPesewas?: number | null; choices?: Array<{ slotId: string; variantId: string }>;
-    addOns?: Array<{ groupId: string; optionId: string }>; note?: string; prescription?: SaleRequest['lines'][number]['prescription'];
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string; prescription?: SaleRequest['lines'][number]['prescription']; promotionDiscountPesewas?: number;
   }>;
   tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean; food?: SaleRequest['food']; prescriptionApprovalToken?: string;
 }): SaleRequest {
@@ -53,6 +53,7 @@ export function buildSaleRequest(i: {
     ...(i.food ? { food: i.food } : {}), ...(i.prescriptionApprovalToken ? { prescriptionApprovalToken: i.prescriptionApprovalToken } : {}),
     lines: i.lines.map((l) => ({
       variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: 0,
+      ...(l.promotionDiscountPesewas ? { promotionDiscountPesewas: l.promotionDiscountPesewas } : {}),
       ...(l.amountPesewas != null ? { byAmount: true } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
       ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note?.trim() ? { note: l.note.trim() } : {}), ...(l.prescription ? { prescription: l.prescription } : {}),
     })),

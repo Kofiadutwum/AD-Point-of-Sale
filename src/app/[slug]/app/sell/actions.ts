@@ -1,6 +1,7 @@
 'use server';
 import { getDb } from '@/db/client';
 import { requestApproval } from '@/server/approvals';
+import { previewCoupon } from '@/server/promotions';
 import { type Customer, listCustomers } from '@/server/customers';
 import { type CatalogueHit, searchCatalogue } from '@/server/products';
 import { lookupTillItem, type TillItem, tillItemForVariant } from '@/server/till';
@@ -36,4 +37,10 @@ export async function rxApprovalAction(slug: string, saleId: string, approverId:
   const r = await requestApproval(getDb(), ctx, { action: 'dispense_prescription', contextKey: saleId, approverId, pin }, new Date());
   if (r.ok) return { token: r.token };
   return { error: r.error === 'wrong_pin' ? 'Wrong PIN.' : r.error === 'pin_locked' ? 'Too many wrong PINs. Try again later.' : 'That person cannot approve.' };
+}
+
+/** Spec 6.29: checks a coupon so the till can show its discount; the sale uses it up. */
+export async function checkCouponAction(slug: string, input: { code: string; customerId: string | null; branchId: string }) {
+  const ctx = await pageCtx(slug, 'make_sale');
+  return previewCoupon(getDb(), ctx, input.code, input.customerId, input.branchId, new Date());
 }

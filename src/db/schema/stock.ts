@@ -19,6 +19,7 @@ export const stockBalances = pgTable('stock_balances', {
   branchId: uuid('branch_id').notNull(),
   variantId: uuid('variant_id').notNull(),
   onHand: quantity('on_hand').notNull().default('0'),
+  reserved: quantity('reserved').notNull().default('0'), // held for layaway orders; available = on hand - reserved (spec 4.21)
   updatedAt: timestamptz('updated_at').notNull().defaultNow(),
 }, (t) => [
   primaryKey({ name: 'stock_balances_pk', columns: [t.tenantId, t.branchId, t.variantId] }),

@@ -32,7 +32,7 @@ async function hereBranch(tx: Tx, ctx: Ctx): Promise<string | null> {
 
 type PriceInput = z.infer<typeof lineSchema>;
 /** Spec 6.35: today's prices for the branch and customer (price lists, tax), as a sale would charge them. */
-async function priceCart(tx: Tx, ctx: Ctx, branchId: string, customerId: string | null, input: PriceInput[], now: Date) {
+export async function priceCart(tx: Tx, ctx: Ctx, branchId: string, customerId: string | null, input: PriceInput[], now: Date) {
   const [shop] = await tx.select({ taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId));
   const [customer] = customerId ? await tx.select({ priceListId: customers.priceListId }).from(customers).where(eq(customers.id, customerId)) : [];
   const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: customer?.priceListId ?? null, branchId, today: todayIn(shop.timezone, now) });
@@ -135,7 +135,7 @@ class Refused extends Error {
 
 type TillResult = { saleId: string; changeDuePesewas: number; extra?: Record<string, string> };
 /** Runs a server-numbered sale at a till (retrying once if another sale took the receipt number). */
-async function tillSale(db: Db, ctx: Ctx, body: (tx: Tx, saleId: string, receiptNumber: string) => Promise<TillResult>): Promise<({ ok: true } & TillResult) | Fail<ConvertError>> {
+export async function tillSale(db: Db, ctx: Ctx, body: (tx: Tx, saleId: string, receiptNumber: string) => Promise<TillResult>): Promise<({ ok: true } & TillResult) | Fail<ConvertError>> {
   if (!ctx.registerId) return fail('no_register');
   const registerId = ctx.registerId;
   const saleId = randomUUID();

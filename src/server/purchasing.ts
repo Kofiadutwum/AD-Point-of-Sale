@@ -2,7 +2,7 @@ import 'server-only';
 import { and, asc, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, products, purchaseOrderLines, purchaseOrders, stockBalances, stockMovements, supplierBills, supplierItems, supplierPayments, supplierReturns, suppliers, tenants, variants, variantUnits,
+  branches, customerOrders, products, purchaseOrderLines, purchaseOrders, stockBalances, stockMovements, supplierBills, supplierItems, supplierPayments, supplierReturns, suppliers, tenants, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
@@ -11,6 +11,7 @@ import { fromMilli, parseQuantity, toMilli } from '@/lib/decimal';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid, itemLabel } from './products';
+import { markSpecialOrdersReady } from './order-arrivals';
 import { type ReceiveError, receiveStockTx } from './stock';
 import { type LineError, type MoveLine, resolveLine, takeStock, valueOf } from './stock-moves';
 
@@ -208,6 +209,7 @@ export async function receivePurchaseOrder(db: Db, ctx: Ctx, input: { purchaseOr
     // receiveStockTx checks every line before writing, so a refusal here leaves nothing behind
     const r = await receiveStockTx(tx, ctx, { branchId: po.po.branchId, kind: 'received', supplierName: po.s.name, supplierId: po.s.id, purchaseOrderId: po.po.id, lines: receiveLines }, todayIn(ctx.timezone, now));
     if (!r.ok) return r;
+    await markSpecialOrdersReady(tx, ctx.tenantId, po.po.branchId, r.planned.map((x) => x.variantId), now);
     for (const l of lines) {
       const pl = poLines.find((x) => x.id === l.lineId)!;
       pl.receivedQuantity = fromMilli(toMilli(pl.receivedQuantity) + toMilli(parseQuantity(l.quantity)!));
@@ -250,14 +252,17 @@ export async function suggestPurchaseOrders(db: Db, ctx: Ctx, branchId: string, 
     const open = await tx.select({ variantId: purchaseOrderLines.variantId, qty: sql<string>`sum((${purchaseOrderLines.quantity} - ${purchaseOrderLines.receivedQuantity}) * ${purchaseOrderLines.factor})::text` })
       .from(purchaseOrderLines).innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseOrderLines.purchaseOrderId))
       .where(and(eq(purchaseOrders.branchId, branchId), inArray(purchaseOrders.status, ['draft', 'sent', 'partly_received']))).groupBy(purchaseOrderLines.variantId);
+    // spec 6.34: open special orders at this branch are added to what is needed
+    const special = (await tx.select({ lines: customerOrders.lines }).from(customerOrders).where(and(eq(customerOrders.branchId, branchId), eq(customerOrders.kind, 'special'), eq(customerOrders.status, 'open'))))
+      .flatMap((o) => o.lines).reduce((m, l) => m.set(l.variantId, (m.get(l.variantId) ?? 0) + Number(l.baseQuantity)), new Map<string, number>());
     const mains = await tx.select({ si: supplierItems, s: suppliers }).from(supplierItems).innerJoin(suppliers, eq(suppliers.id, supplierItems.supplierId)).where(eq(supplierItems.isMain, true));
     const bySupplier = new Map<string, { name: string; lines: PoLineInput[] }>();
     const noSupplier: string[] = [];
     for (const it of items) {
       const daily = Number(sold.find((s) => s.variantId === it.v.id)?.qty ?? 0) / 28;
-      if (!it.v.reorderLevel && daily <= 0) continue;
+      if (!it.v.reorderLevel && daily <= 0 && !special.has(it.v.id)) continue;
       const main = mains.find((m) => m.si.variantId === it.v.id);
-      const target = Math.max(Number(it.v.reorderLevel ?? 0), daily * ((main?.s.leadTimeDays ?? 7) + t.cover));
+      const target = Math.max(Number(it.v.reorderLevel ?? 0), daily * ((main?.s.leadTimeDays ?? 7) + t.cover)) + (special.get(it.v.id) ?? 0);
       const need = target - (Number(it.onHand ?? 0) + Number(open.find((o) => o.variantId === it.v.id)?.qty ?? 0));
       if (need <= 0) continue;
       if (!main) { noSupplier.push(itemLabel(it.p, it.v.name)); continue; }

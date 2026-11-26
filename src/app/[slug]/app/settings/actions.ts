@@ -7,7 +7,7 @@ import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
-import { saveCashSettings, savePharmacySettings, saveReportSettings, saveStockSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveCashSettings, saveOrderSettings, savePharmacySettings, saveReportSettings, saveStockSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { grantSupportAccess, revokeSupportAccess } from '@/server/support';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
@@ -181,6 +181,17 @@ export async function saveStockAction(slug: string, _prev: FormState, fd: FormDa
   const adjust = parseCedis(String(fd.get('adjustLimit') ?? '').trim() || '0');
   if (count === null || adjust === null) return { error: 'Enter the limits in GHS.' };
   const r = await saveStockSettings(getDb(), ctx, { countApprovalLimitPesewas: count, adjustmentApprovalLimitPesewas: adjust, reorderCoverDays: Number(fd.get('coverDays')) });
+  if (!r.ok) return { error: 'Check the details.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
+}
+
+export async function saveOrdersAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const fee = parseCedis(String(fd.get('fee') ?? '').trim() || '0');
+  if (fee === null) return { error: 'Enter the fee in GHS.' };
+  const momo = String(fd.get('momo') ?? '').trim();
+  const r = await saveOrderSettings(getDb(), ctx, { layawayMinDepositPercent: Number(fd.get('minDeposit')), orderCancellationFeePesewas: fee, orderRefundAs: String(fd.get('refundAs')) as 'store_credit' | 'cash', momoNumber: momo || null });
   if (!r.ok) return { error: 'Check the details.' };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Saved.' };

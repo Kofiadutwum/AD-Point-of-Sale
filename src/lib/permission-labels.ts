@@ -49,4 +49,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   transfer_stock: 'Send stock to another branch',
   stock_count: 'Count stock',
   adjust_stock: 'Adjust stock (damage, loss, found)',
+  manage_promotions: 'Set up promotions, coupons, loyalty, and gift cards',
+  layaway: 'Take layaway and special orders',
+  manage_commissions: 'Set and pay staff commissions',
 };

@@ -1,4 +1,5 @@
 import 'server-only';
+import { giftCardsOfSale } from './rewards';
 import { asc, eq, type SQL } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import { branches, customers, payments, sales, saleLines, type TenderMethod, tenants, users } from '@/db/schema';
@@ -14,10 +15,11 @@ export type ReceiptView = {
   lines: Array<{ name: string; unitName: string; quantity: string; unitPricePesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serials: string[]; addOns: string[]; note: string | null }>;
   subtotalPesewas: number; discountPesewas: number; taxPesewas: number; totalPesewas: number; serviceChargePesewas: number; roundingPesewas: number;
   payments: Array<{ method: TenderMethod; amountPesewas: number; reference: string | null }>; changeDuePesewas: number; shareCode: string;
+  giftCards?: Array<{ code: string; amountPesewas: number; expiresOn: string | null }>; // spec 6.31: printed so the buyer can give them
 };
 
 export const TENDER_LABELS: Record<TenderMethod, string> = {
-  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app', exchange_credit: 'Exchange credit', credit: 'On credit',
+  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app', exchange_credit: 'Exchange credit', credit: 'On credit', points: 'Loyalty points', gift_card: 'Gift card', deposit: 'Paid in advance',
 };
 
 async function loadReceipt(tx: Tx, where: SQL): Promise<(ReceiptView & { id: string }) | null> {
@@ -59,7 +61,8 @@ export async function getReceipt(db: Db, ctx: Ctx, saleId: string, opts: { repri
       await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'receipt_reprinted', recordType: 'sale', recordId: saleId });
     }
     const { id: _id, ...view } = r;
-    return view;
+    const cards = await giftCardsOfSale(tx, saleId);
+    return cards.length ? { ...view, giftCards: cards } : view;
   });
 }
 

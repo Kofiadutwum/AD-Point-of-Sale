@@ -2,9 +2,10 @@ import 'server-only';
 import { and, arrayContains, asc, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
-  addOnGroups, addOnOptions, barcodes, branches, comboChoices, salesChannels, variantAddOnGroups, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
+  addOnGroups, addOnOptions, barcodes, branches, comboChoices, salesChannels, variantAddOnGroups, comboSlots, deviceCacheVersions, foodSettings, heldSales, soldOut, productImages, products, promotions, registers, subscriptions, taxRules, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
+import { asPromo } from './promotions';
 import { businessDate, todayIn } from '@/lib/dates';
 import type { DeviceCache } from '@/lib/device-contract';
 import { type Permission, TILL_PERMISSIONS } from '@/lib/permissions';
@@ -62,8 +63,9 @@ export async function getDeviceCache(db: Db, input: DeviceInput, now: Date): Pro
       })),
       taxRules: (await tx.select().from(taxRules)).map((r) => ({ id: r.id, isDefault: r.isDefault, rateBp: effectiveRateBp(r) })),
       priceRules: await loadPriceRules(tx),
+      promotions: (await tx.select().from(promotions).where(and(eq(promotions.active, true), eq(promotions.requiresCoupon, false)))).map(asPromo),
       products: (await tx.select().from(products)).map((p) => ({
-        id: p.id, name: p.name, genericName: p.genericName, taxRuleId: p.taxRuleId, tracking: p.tracking, status: p.status, prescriptionOnly: p.prescriptionOnly, kitchenStation: p.kitchenStation,
+        id: p.id, name: p.name, genericName: p.genericName, taxRuleId: p.taxRuleId, tracking: p.tracking, status: p.status, prescriptionOnly: p.prescriptionOnly, kitchenStation: p.kitchenStation, categoryId: p.categoryId,
         imageId: photos.find((i) => i.productId === p.id)?.id ?? null,
       })),
       variants: await tx.select({

@@ -121,7 +121,7 @@ async function catalogue(tx: Tx, shop: LiveShop, where: { productId?: string; q?
   if (!ids.length) return [];
   const prices = await tx.select({ productId: variants.productId, min: sql<number>`min(${variants.basePricePesewas})::int` }).from(variants)
     .where(and(inArray(variants.productId, ids), eq(variants.status, 'active'), eq(variants.sellable, true))).groupBy(variants.productId);
-  const stock = await tx.select({ productId: variants.productId, onHand: sql<string>`sum(${stockBalances.onHand})` }).from(stockBalances)
+  const stock = await tx.select({ productId: variants.productId, onHand: sql<string>`sum(${stockBalances.onHand} - ${stockBalances.reserved})` }).from(stockBalances)
     .innerJoin(variants, eq(variants.id, stockBalances.variantId)).where(inArray(variants.productId, ids)).groupBy(variants.productId);
   const images = await tx.select({ productId: productImages.productId, id: productImages.id }).from(productImages).where(inArray(productImages.productId, ids)).orderBy(asc(productImages.sortOrder));
   return rows.map(({ p, category }) => {

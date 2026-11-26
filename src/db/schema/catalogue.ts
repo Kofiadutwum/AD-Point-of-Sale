@@ -90,6 +90,7 @@ export const variants = pgTable('variants', {
   sellByAmount: boolean('sell_by_amount').notNull().default(false), // food: rice, stew, waakye sold by cedi amount (spec 6.53)
   minAmountPesewas: integer('min_amount_pesewas'),
   valuePerPotPesewas: integer('value_per_pot_pesewas'), // expected sales from one pot (spec 6.54)
+  isGiftCard: boolean('is_gift_card').notNull().default(false), // selling it issues a gift card for its price; no stock moves (spec 6.31)
   status: text('status').$type<CatalogueStatus>().notNull().default('active'),
   createdAt: createdAt(),
 }, (t) => [

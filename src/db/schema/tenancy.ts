@@ -43,6 +43,16 @@ export const tenants = pgTable('tenants', {
   requireShifts: boolean('require_shifts').notNull().default(false), // sales need an open shift at the till (spec 4.6)
   cashVarianceLimitPesewas: integer('cash_variance_limit_pesewas').notNull().default(0), // closing variance a cashier may leave without a manager
   expenseApprovalLimitPesewas: integer('expense_approval_limit_pesewas').notNull().default(0), // expenses above this need a manager (spec 6.43)
+  loyaltyEnabled: boolean('loyalty_enabled').notNull().default(false), // spec 6.30
+  pesewasPerPoint: integer('pesewas_per_point').notNull().default(100), // money spent per point earned
+  pointValuePesewas: integer('point_value_pesewas').notNull().default(1), // what one point is worth when spent
+  minRedeemPoints: integer('min_redeem_points').notNull().default(100),
+  pointsExpiryMonths: integer('points_expiry_months').notNull().default(0), // 0 = never
+  giftCardExpiryMonths: integer('gift_card_expiry_months').notNull().default(0), // 0 = never
+  layawayMinDepositPercent: integer('layaway_min_deposit_percent').notNull().default(20),
+  orderCancellationFeePesewas: integer('order_cancellation_fee_pesewas').notNull().default(0),
+  orderRefundAs: text('order_refund_as').$type<'store_credit' | 'cash'>().notNull().default('store_credit'),
+  momoNumber: text('momo_number'), // shown on the customer display (spec 4.28)
   countApprovalLimitPesewas: integer('count_approval_limit_pesewas').notNull().default(0), // count differences above this value need a manager (6.26)
   adjustmentApprovalLimitPesewas: integer('adjustment_approval_limit_pesewas').notNull().default(0),
   reorderCoverDays: integer('reorder_cover_days').notNull().default(14), // suggested orders cover lead time plus this many days (6.24)
