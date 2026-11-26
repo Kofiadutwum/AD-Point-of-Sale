@@ -42,4 +42,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   record_expenses: 'Record expenses',
   sell_on_credit: 'Sell on credit to customers with an account',
   receive_debt_payment: 'Take payments towards what customers owe',
+  issue_invoices: 'Issue invoices to business customers',
 };

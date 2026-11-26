@@ -267,6 +267,20 @@
       "when": 1795694045727,
       "tag": "0037_credit_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1795695411483,
+      "tag": "0038_quotes_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1795695418364,
+      "tag": "0039_quotes_invoices_rls",
+      "breakpoints": true
     }
   ]
 }

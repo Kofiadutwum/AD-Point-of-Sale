@@ -4,6 +4,7 @@ import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { formatCedis, parseCedis } from '@/lib/money';
 import { adjustBalance, recordDebtPayment, saveCreditTerms } from '@/server/customer-accounts';
+import { saveBusinessDetails } from '@/server/quotes';
 import { pageCtx } from '../../page-ctx';
 
 const text = (fd: FormData, k: string) => String(fd.get(k) ?? '').trim();
@@ -41,4 +42,12 @@ export async function adjustAction(slug: string, customerId: string, _prev: Form
   if (!r.ok) return { error: MESSAGES[r.error] };
   revalidatePath(`/${slug}/app/customers/${customerId}`);
   return { error: null, message: `Adjusted. They now owe ${formatCedis(r.balancePesewas)}.` };
+}
+
+export async function businessAction(slug: string, customerId: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'issue_invoices');
+  const r = await saveBusinessDetails(getDb(), ctx, { customerId, address: text(fd, 'address'), tin: text(fd, 'tin') });
+  if (!r.ok) return { error: MESSAGES[r.error] };
+  revalidatePath(`/${slug}/app/customers/${customerId}`);
+  return { error: null, message: 'Saved.' };
 }
