@@ -169,3 +169,25 @@ export async function saveCashSettings(db: Db, ctx: Ctx, input: CashSettings): P
     return { ok: true } as const;
   });
 }
+
+export type ReportSettings = { smsReports: boolean; reportTime: string; weeklyReportDay: number };
+
+export async function getReportSettings(db: Db, ctx: Ctx): Promise<ReportSettings> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({ smsReports: tenants.smsReports, reportTime: tenants.reportTime, weeklyReportDay: tenants.weeklyReportDay })
+    .from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 4.8: the daily sales and weekly stock SMS go to the manager phone at this shop time. */
+export async function saveReportSettings(db: Db, ctx: Ctx, input: ReportSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  if (typeof input.smsReports !== 'boolean' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.reportTime) || !Number.isInteger(input.weeklyReportDay)
+    || input.weeklyReportDay < 0 || input.weeklyReportDay > 6) return { ok: false, error: 'invalid_input' };
+  const next = { smsReports: input.smsReports, reportTime: input.reportTime, weeklyReportDay: input.weeklyReportDay };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'report_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}

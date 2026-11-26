@@ -37,12 +37,16 @@ export const tenants = pgTable('tenants', {
   requireShifts: boolean('require_shifts').notNull().default(false), // sales need an open shift at the till (spec 4.6)
   cashVarianceLimitPesewas: integer('cash_variance_limit_pesewas').notNull().default(0), // closing variance a cashier may leave without a manager
   expenseApprovalLimitPesewas: integer('expense_approval_limit_pesewas').notNull().default(0), // expenses above this need a manager (spec 6.43)
+  smsReports: boolean('sms_reports').notNull().default(false), // daily sales and weekly stock SMS to the manager phone (spec 4.8)
+  reportTime: text('report_time').notNull().default('21:00'), // shop time the daily report goes out
+  weeklyReportDay: integer('weekly_report_day').notNull().default(1), // 0 = Sunday ... 6 = Saturday
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),
   check('tenants_cash_rounding', sql`${t.cashRoundingStep} in (0, 5, 10, 50, 100)`),
   check('tenants_counter_order_expiry', sql`${t.counterOrderExpiryMinutes} between 5 and 1440`),
   check('tenants_expiry_warning', sql`${t.expiryWarningDays} between 1 and 365`),
+  check('tenants_weekly_report_day', sql`${t.weeklyReportDay} between 0 and 6`),
   check('tenants_shop_type', sql`${t.shopType} in ('retail', 'pharmacy', 'food')`),
   check('tenants_status', sql`${t.status} in ('active', 'suspended', 'closed')`),
   check('tenants_tax_mode', sql`${t.taxMode} in ('inclusive', 'exclusive')`),
