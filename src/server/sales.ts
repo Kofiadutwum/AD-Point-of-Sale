@@ -408,7 +408,6 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
       if (pr !== true) refuse(pr);
     }
     if (t.method === 'gift_card') {
-      // shortcut: a refused sale rolls back the wrong-code count too; 16-character codes (80 bits) make guessing hopeless anyway
       const gr = await redeemGiftCard(tx, ctx.tenantId, { code: t.reference ?? '', amountPesewas: t.amountPesewas, saleId: s.saleId, registerId: reg.id }, today, now);
       if (typeof gr === 'string') refuse(gr);
       else reference = `GIFT-****${gr.last4}`; // never the code itself

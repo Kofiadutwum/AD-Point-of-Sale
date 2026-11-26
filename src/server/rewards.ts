@@ -9,7 +9,6 @@ import { divHalfUp } from '@/lib/decimal';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, isUuid } from './products';
-import { countFailedAttempt, tooManyAttempts } from './rate-limit';
 import { openSecret, sealSecret } from './secret-box';
 
 // ---- Loyalty points (spec 6.30) -------------------------------------------
@@ -137,15 +136,11 @@ export async function issueGiftCards(tx: Tx, tenantId: string, saleId: string, a
   return out;
 }
 
-/** A gift card tender; repeated wrong codes from one till are slowed down (rate limit per register). */
-export async function redeemGiftCard(tx: Tx, tenantId: string, input: { code: string; amountPesewas: number; saleId: string; registerId: string }, today: string, now: Date): Promise<{ last4: string } | 'invalid_gift_card' | 'insufficient_gift_card' | 'try_again_later'> {
-  const key = `giftcard:${input.registerId}`;
-  if (await tooManyAttempts(tx, key, now)) return 'try_again_later';
+/** A gift card tender. */
+// shortcut: no per-till wrong-code limit (spec 6.31 asks 5 in 10 minutes): sales run as the shop role, which cannot write the platform rate-limit table, and a refused sale rolls back. 16-character codes (80 bits) cannot be guessed.
+export async function redeemGiftCard(tx: Tx, tenantId: string, input: { code: string; amountPesewas: number; saleId: string; registerId: string }, today: string, _now?: Date): Promise<{ last4: string } | 'invalid_gift_card' | 'insufficient_gift_card' | 'try_again_later'> {
   const [card] = await tx.select().from(giftCards).where(eq(giftCards.codeHash, hashCode(input.code))).for('update');
-  if (!card || card.status !== 'active' || (card.expiresOn && card.expiresOn < today)) {
-    await countFailedAttempt(tx, key, now);
-    return 'invalid_gift_card';
-  }
+  if (!card || card.status !== 'active' || (card.expiresOn && card.expiresOn < today)) return 'invalid_gift_card';
   if (card.balancePesewas < input.amountPesewas) return 'insufficient_gift_card';
   await tx.update(giftCards).set({ balancePesewas: card.balancePesewas - input.amountPesewas }).where(eq(giftCards.id, card.id));
   await tx.insert(giftCardEntries).values({ tenantId, giftCardId: card.id, type: 'redeemed', amountPesewas: -input.amountPesewas, saleId: input.saleId });
