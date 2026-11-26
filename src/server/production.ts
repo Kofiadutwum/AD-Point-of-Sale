@@ -2,7 +2,7 @@ import 'server-only';
 import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
-import { products, productionIngredients, productionRuns, stockMovements, users, variants } from '@/db/schema';
+import { branches, products, productionIngredients, productionRuns, stockMovements, users, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { multiplyQty, parseQuantity, toMilli } from '@/lib/decimal';
 import { weightedAverageCost } from '@/lib/stock';
@@ -125,6 +125,15 @@ export async function recordProduction(db: Db, ctx: Ctx, input: { branchId: stri
       changes: { runId: run.id, branchId: input.branchId, quantity, unitCost, negativeStock },
     });
     return { ok: true as const, runId: run.id, unitCostPesewas: unitCost, negativeStock };
+  });
+}
+
+/** The branches this user can record production at. */
+export async function productionBranches(db: Db, ctx: Ctx): Promise<Array<{ id: string; name: string }>> {
+  assertPermission(ctx, 'record_production');
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const mine = await myBranches(tx, ctx);
+    return mine.length ? tx.select({ id: branches.id, name: branches.name }).from(branches).where(inArray(branches.id, mine)).orderBy(asc(branches.name)) : [];
   });
 }
 
