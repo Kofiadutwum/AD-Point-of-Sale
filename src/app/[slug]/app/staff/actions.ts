@@ -1,4 +1,5 @@
 'use server';
+import { STAFF_PRESETS, type StaffPreset } from '@/lib/permissions';
 import { revalidatePath } from 'next/cache';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
@@ -25,7 +26,7 @@ export async function addStaffAction(slug: string, _prev: FormState, formData: F
   const ctx = await pageCtx(slug, 'manage_staff');
   const r = await addStaff(getDb(), ctx, {
     name: value(formData, 'name'), email: value(formData, 'email'), phone: value(formData, 'phone'),
-    rolePreset: value(formData, 'rolePreset') === 'manager' ? 'manager' : 'cashier',
+    rolePreset: (STAFF_PRESETS as readonly string[]).includes(value(formData, 'rolePreset')) ? value(formData, 'rolePreset') as StaffPreset : 'cashier',
     branchIds: formData.getAll('branchIds').map(String),
   }, new Date());
   if (!r.ok) return { error: MESSAGES[r.error] };

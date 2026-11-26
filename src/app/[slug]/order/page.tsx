@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { getDb } from '@/db/client';
-import { publicOrderOptions, verifiedPhone } from '@/server/online-orders';
+import { orderableItems, publicOrderOptions, verifiedPhone } from '@/server/online-orders';
 import { publicStorefront } from '@/server/storefront';
 import { OrderForm } from './order-form';
 import { orderTokenCookie } from './token';
@@ -16,7 +16,7 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
   const [shop, options] = await Promise.all([publicStorefront(getDb(), slug, now, { count: false }), publicOrderOptions(getDb(), slug, now)]);
   if (!shop || !options) notFound();
   const phone = await verifiedPhone(getDb(), slug, (await cookies()).get(orderTokenCookie(slug))?.value, now);
-  const items = shop.products.filter((p) => !p.prescriptionOnly && p.pricePesewas != null).map((p) => ({ id: p.id, name: p.name, pricePesewas: p.pricePesewas, inStock: p.inStock }));
+  const items = (await orderableItems(getDb(), slug, now)).map((v) => ({ id: v.variantId, productId: v.productId, name: v.name, pricePesewas: v.pricePesewas, /* an order page always shows what will be charged */ inStock: shop.settings.showStock ? v.inStock : null }));
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-4 p-4" style={{ ['--brand' as string]: shop.settings.themeColor }}>
       <a href={`/${slug}`} className="text-sm underline">← {shop.name}</a>

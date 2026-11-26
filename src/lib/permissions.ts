@@ -4,12 +4,17 @@ export const PERMISSIONS = [
   'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_channels', 'take_orders', 'void_sent_items', 'process_return', 'refund_without_approval', 'refund_other_method', 'dispense_prescription', 'record_production', 'import_data', 'manage_cash', 'record_expenses', 'sell_on_credit', 'receive_debt_payment', 'issue_invoices', 'marketing', 'manage_storefront', 'manage_purchasing', 'transfer_stock', 'stock_count', 'adjust_stock', 'manage_promotions', 'layaway', 'manage_commissions', 'online_orders', 'manage_integrations',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
-export type RolePreset = 'owner' | 'manager' | 'cashier';
+export type RolePreset = 'owner' | 'manager' | 'cashier' | 'stock_clerk' | 'accountant';
+export const STAFF_PRESETS = ['manager', 'cashier', 'stock_clerk', 'accountant'] as const; // presets an owner or manager can invite
+export type StaffPreset = (typeof STAFF_PRESETS)[number];
 
 export const ROLE_PRESETS: Record<RolePreset, readonly Permission[]> = {
   owner: PERMISSIONS,
   manager: PERMISSIONS.filter((p) => p !== 'manage_shop_settings' && p !== 'manage_integrations'), // API keys, webhooks and the Paystack key stay with the owner
   cashier: ['make_sale', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return', 'receive_debt_payment'],
+  // spec 2: later presets. A stock clerk handles goods in and out, never money; an accountant reads and exports, records expenses and debt payments.
+  stock_clerk: ['receive_stock', 'manage_purchasing', 'transfer_stock', 'stock_count', 'adjust_stock', 'mark_sold_out'],
+  accountant: ['view_dashboard', 'view_reports', 'export_data', 'record_expenses', 'receive_debt_payment', 'issue_invoices'],
 };
 
 /** What a shop whose subscription is past its grace period may still do. */

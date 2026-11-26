@@ -172,7 +172,7 @@ export async function receiveStockTx(tx: Tx, ctx: Ctx, r: ReceiptInput, today: s
   }
 }
 
-export type DeductProblems = { negative: boolean; onlyExpired: boolean; serialsMissing: boolean };
+export type DeductProblems = { negative: boolean; onlyExpired: boolean; serialsMissing: boolean; reservedTaken?: boolean };
 
 const minus = (milli: bigint) => `-${fromMilli(milli)}`;
 
@@ -257,6 +257,10 @@ export async function deductStockForLine(
   }
 
   problems.negative = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  // spec 13: stock held for a layaway or online order cannot be sold to someone else
+  const [held] = await tx.select({ onHand: stockBalances.onHand, reserved: stockBalances.reserved }).from(stockBalances)
+    .where(and(eq(stockBalances.branchId, s.branchId), eq(stockBalances.variantId, line.variantId)));
+  if (held && Number(held.reserved) > 0 && Number(held.onHand) < Number(held.reserved)) problems.reservedTaken = true;
   if (problems.negative) {
     await writeAudit(tx, {
       tenantId: s.tenantId, actorType: 'system', actorId: null, action: 'negative_stock', recordType: 'variant', recordId: line.variantId,

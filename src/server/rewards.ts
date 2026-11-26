@@ -1,9 +1,9 @@
 import 'server-only';
 import { createHash, randomBytes } from 'node:crypto';
-import { and, asc, desc, eq, gte, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, isNull, lt, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import { commissionEntries, commissionRules, customers, giftCardEntries, giftCards, loyaltyEntries, tenants, users, variants } from '@/db/schema';
-import { withTenant } from '@/db/tenant';
+import { asPlatform, withTenant } from '@/db/tenant';
 import { addMonths, todayIn } from '@/lib/dates';
 import { divHalfUp } from '@/lib/decimal';
 import { writeAudit } from './audit';
@@ -78,6 +78,19 @@ export async function reversePoints(tx: Tx, tenantId: string, saleId: string, re
 // shortcut: expiry takes min(balance, points earned before the cutoff); it does not trace which points were spent first. Fine while expiry is rare.
 export async function expirePoints(db: Db, ctx: Ctx, now: Date): Promise<number> {
   assertPermission(ctx, 'manage_promotions');
+  return expireShopPoints(db, ctx.tenantId, now);
+}
+
+/** Cron (Phase 7): every shop with a points expiry, once a day; already-checked entries are skipped, so repeats are harmless. */
+export async function expireAllPoints(db: Db, now: Date): Promise<number> {
+  const shops = await asPlatform(db, (tx) => tx.select({ id: tenants.id }).from(tenants).where(and(eq(tenants.status, 'active'), gt(tenants.pointsExpiryMonths, 0), eq(tenants.loyaltyEnabled, true))));
+  let n = 0;
+  for (const s of shops) n += await expireShopPoints(db, s.id, now);
+  return n;
+}
+
+async function expireShopPoints(db: Db, tenantId: string, now: Date): Promise<number> {
+  const ctx = { tenantId };
   return withTenant(db, ctx.tenantId, async (tx) => {
     const [t] = await tx.select({ months: tenants.pointsExpiryMonths, tz: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId));
     if (!t.months) return 0;

@@ -386,6 +386,13 @@
       "when": 1795728809832,
       "tag": "0054_paystack_tender",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1795731605278,
+      "tag": "0055_role_presets",
+      "breakpoints": true
     }
   ]
 }

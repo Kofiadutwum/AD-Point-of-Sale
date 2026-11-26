@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { apiKeys, notifications, onlineOrders, payments, products, sales, shopCharges, shopDomains, stockBalances, tenants, variants, webhookDeliveries } from '@/db/schema';
+import { apiKeys, coupons, notifications, onlineOrders, payments, products, sales, shopCharges, shopDomains, stockBalances, tenants, variants, webhookDeliveries } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import { apiRead, authenticateKey, createApiKey, revokeApiKey } from '@/server/api-keys';
 import type { Ctx } from '@/server/context';
@@ -14,6 +14,7 @@ import {
 import type { Paystack, VerifiedTransaction } from '@/server/paystack';
 import { completeSale } from '@/server/sales';
 import { applyShopCharge, handleShopWebhook, saveShopPaystackKey, type ShopClient, startOrderCharge, startTillCharge } from '@/server/shop-paystack';
+import { saveCoupon, savePromotion } from '@/server/promotions';
 import { setPublished } from '@/server/storefront';
 import { addEndpoint, checkEndpointUrl, privateAddress, runWebhookDeliveries, signDelivery } from '@/server/webhooks';
 import { ctxFor, expectAccess, productFor, saleInput, type SeededShop, seedShop, stockFor, tillCtxFor } from '../helpers/fixtures';
@@ -230,4 +231,20 @@ it('custom domains go live only after the TXT record proves ownership', async ()
   const [{ token }] = await asPlatform(db, (tx) => tx.select({ token: shopDomains.verifyToken }).from(shopDomains));
   expect(await verifyDomain(db, owner, d.id, t0, async (name) => (name === '_adsmartshop.shop.example.com' ? [[token]] : []))).toEqual({ ok: true });
   expect(await slugForHost(db, 'shop.example.com:443')).toBe(shop.slug);
+});
+
+it('a coupon on a till Paystack charge is priced in and used up only when the money is confirmed', async () => {
+  const fake = fakePaystack();
+  await saveShopPaystackKey(db, owner, KEY);
+  const pr = await savePromotion(db, owner, { name: 'GHS 1 off', kind: 'amount_off', amountPesewas: 100, requiresCoupon: true }) as { promotionId: string };
+  await saveCoupon(db, owner, { code: 'ONCE', promotionId: pr.promotionId, maxUses: 1 });
+  const lines = [{ variantId: p.variantId, unitId: p.baseUnitId, quantity: '1' }];
+  expect(await startTillCharge(db, till, { lines, couponCode: 'NOPE' }, t0, fake.shopClient)).toEqual({ ok: false, error: 'invalid_coupon' });
+  const c = await startTillCharge(db, till, { lines, couponCode: 'once' }, t0, fake.shopClient) as { reference: string; amountPesewas: number };
+  expect(c.amountPesewas).toBe(400);
+  const used = async () => (await asPlatform(db, (tx) => tx.select({ n: coupons.usedCount }).from(coupons)))[0].n;
+  expect(await used()).toBe(0);
+  fake.verified.set(c.reference, { status: 'success', amount: 400 });
+  expect(await applyShopCharge(db, shop.tenantId, c.reference, t0, fake.shopClient)).toMatchObject({ outcome: 'completed' });
+  expect(await used()).toBe(1);
 });

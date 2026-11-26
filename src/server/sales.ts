@@ -61,7 +61,7 @@ export type SaleInput = {
 export type Prescription = { patientName: string; prescriberName: string; facility: string; prescriptionDate: string };
 export type SaleError = 'credit_needs_customer' | 'credit_not_allowed' | 'credit_over_limit' | 'no_open_shift' | 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
-  | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
+  | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock' | 'reserved_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
   | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
@@ -438,6 +438,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const done = await finaliseSaleTx(tx, ctx.tenantId, s.saleId, now);
   if (done.problems.onlyExpired) lenient('only_expired_stock', 'only_expired_stock');
   if (done.problems.serialsMissing) lenient('unknown_serial', 'serials_missing');
+  if (done.problems.reservedTaken) lenient('reserved_stock', 'reserved_stock');
   if (done.problems.negative) {
     if (outbox) reasons.add('negative_stock');
     else if (!shop.allowNegativeStock) refuse('not_enough_stock');
@@ -763,6 +764,7 @@ export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, n
     problems.negative ||= p.negative;
     problems.onlyExpired ||= p.onlyExpired;
     problems.serialsMissing ||= p.serialsMissing;
+    problems.reservedTaken ||= p.reservedTaken;
   }
   await tx.update(sales).set({ status: 'completed', completedAt: now }).where(eq(sales.id, saleId));
   await writeAudit(tx, {

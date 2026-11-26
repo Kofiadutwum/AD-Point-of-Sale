@@ -1,6 +1,7 @@
 import 'server-only';
 import { createHmac, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { and, arrayContains, asc, desc, eq, lte } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
@@ -42,11 +43,17 @@ export function checkEndpointUrl(raw: string): URL | null {
 
 export type Resolver = (host: string) => Promise<string[]>;
 const liveResolver: Resolver = async (host) => (await lookup(host, { all: true })).map((a) => a.address);
-export type Poster = (url: string, init: { headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number }>;
-const livePoster: Poster = async (url, init) => {
-  const r = await fetch(url, { method: 'POST', headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(10_000) });
-  return { ok: r.ok, status: r.status };
-};
+export type Poster = (url: string, init: { headers: Record<string, string>; body: string; address: string }) => Promise<{ ok: boolean; status: number }>;
+/** POSTs over https to the already-checked address (TLS still verifies the host name), so DNS cannot change between check and send. Redirects are not followed. */
+const livePoster: Poster = (url, init) => new Promise((resolve, reject) => {
+  const req = httpsRequest(url, {
+    method: 'POST', headers: { ...init.headers, 'content-length': String(Buffer.byteLength(init.body)) }, timeout: 10_000,
+    lookup: (_host, _opts, cb) => (cb as (e: null, a: string, f: number) => void)(null, init.address, isIP(init.address)),
+  }, (res) => { res.resume(); const status = res.statusCode ?? 0; resolve({ ok: status >= 200 && status < 300, status }); });
+  req.on('timeout', () => req.destroy(new Error('timed out')));
+  req.on('error', reject);
+  req.end(init.body);
+});
 
 export const signDelivery = (secret: string, timestamp: string, body: string) => createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
 
@@ -121,7 +128,7 @@ export async function runWebhookDeliveries(db: Db, now: Date, opts: { resolve?: 
         else {
           const timestamp = String(Math.floor(now.getTime() / 1000));
           const body = JSON.stringify({ id: d.id, event: d.event, createdAt: d.createdAt.toISOString(), data: d.payload });
-          const r = await post(u.toString(), { body, headers: { 'content-type': 'application/json', 'x-webhook-id': d.id, 'x-webhook-timestamp': timestamp, 'x-webhook-signature': signDelivery(secret, timestamp, body) } });
+          const r = await post(u.toString(), { address: addresses[0], body, headers: { 'content-type': 'application/json', 'x-webhook-id': d.id, 'x-webhook-timestamp': timestamp, 'x-webhook-signature': signDelivery(secret, timestamp, body) } });
           if (!r.ok) error = `HTTP ${r.status}`;
         }
       } catch (e) {

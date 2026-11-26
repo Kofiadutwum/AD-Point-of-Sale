@@ -6,7 +6,7 @@ import { type ChargeSale, onlineOrders, products, registers, sales, shopCharges,
 import { asPlatform, withTenant } from '@/db/tenant';
 import { pesewasTimesQty } from '@/lib/money';
 import { applyPromotions } from '@/lib/promotions';
-import { activePromotions } from './promotions';
+import { activePromotions, checkCoupon, redeemCoupon } from './promotions';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { markOrderPaid } from './online-orders';
@@ -57,10 +57,10 @@ export async function saveShopPaystackKey(db: Db, ctx: Ctx, key: string | null):
 }
 
 type TillLine = { variantId: string; unitId: string; quantity: string; discountPesewas?: number };
-export type ChargeError = 'invalid_input' | 'not_connected' | 'no_register' | 'unknown_item' | 'discount_not_allowed' | 'provider_unavailable';
+export type ChargeError = 'invalid_coupon' | 'invalid_input' | 'not_connected' | 'no_register' | 'unknown_item' | 'discount_not_allowed' | 'provider_unavailable';
 
 /** Spec 4.3: the till starts a Paystack charge (card or MoMo on the customer's phone); the sale is made only once Paystack confirms it. */
-export async function startTillCharge(db: Db, ctx: Ctx, input: { customerId?: string | null; lines: TillLine[] }, now: Date, client: ShopClient = liveShopClient): Promise<
+export async function startTillCharge(db: Db, ctx: Ctx, input: { customerId?: string | null; lines: TillLine[]; couponCode?: string | null }, now: Date, client: ShopClient = liveShopClient): Promise<
   { ok: true; reference: string; authorizationUrl: string; amountPesewas: number } | Fail<ChargeError>
 > {
   assertPermission(ctx, 'make_sale');
@@ -81,6 +81,13 @@ export async function startTillCharge(db: Db, ctx: Ctx, input: { customerId?: st
     // spec 6.29: the sale is made with these prices as quoted, so running promotions are folded into each line's discount now (as the till showed them)
     const [shop] = await tx.select({ timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, ctx.tenantId));
     const promos = await activePromotions(tx, reg.branchId, shop.timezone, now);
+    let couponId: string | undefined;
+    if (input.couponCode?.trim()) {
+      const c = await checkCoupon(tx, input.couponCode, input.customerId ?? null, reg.branchId, shop.timezone, now);
+      if (c === 'invalid_coupon') return fail('invalid_coupon');
+      promos.push(c.promo);
+      couponId = c.couponId;
+    }
     if (promos.length) {
       const meta = await tx.select({ id: variants.id, productId: variants.productId, categoryId: products.categoryId, giftCard: variants.isGiftCard }).from(variants)
         .innerJoin(products, eq(products.id, variants.productId)).where(inArray(variants.id, priced.lines.map((l) => l.variantId)));
@@ -95,7 +102,7 @@ export async function startTillCharge(db: Db, ctx: Ctx, input: { customerId?: st
       }
     }
     const sale: ChargeSale = {
-      registerId, userId: ctx.userId, customerId: input.customerId ?? null,
+      registerId, userId: ctx.userId, customerId: input.customerId ?? null, ...(couponId ? { couponId } : {}),
       lines: priced.lines.map((l) => ({ variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: l.discountPesewas })),
     };
     await tx.insert(shopCharges).values({ tenantId: ctx.tenantId, reference, purpose: 'till', amountPesewas: priced.totalPesewas, sale });
@@ -194,6 +201,7 @@ export async function applyShopCharge(db: Db, tenantId: string, reference: strin
       saleId, receiptNumber, deviceCreatedAt: now.toISOString(), customerId: sale.customerId ?? undefined, tenders: [], lines: sale.lines,
     }, now, { quotedPrices: true, paystack: { reference, amountPesewas: c.amountPesewas } });
     if (!done.ok) return throwSaleFailure(done);
+    if (sale.couponId) await redeemCoupon(tx, tenantId, sale.couponId, saleId, sale.customerId); // the money is in, so the use is recorded even past a limit reached meanwhile
     await tx.update(shopCharges).set({ status: 'success', channel, saleId, completedAt: now }).where(eq(shopCharges.id, c.id));
     return { saleId, changeDuePesewas: 0 };
   });

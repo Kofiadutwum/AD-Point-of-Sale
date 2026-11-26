@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { adminCtx } from '../admin-ctx';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -5,7 +6,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <div className="mx-auto max-w-4xl p-6">
       <header className="mb-6 flex items-center justify-between border-b pb-3">
-        <a href="/admin/shops" className="font-semibold">Platform admin</a>
+        <Link href="/admin/shops" className="font-semibold">Platform admin</Link>
         <span className="text-sm text-gray-600">{admin.name}</span>
       </header>
       {children}

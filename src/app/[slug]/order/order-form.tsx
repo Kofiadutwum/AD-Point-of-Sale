@@ -3,7 +3,7 @@ import { useState, useTransition } from 'react';
 import { formatCedis } from '@/lib/money';
 import { placeOrderAction, requestCodeAction, verifyCodeAction } from './actions';
 
-type Item = { id: string; name: string; pricePesewas: number | null; inStock: boolean | null };
+type Item = { id: string; productId: string; name: string; pricePesewas: number | null; inStock: boolean | null };
 type Options = { paystack: boolean; transfer: boolean; deliveryFeePesewas: number };
 
 const input = 'rounded border border-gray-400 px-3 py-2';
@@ -29,7 +29,7 @@ export function OrderForm({ slug, items, options, verifiedPhone, source }: { slu
       const fd = new FormData(e.currentTarget);
       start(async () => {
         const r = await placeOrderAction(slug, {
-          items: chosen.map((i) => ({ productId: i.id, quantity: qty[i.id] })), fulfilment, payMethod, source,
+          items: chosen.map((i) => ({ productId: i.productId, variantId: i.id, quantity: qty[i.id] })), fulfilment, payMethod, source,
           name: String(fd.get('name') ?? ''), address: String(fd.get('address') ?? ''), note: String(fd.get('note') ?? ''),
         });
         if (r.ok) window.location.assign(r.next); else setError(r.error);

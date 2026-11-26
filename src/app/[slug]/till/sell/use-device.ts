@@ -66,13 +66,17 @@ export function useDevice(slug: string) {
   }, [deps, reload, slug, store]);
 
   useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem(`pos-cashier-${slug}`);
-      if (saved) setCashierState(JSON.parse(saved));
-    } catch { /* ignore */ }
     navigator.serviceWorker?.register('/sw.js', { scope: `/${slug}/till/` }).catch(() => {});
     let lastFull = Date.now();
-    void reload().then(() => tick(true));
+    // the signed-in cashier survives a reload of this tab; restored after mount so the server render matches
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async load on mount: state is set only after the awaits inside
+    void reload().then(() => {
+      try {
+        const saved = sessionStorage.getItem(`pos-cashier-${slug}`);
+        if (saved) setCashierState(JSON.parse(saved));
+      } catch { /* ignore */ }
+      return tick(true);
+    });
     const timer = setInterval(() => {
       const full = Date.now() - lastFull >= REFRESH_EVERY_MS;
       if (full) lastFull = Date.now();

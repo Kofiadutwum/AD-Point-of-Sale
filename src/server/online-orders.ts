@@ -68,6 +68,22 @@ async function orderShop(db: Db, slug: string, now: Date): Promise<OrderShop | n
   });
 }
 
+/** Spec 6.49 (Phase 7): what can be ordered online, one row per sellable variant, at its base-unit price; never cost or exact stock. */
+export async function orderableItems(db: Db, slug: string, now: Date): Promise<Array<{ productId: string; variantId: string; name: string; pricePesewas: number; inStock: boolean }>> {
+  const shop = await orderShop(db, slug, now);
+  if (!shop) return [];
+  return withTenant(db, shop.id, async (tx) => {
+    const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(asc(branches.createdAt)).limit(1);
+    const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas,
+      onHand: stockBalances.onHand, reserved: stockBalances.reserved })
+      .from(variants).innerJoin(products, eq(products.id, variants.productId))
+      .leftJoin(stockBalances, and(eq(stockBalances.variantId, variants.id), eq(stockBalances.branchId, branch.id)))
+      .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
+      .orderBy(asc(products.name), asc(variants.basePricePesewas)).limit(300);
+    return rows.map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+  });
+}
+
 export async function publicOrderOptions(db: Db, slug: string, now: Date) {
   const shop = await orderShop(db, slug, now);
   return shop ? { name: shop.name, paystack: shop.paystack, transfer: !!shop.transferInstructions, transferInstructions: shop.transferInstructions, deliveryFeePesewas: shop.deliveryFeePesewas } : null;
@@ -123,7 +139,7 @@ export async function verifiedPhone(db: Db, slug: string, token: string | undefi
 }
 
 export type PlaceInput = {
-  token: string | undefined; items: Array<{ productId: string; quantity: number }>; fulfilment: 'pickup' | 'delivery';
+  token: string | undefined; items: Array<{ productId: string; variantId?: string; quantity: number }>; fulfilment: 'pickup' | 'delivery';
   name: string; address?: string; note?: string; payMethod: 'paystack' | 'transfer'; source?: string;
 };
 export type PlaceError = 'closed' | 'phone_not_verified' | 'invalid_input' | 'too_many' | 'unavailable' | 'payment_unavailable';
@@ -138,7 +154,8 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
   const address = input.address?.trim().slice(0, 300) || null;
   const items = Array.isArray(input.items) ? input.items : [];
   if (!name || !['pickup', 'delivery'].includes(input.fulfilment) || (input.fulfilment === 'delivery' && !address) || !items.length || items.length > 30
-    || items.some((i) => !isUuid(i.productId) || !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 99) || new Set(items.map((i) => i.productId)).size !== items.length) return fail('invalid_input');
+    || items.some((i) => !isUuid(i.productId) || (i.variantId !== undefined && !isUuid(i.variantId)) || !Number.isInteger(i.quantity) || i.quantity < 1 || i.quantity > 99)
+    || new Set(items.map((i) => i.variantId ?? i.productId)).size !== items.length) return fail('invalid_input');
   if (input.payMethod === 'paystack' ? !shop.paystack : input.payMethod !== 'transfer' || !shop.transferInstructions) return fail('payment_unavailable');
   const source: OrderSource = SOURCES.includes(input.source as OrderSource) ? input.source as OrderSource : 'storefront';
 
@@ -153,12 +170,12 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
 
     // shortcut: online orders are filled from the shop's first branch; choose a branch per order when shops ask for it
     const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(asc(branches.createdAt)).limit(1);
-    // each product sells as its cheapest active variant in its base unit, the price the storefront shows
+    // the chosen variant (or the product's cheapest active one), in its base unit
     const picked = [];
     for (const i of items) {
       const [v] = await tx.select({ variantId: variants.id, unitId: variantUnits.id }).from(variants)
         .innerJoin(products, eq(products.id, variants.productId)).innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
-        .where(and(eq(products.id, i.productId), eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false),
+        .where(and(eq(products.id, i.productId), i.variantId ? eq(variants.id, i.variantId) : undefined, eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false),
           eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
         .orderBy(asc(variants.basePricePesewas)).limit(1);
       if (!v) return fail('unavailable');

@@ -32,3 +32,16 @@ export async function countFailedAttempt(tx: Tx, key: string, now: Date): Promis
 export async function clearAttempts(tx: Tx, key: string): Promise<void> {
   await tx.delete(authAttempts).where(eq(authAttempts.key, key));
 }
+
+/** Counts one request and says whether the key is over `limit` in its current window (a fixed window per key). */
+export async function overLimit(tx: Tx, key: string, now: Date, limit: number, windowMs: number): Promise<boolean> {
+  const expired = sql`${authAttempts.windowStart} <= ${new Date(now.getTime() - windowMs).toISOString()}::timestamptz`;
+  const [row] = await tx.insert(authAttempts).values({ key, windowStart: now, count: 1 }).onConflictDoUpdate({
+    target: authAttempts.key,
+    set: {
+      count: sql`case when ${expired} then 1 else ${authAttempts.count} + 1 end`,
+      windowStart: sql`case when ${expired} then ${now.toISOString()}::timestamptz else ${authAttempts.windowStart} end`,
+    },
+  }).returning({ count: authAttempts.count });
+  return row.count > limit;
+}
