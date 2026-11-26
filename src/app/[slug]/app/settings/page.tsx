@@ -6,16 +6,17 @@ import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
 import { getCashSettings, getOfflineEnabled, getReportSettings, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
+import { supportHistory } from '@/server/support';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveOfflineAction, saveCashAction, savePharmacyAction, saveProfileAction, saveReportsAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, saveCashAction, savePharmacyAction, grantSupportAction, revokeSupportAction, saveProfileAction, saveReportsAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy, cash, reports] = await Promise.all([
+  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy, cash, reports, support] = await Promise.all([
     getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
-    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx), getCashSettings(getDb(), ctx), getReportSettings(getDb(), ctx),
+    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx), getCashSettings(getDb(), ctx), getReportSettings(getDb(), ctx), supportHistory(getDb(), ctx, new Date()),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -102,6 +103,25 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
             </select>
           </label>
         </ActionForm>
+      </section>
+      <section className="max-w-xl">
+        <h2 className="mb-3 text-lg font-semibold">Platform support access</h2>
+        <p className="mb-2 text-sm text-gray-700">Platform support can see your shop only while you allow it, or in an emergency with a written reason. Everything they open is listed here.</p>
+        {support.sessions.filter((s) => s.isActive).map((s) => (
+          <div key={s.id} className="mb-2 rounded border border-amber-500 p-2 text-sm">
+            {s.emergency ? 'Emergency access' : 'Access you granted'} until {s.expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC. Reason: {s.reason}
+            <ActionForm action={revokeSupportAction.bind(null, slug, s.id)} submitLabel="End access now"><span /></ActionForm>
+          </div>
+        ))}
+        <ActionForm action={grantSupportAction.bind(null, slug)} submitLabel="Allow support">
+          <Field label="For how many hours (1 to 72)" name="hours" type="number" min={1} max={72} defaultValue={4} />
+          <Field label="What do you need help with?" name="reason" minLength={3} maxLength={200} />
+        </ActionForm>
+        {support.actions.length > 0 && (
+          <ul className="mt-2 text-sm">{support.actions.map((a, i) => (
+            <li key={i}>{a.at.toISOString().slice(0, 16).replace('T', ' ')} · {String((a.changes as { by?: string } | null)?.by ?? 'Support')} · {a.action === 'platform_support_view' ? 'viewed the shop' : `opened emergency access: ${a.reason}`}</li>
+          ))}</ul>
+        )}
       </section>
       <section className="max-w-md">
         <h2 className="mb-3 text-lg font-semibold">Pharmacy</h2>
