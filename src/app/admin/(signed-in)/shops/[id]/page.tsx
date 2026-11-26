@@ -2,8 +2,9 @@ import { notFound } from 'next/navigation';
 import { ActionForm, Field } from '@/components/form';
 import { getDb } from '@/db/client';
 import { listShops } from '@/server/platform-admin';
+import { currentSupportSession } from '@/server/support';
 import { adminCtx, adminToken } from '../../../admin-ctx';
-import { issueLinkAction, recordPaymentAction, resetMfaAction, suspendAction } from './actions';
+import { emergencyAction, issueLinkAction, recordPaymentAction, resetMfaAction, suspendAction } from './actions';
 
 export default async function AdminShopPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -12,6 +13,7 @@ export default async function AdminShopPage({ params }: { params: Promise<{ id: 
   const [shop] = await listShops(getDb(), token, new Date(), id).catch(() => []);
   if (!shop) notFound();
   const suspended = shop.status === 'suspended';
+  const support = await currentSupportSession(getDb(), token, shop.tenantId, new Date());
   return (
     <main className="flex flex-col gap-8">
       <section>
@@ -39,6 +41,19 @@ export default async function AdminShopPage({ params }: { params: Promise<{ id: 
             </select>
           </label>
         </ActionForm>
+      </section>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Support access</h2>
+        {support ? (
+          <p className="text-sm">{support.emergency ? 'Emergency access' : 'The owner granted access'} until {support.expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC. <a className="text-blue-800 underline" href={`/admin/shops/${shop.tenantId}/support`}>View shop data</a></p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-700">No support session. Ask the owner to grant one in their settings, or open emergency access (2 hours; the owner is emailed and sees every page you open).</p>
+            <ActionForm action={emergencyAction.bind(null, shop.tenantId)} submitLabel="Open emergency access">
+              <Field label="Reason (at least 20 characters)" name="reason" minLength={20} maxLength={500} />
+            </ActionForm>
+          </>
+        )}
       </section>
       <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">Owner access</h2>

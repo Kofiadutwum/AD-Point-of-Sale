@@ -6,6 +6,7 @@ import { formatCedis, parseCedis } from '@/lib/money';
 import { issueOwnerActivationLink } from '@/server/onboarding';
 import { type ManualPayment, recordManualPayment, setShopSuspended } from '@/server/subscriptions';
 import { resetOwnerMfa } from '@/server/platform-admin';
+import { openEmergencyAccess } from '@/server/support';
 import { adminCtx, adminToken } from '../../../admin-ctx';
 
 export async function recordPaymentAction(tenantId: string, _prev: FormState, formData: FormData): Promise<FormState> {
@@ -46,4 +47,12 @@ export async function issueLinkAction(tenantId: string, _prev: FormState, _formD
   const { adminId } = await adminCtx();
   const { activationUrl } = await issueOwnerActivationLink(getDb(), adminId, tenantId, new Date());
   return { error: null, message: 'New activation link for the owner (earlier links no longer work):', copy: activationUrl };
+}
+
+export async function emergencyAction(tenantId: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  await adminCtx();
+  const r = await openEmergencyAccess(getDb(), await adminToken(), tenantId, String(fd.get('reason') ?? ''), new Date());
+  if (!r.ok) return { error: r.error === 'reason_required' ? 'Write why you need access (at least 20 characters).' : 'Shop not found.' };
+  revalidatePath(`/admin/shops/${tenantId}`);
+  return { error: null, message: 'Emergency access open for 2 hours. The owner was emailed.' };
 }

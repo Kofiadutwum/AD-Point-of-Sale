@@ -8,6 +8,7 @@ import type { Module } from '@/lib/permissions';
 import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
 import { saveCashSettings, savePharmacySettings, saveReportSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { grantSupportAccess, revokeSupportAccess } from '@/server/support';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
@@ -157,4 +158,19 @@ export async function saveReportsAction(slug: string, _prev: FormState, fd: Form
   if (!r.ok) return { error: 'Enter the time as HH:MM.' };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Saved. Reports go to the manager phone in the shop profile.' };
+}
+
+export async function grantSupportAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const r = await grantSupportAccess(getDb(), ctx, { hours: Number(fd.get('hours')), reason: String(fd.get('reason') ?? '') }, new Date());
+  if (!r.ok) return { error: 'Choose 1 to 72 hours and say what you need help with.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Support can see your shop until you end it or the time runs out.' };
+}
+
+export async function revokeSupportAction(slug: string, sessionId: string): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const r = await revokeSupportAccess(getDb(), ctx, sessionId, new Date());
+  revalidatePath(`/${slug}/app/settings`);
+  return r.ok ? { error: null, message: 'Support access ended.' } : { error: 'That access already ended.' };
 }

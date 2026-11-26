@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, check, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, foreignKey, index, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import type { RolePreset } from '@/lib/permissions';
 import { createdAt, id, timestamptz } from './columns';
 import { registers, tenants } from './tenancy';
@@ -53,3 +53,20 @@ export const sessions = pgTable('sessions', {
   expiresAt: timestamptz('expires_at').notNull(),
   createdAt: createdAt(),
 }, (t) => [check('sessions_kind', sql`${t.kind} in ('password', 'pin')`)]);
+
+/** Spec 4.29, 6.47: a time-limited window in which platform support may view the shop; granted by the owner, or opened as emergency access with a reason. */
+export const supportSessions = pgTable('support_sessions', {
+  id: id(),
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  grantedBy: uuid('granted_by'), // the owner; null for emergency access
+  adminId: uuid('admin_id'), // the platform admin who opened emergency access
+  reason: text('reason').notNull(),
+  emergency: boolean('emergency').notNull().default(false),
+  startsAt: timestamptz('starts_at').notNull(),
+  expiresAt: timestamptz('expires_at').notNull(),
+  revokedAt: timestamptz('revoked_at'),
+}, (t) => [
+  index('support_sessions_tenant').on(t.tenantId, t.expiresAt),
+  check('support_sessions_who', sql`(${t.emergency} and ${t.adminId} is not null) or (not ${t.emergency} and ${t.grantedBy} is not null)`),
+  foreignKey({ name: 'support_sessions_granted_by_fk', columns: [t.tenantId, t.grantedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
