@@ -12,6 +12,7 @@ import { fromMilli, multiplyQty, parseQuantity, toMilli, validSaleQuantity } fro
 import { unitCostOf, weightedAverageCost } from '@/lib/stock';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
+import type { Permission } from '@/lib/permissions';
 import { type Fail, fail, isUuid, itemLabel, normaliseSku } from './products';
 
 export type ReceiveLine = {
@@ -254,9 +255,9 @@ export async function deductStockForLine(
 
 /** An item to receive by barcode (its own unit) or SKU (the base unit). */
 export async function lookupStockItem(
-  db: Db, ctx: Ctx, code: string,
+  db: Db, ctx: Ctx, code: string, permission: Permission = 'receive_stock', // the returns screen looks items up too
 ): Promise<{ variantId: string; unitId: string; name: string; unitName: string; tracking: Tracking } | null> {
-  assertPermission(ctx, 'receive_stock');
+  assertPermission(ctx, permission);
   const barcode = typeof code === 'string' ? normaliseBarcode(code) : null;
   const sku = typeof code === 'string' ? normaliseSku(code) : null;
   if (!barcode && !sku) return null;

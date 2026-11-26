@@ -5,17 +5,17 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getOfflineEnabled, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
+import { getOfflineEnabled, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveOfflineAction, saveProfileAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, saveProfileAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules, offline, salesSettings] = await Promise.all([
+  const [p, branchList, selling, rules, offline, salesSettings, returnSettings] = await Promise.all([
     getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
-    getSalesSettings(getDb(), ctx),
+    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -76,6 +76,14 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
           <Check name="allowNegativeStock" label="Allow selling when recorded stock is zero (the manager is alerted)" defaultChecked={salesSettings.allowNegativeStock} />
           <Field label="TIN or VAT number on receipts" name="taxNumber" required={false} maxLength={30} defaultValue={salesSettings.taxNumber ?? ''} />
           <Field label="Receipt footer (return policy)" name="receiptFooter" required={false} maxLength={300} defaultValue={salesSettings.receiptFooter ?? ''} />
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Returns</h2>
+        <ActionForm action={saveReturnsAction.bind(null, slug)} submitLabel="Save return settings">
+          <Field label="Refunds above this need a manager (GHS, 0 = always)" name="refundLimit" inputMode="decimal" defaultValue={(returnSettings.refundLimitPesewas / 100).toFixed(2)} />
+          <Check name="allowNoReceiptReturns" label="Take returns without a receipt (store credit only, manager approves)" defaultChecked={returnSettings.allowNoReceiptReturns} />
+          <Field label="Returns without a receipt per customer per month" name="noReceiptMonthlyLimit" type="number" min={0} max={31} defaultValue={returnSettings.noReceiptMonthlyLimit} />
         </ActionForm>
       </section>
       <section className="flex max-w-md flex-col gap-4">

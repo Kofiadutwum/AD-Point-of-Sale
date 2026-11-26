@@ -98,3 +98,27 @@ export async function saveSalesSettings(db: Db, ctx: Ctx, input: SalesSettings):
     return { ok: true } as const;
   });
 }
+
+export type ReturnSettings = { refundLimitPesewas: number; allowNoReceiptReturns: boolean; noReceiptMonthlyLimit: number };
+
+/** Readable by anyone who takes returns: the returns screen shows the no-receipt form only when it is on. */
+export async function getReturnSettings(db: Db, ctx: Ctx): Promise<ReturnSettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({
+    refundLimitPesewas: tenants.refundLimitPesewas, allowNoReceiptReturns: tenants.allowNoReceiptReturns, noReceiptMonthlyLimit: tenants.noReceiptMonthlyLimit,
+  }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 6.12, 6.33: the refund a cashier may give without a manager (0 = always ask), and no-receipt returns. */
+export async function saveReturnSettings(db: Db, ctx: Ctx, input: ReturnSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const { refundLimitPesewas: limit, allowNoReceiptReturns: allow, noReceiptMonthlyLimit: monthly } = input;
+  if (!Number.isInteger(limit) || limit < 0 || limit > 100_000_000 || typeof allow !== 'boolean'
+    || !Number.isInteger(monthly) || monthly < 0 || monthly > 31) return { ok: false, error: 'invalid_input' };
+  const next = { refundLimitPesewas: limit, allowNoReceiptReturns: allow, noReceiptMonthlyLimit: monthly };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'return_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}

@@ -1,0 +1,2 @@
+ALTER TABLE "stock_movements" DROP CONSTRAINT "stock_movements_reference";--> statement-breakpoint
+ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_reference" CHECK ("stock_movements"."reference_type" in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return'));

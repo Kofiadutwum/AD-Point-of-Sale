@@ -27,6 +27,9 @@ export const tenants = pgTable('tenants', {
   taxNumber: text('tax_number'), // TIN or VAT number printed on receipts
   receiptFooter: text('receipt_footer'), // return policy text
   serviceChargeBp: integer('service_charge_bp').notNull().default(0), // table service charge, 0 = off (spec 4.24)
+  refundLimitPesewas: integer('refund_limit_pesewas').notNull().default(0), // refunds above this need a manager unless the user may refund freely (spec 6.12)
+  allowNoReceiptReturns: boolean('allow_no_receipt_returns').notNull().default(false),
+  noReceiptMonthlyLimit: integer('no_receipt_monthly_limit').notNull().default(2),
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),

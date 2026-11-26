@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
-import { priceLists, variants } from './catalogue';
+import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
@@ -170,4 +170,70 @@ export const payments = pgTable('payments', {
   check('payments_reference', sql`${t.method} in ('cash', 'store_credit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),
+]);
+
+export type ReturnCondition = 'saleable' | 'damaged' | 'expired';
+
+/** Goods taken back, from a receipt or without one, and how they were refunded (spec 6.12, 6.33). */
+export const returns = pgTable('returns', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  saleId: uuid('sale_id'),
+  customerId: uuid('customer_id'),
+  kind: text('kind').$type<'receipt' | 'no_receipt'>().notNull(),
+  reason: text('reason').notNull(),
+  refundMethod: text('refund_method').notNull(),
+  refundPesewas: integer('refund_pesewas').notNull(),
+  reference: text('reference'),
+  requestedBy: uuid('requested_by').notNull(),
+  approvedBy: uuid('approved_by'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('returns_tenant_id').on(t.tenantId, t.id),
+  foreignKey({ name: 'returns_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'returns_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'returns_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
+  foreignKey({ name: 'returns_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'returns_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+  check('returns_kind', sql`${t.kind} in ('receipt', 'no_receipt') and (${t.kind} = 'no_receipt' or ${t.saleId} is not null)`),
+  check('returns_refund', sql`${t.refundPesewas} >= 0`),
+]);
+
+export const returnLines = pgTable('return_lines', {
+  id: id(),
+  tenantId: tenantId(),
+  returnId: uuid('return_id').notNull(),
+  saleLineId: uuid('sale_line_id'),
+  variantId: uuid('variant_id').notNull(),
+  unitId: uuid('unit_id').notNull(),
+  quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+  baseQuantity: numeric('base_quantity', { precision: 14, scale: 3 }).notNull(),
+  condition: text('condition').$type<ReturnCondition>().notNull(),
+  refundPesewas: integer('refund_pesewas').notNull(),
+}, (t) => [
+  foreignKey({ name: 'return_lines_return_fk', columns: [t.tenantId, t.returnId], foreignColumns: [returns.tenantId, returns.id] }),
+  foreignKey({ name: 'return_lines_sale_line_fk', columns: [t.tenantId, t.saleLineId], foreignColumns: [saleLines.tenantId, saleLines.id] }),
+  foreignKey({ name: 'return_lines_unit_fk', columns: [t.tenantId, t.variantId, t.unitId], foreignColumns: [variantUnits.tenantId, variantUnits.variantId, variantUnits.id] }),
+  check('return_lines_quantity', sql`${t.quantity} > 0`),
+  check('return_lines_condition', sql`${t.condition} in ('saleable', 'damaged', 'expired')`),
+  check('return_lines_refund', sql`${t.refundPesewas} >= 0`),
+]);
+
+/** A manager's one-time approval of an action, bound to its context (spec 6.7). */
+export const approvals = pgTable('approvals', {
+  id: id(),
+  tenantId: tenantId(),
+  action: text('action').notNull(),
+  contextKey: text('context_key').notNull(),
+  tokenHash: text('token_hash').notNull(),
+  requestedBy: uuid('requested_by').notNull(),
+  approvedBy: uuid('approved_by').notNull(),
+  expiresAt: timestamptz('expires_at').notNull(),
+  usedAt: timestamptz('used_at'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('approvals_token').on(t.tokenHash),
+  foreignKey({ name: 'approvals_requested_by_fk', columns: [t.tenantId, t.requestedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'approvals_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
 ]);

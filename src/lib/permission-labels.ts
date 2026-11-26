@@ -32,4 +32,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   manage_channels: 'Set up channels and record app payouts',
   take_orders: 'Open table tickets and send orders',
   void_sent_items: 'Approve voiding items already sent to the kitchen',
+  process_return: 'Take returns and refunds',
+  refund_without_approval: 'Refund without a manager',
+  refund_other_method: 'Refund by a different method',
 };

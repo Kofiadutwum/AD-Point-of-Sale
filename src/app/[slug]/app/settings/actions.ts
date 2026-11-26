@@ -5,8 +5,9 @@ import { getDb } from '@/db/client';
 import { addBranch, addRegister } from '@/server/branches';
 import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
+import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
-import { saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
@@ -111,6 +112,19 @@ export async function saveSalesAction(slug: string, _prev: FormState, fd: FormDa
   const ctx = await pageCtx(slug, 'manage_shop_settings');
   const r = await saveSalesSettings(getDb(), ctx, {
     allowNegativeStock: fd.get('allowNegativeStock') === 'on', taxNumber: String(fd.get('taxNumber') ?? ''), receiptFooter: String(fd.get('receiptFooter') ?? ''),
+  });
+  if (!r.ok) return { error: 'Check the details.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
+}
+
+export async function saveReturnsAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+
+  const limit = parseCedis(String(fd.get('refundLimit') ?? '').trim() || '0');
+  if (limit === null) return { error: 'Enter the refund limit in GHS (0 = always ask a manager).' };
+  const r = await saveReturnSettings(getDb(), ctx, {
+    refundLimitPesewas: limit, allowNoReceiptReturns: fd.get('allowNoReceiptReturns') === 'on', noReceiptMonthlyLimit: Number(fd.get('noReceiptMonthlyLimit')),
   });
   if (!r.ok) return { error: 'Check the details.' };
   revalidatePath(`/${slug}/app/settings`);
