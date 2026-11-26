@@ -20,6 +20,8 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/counter-orders`, label: 'Counter orders', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/shift`, label: 'Shift and cash', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/expenses`, label: 'Expenses', allowed: ctx.permissions.includes('record_expenses') },
+    { href: `/${slug}/app/quotes`, label: 'Quotes', allowed: ctx.permissions.includes('make_sale') },
+    { href: `/${slug}/app/invoices`, label: 'Invoices', allowed: ctx.permissions.includes('issue_invoices') },
     { href: `/${slug}/app/production`, label: 'Production', allowed: ctx.permissions.includes('record_production') },
     { href: `/${slug}/app/returns`, label: 'Returns', allowed: ctx.permissions.includes('process_return') },
     { href: `/${slug}/app/products`, label: 'Products', allowed: ctx.permissions.includes('manage_products') },
