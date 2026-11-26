@@ -1,0 +1,9 @@
+{
+  "port": 17777,
+  "token": "change-me-to-a-long-random-string",
+  "allowedOrigins": ["https://adsmartshop.example"],
+  "printers": {
+    "kitchen": { "host": "192.168.1.50", "port": 9100 },
+    "bar": { "host": "192.168.1.51", "port": 9100 }
+  }
+}
