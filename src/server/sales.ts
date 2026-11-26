@@ -22,6 +22,7 @@ import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { parseReceiptNumber } from '@/lib/receipt';
 import { chooseTaxRule, effectiveRateBp } from '@/lib/tax';
 import { consumeApproval } from './approvals';
+import { openShiftId } from './shift-link';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { redeemStoreCredit } from './customers';
@@ -51,7 +52,7 @@ export type SaleInput = {
   };
 };
 export type Prescription = { patientName: string; prescriberName: string; facility: string; prescriptionDate: string };
-export type SaleError = 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
+export type SaleError = 'no_open_shift' | 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
   | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
@@ -192,7 +193,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   if (s.customerId && !customer) return refuse('unknown_customer');
 
   const [shop] = await tx.select({
-    serviceChargeBp: tenants.serviceChargeBp, cashRoundingStep: tenants.cashRoundingStep, otcOnly: tenants.otcOnly, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
+    serviceChargeBp: tenants.serviceChargeBp, cashRoundingStep: tenants.cashRoundingStep, otcOnly: tenants.otcOnly, requireShifts: tenants.requireShifts, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
   }).from(tenants).where(eq(tenants.id, ctx.tenantId));
   const today = todayIn(shop.timezone, now);
   const deviceAt = new Date(s.deviceCreatedAt);
@@ -202,6 +203,10 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const kitchenDay = outbox ? saleDay : businessDate(shop.timezone, shop.cutoff, now);
   const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
   const lenient = (code: SaleError, reason: string) => (outbox ? reasons.add(reason) : refuse(code));
+  // spec 6.14: the sale belongs to the till's open shift; a shop that requires shifts refuses a sale without one (an offline sale is kept for review)
+  // shortcut: an offline sale joins whatever shift is open when it syncs
+  const shiftId = await openShiftId(tx, reg.id);
+  if (shop.requireShifts && !shiftId) lenient('no_open_shift', 'no_open_shift');
   // collecting a phone order: its channel, customer, and lines come from the order taken on the phone (spec 6.57)
   const collecting = s.food?.kitchenOrderId ? await openPhoneOrder(tx, s.food, reg.branchId) : null;
   if (collecting) await checkCollectedLines(tx, s.lines, collecting.pendingLines!);
@@ -315,7 +320,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const [saved] = await tx.insert(sales).values({
     id: s.saleId, tenantId: ctx.tenantId, branchId: reg.branchId, registerId: reg.id, cashierId, customerId: customer?.id ?? null,
     receiptNumber: s.receiptNumber, status: 'pending', taxMode: shop.taxMode, subtotalPesewas: totals.subtotalPesewas,
-    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, roundingPesewas: rounding, salespersonId: opts.salespersonId ?? null, paidPesewas: paid,
+    discountPesewas: totals.discountPesewas, taxPesewas: totals.taxPesewas, totalPesewas: saleTotal, serviceChargePesewas: serviceCharge, roundingPesewas: rounding, salespersonId: opts.salespersonId ?? null, shiftId, paidPesewas: paid,
     changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
     businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
     serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,

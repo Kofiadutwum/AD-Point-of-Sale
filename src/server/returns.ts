@@ -19,6 +19,7 @@ import { assertPermission, type Ctx } from './context';
 import { creditStoreCredit } from './customers';
 import { type Fail, fail, isUuid } from './products';
 import { completeSaleTx, type SaleError, type SaleInput, saleFailure, throwSaleFailure } from './sales';
+import { openShiftId } from './shift-link';
 import { changeBalance } from './stock';
 
 export type RefundMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
@@ -182,6 +183,7 @@ async function recordReturn(tx: Tx, ctx: Ctx, loaded: Loaded, plan: Plan, f: { r
   const [ret] = await tx.insert(returns).values({
     tenantId: ctx.tenantId, branchId: loaded.sale.branchId, saleId: loaded.sale.id, customerId: loaded.sale.customerId, kind: 'receipt', reason: f.reason,
     refundMethod: f.refundMethod, refundPesewas: plan.total, reference: f.reference, requestedBy: ctx.userId, approvedBy: f.approvedBy, createdAt: now,
+    shiftId: ctx.registerId ? await openShiftId(tx, ctx.registerId) : null, // cash given back comes out of the till's open shift
   }).returning({ id: returns.id });
   await tx.insert(returnLines).values(plan.planned.map((x) => ({
     tenantId: ctx.tenantId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, unitId: x.line.unitId,
