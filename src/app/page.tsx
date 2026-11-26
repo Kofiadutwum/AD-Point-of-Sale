@@ -53,7 +53,7 @@ function appHost() {
 function TrialOrSignIn({ trialHref }: { trialHref: string | null }) {
   return trialHref
     ? <a href={trialHref} className={`inline-block rounded-full px-7 py-3 font-semibold ${ORANGE} ${focus}`}>Ask for a free trial on WhatsApp</a>
-    : <a href="#start" className={`inline-block rounded-full px-7 py-3 font-semibold ${ORANGE} ${focus}`}>Get started</a>;
+    : <a href="/signup" className={`inline-block rounded-full px-7 py-3 font-semibold ${ORANGE} ${focus}`}>Start a free trial</a>;
 }
 
 function Icon({ children }: { children: ReactNode }) {

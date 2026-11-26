@@ -42,6 +42,7 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/export`, label: 'Export data', allowed: ctx.permissions.includes('export_data') },
     { href: `/${slug}/app/marketing`, label: 'Promotional SMS', allowed: ctx.permissions.includes('marketing') },
     { href: `/${slug}/app/storefront`, label: 'Storefront', allowed: ctx.permissions.includes('manage_storefront') },
+    { href: `/${slug}/app/billing`, label: 'Billing', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/app/reports/pharmacy`, label: 'Pharmacy report', allowed: ctx.permissions.includes('view_reports') },
     { href: `/${slug}/till`, label: 'Till PIN screen', allowed: true },
     { href: `/${slug}/till/sell`, label: 'Selling screen', allowed: ctx.permissions.includes('make_sale') },
