@@ -16,7 +16,7 @@ export const ROLE_PRESETS: Record<RolePreset, readonly Permission[]> = {
 export const READ_ONLY_PERMISSIONS: readonly Permission[] = ['view_dashboard', 'view_reports', 'export_data'];
 
 /** A PIN unlocks only selling: a 4-6 digit PIN must never carry staff, settings, or device control. */
-export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_discount', 'approve_actions', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return', 'dispense_prescription', 'record_production', 'manage_cash', 'record_expenses', 'sell_on_credit', 'receive_debt_payment'];
+export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_discount', 'approve_actions', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return', 'dispense_prescription', 'record_production', 'manage_cash', 'record_expenses', 'sell_on_credit', 'receive_debt_payment', 'issue_invoices'];
 
 export type ShopType = 'retail' | 'pharmacy' | 'food';
 export const SHOP_TYPES: readonly ShopType[] = ['retail', 'pharmacy', 'food'];
