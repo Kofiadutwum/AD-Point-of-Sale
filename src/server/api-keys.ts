@@ -8,6 +8,7 @@ import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { tokenHash } from './crypto';
 import { type Fail, fail, isUuid } from './products';
+import { overLimit } from './rate-limit';
 
 // Spec 4.29: per-shop API keys with limited, read-only scopes. The key is shown once; only its hash is kept.
 
@@ -15,6 +16,7 @@ const MAX_KEYS = 10;
 const KEY = /^ads_([0-9a-f]{8})_([A-Za-z0-9_-]{32,64})$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_SALE_DAYS = 31;
+export const API_RATE_LIMIT = 600; // requests per key per 15 minutes
 
 export async function listApiKeys(db: Db, ctx: Ctx) {
   assertPermission(ctx, 'manage_integrations');
@@ -50,7 +52,7 @@ export async function revokeApiKey(db: Db, ctx: Ctx, id: string, now: Date): Pro
 }
 
 /** Finds the shop for a bearer key; a revoked key, a closed shop, or a wrong secret all look the same. */
-export async function authenticateKey(db: Db, header: string | null, now: Date): Promise<{ tenantId: string; scopes: ApiScope[] } | null> {
+export async function authenticateKey(db: Db, header: string | null, now: Date): Promise<{ tenantId: string; scopes: ApiScope[]; limited?: true } | null> {
   const key = header?.match(/^Bearer\s+(\S+)$/i)?.[1] ?? '';
   const m = KEY.exec(key);
   if (!m) return null;
@@ -61,6 +63,7 @@ export async function authenticateKey(db: Db, header: string | null, now: Date):
     const a = Buffer.from(k.hash);
     const b = Buffer.from(tokenHash(key));
     if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+    if (await overLimit(tx, `api:${m[1]}`, now, API_RATE_LIMIT, 15 * 60_000)) return { tenantId: k.tenantId, scopes: k.scopes, limited: true as const };
     if (!k.lastUsedAt || now.getTime() - k.lastUsedAt.getTime() > 5 * 60_000) await tx.update(apiKeys).set({ lastUsedAt: now }).where(eq(apiKeys.id, k.id));
     return { tenantId: k.tenantId, scopes: k.scopes };
   });

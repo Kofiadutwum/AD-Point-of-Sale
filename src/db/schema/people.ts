@@ -29,7 +29,7 @@ export const users = pgTable('users', {
   unique('users_tenant_id').on(t.tenantId, t.id), // target of composite foreign keys
   unique('users_phone').on(t.tenantId, t.phone),
   check('users_contact', sql`${t.email} is not null or ${t.phone} is not null`),
-  check('users_role', sql`${t.rolePreset} in ('owner', 'manager', 'cashier')`),
+  check('users_role', sql`${t.rolePreset} in ('owner', 'manager', 'cashier', 'stock_clerk', 'accountant')`),
   check('users_status', sql`${t.status} in ('pending_activation', 'invited', 'active', 'inactive')`),
 ]);
 

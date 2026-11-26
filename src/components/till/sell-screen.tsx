@@ -18,7 +18,7 @@ const ERRORS: Record<string, string> = {
   price_changed: 'A price changed. Remove the item and scan it again.',
   otc_only: 'This shop sells over-the-counter medicine only.', prescription_required: 'Enter a prescription dated within the last year.',
   prescription_not_allowed: 'A pharmacist must approve prescription-only medicine.', item_unavailable: 'An item is no longer sold.',
-  not_enough_stock: 'Not enough stock for this sale.', only_expired_stock: 'Only expired stock is left for an item.',
+  not_enough_stock: 'Not enough stock for this sale.', reserved_stock: 'That stock is held for a layaway or online order.', only_expired_stock: 'Only expired stock is left for an item.',
   serials_required: 'Enter one serial number per unit for serial items.', unknown_serial: 'A serial number is not in stock here.',
   reference_required: 'Enter the payment reference (MoMo ID, slip or transfer number).', reduce_non_cash_amount: 'Only cash can be more than the total.',
   payment_incomplete: 'The payments do not cover the total.', insufficient_store_credit: 'Not enough store credit.',
@@ -360,7 +360,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
           <button type="button" disabled={busy || lines.length === 0 || !totals || lines.some((l) => l.prescriptionOnly)} className="rounded border border-green-700 px-4 py-3 text-lg text-green-800 disabled:opacity-50"
             onClick={async () => {
               setBusy(true); setMessage(null);
-              const r = await startPaystackAction(slug, { customerId: customer?.id ?? null, lines: lines.map((l) => ({ variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, discountPesewas: l.discountPesewas })) });
+              const r = await startPaystackAction(slug, { customerId: customer?.id ?? null, couponCode: coupon?.code ?? null, lines: lines.map((l) => ({ variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, discountPesewas: l.discountPesewas })) });
               setBusy(false);
               if (r.ok) setCharge({ reference: r.reference, url: r.url, qr: r.qr, amountPesewas: r.amountPesewas, note: null }); else setMessage(r.error);
             }}>Charge with Paystack (card or MoMo)</button>

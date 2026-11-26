@@ -5,7 +5,7 @@ import type { Db, Tx } from '@/db/client';
 import { branches, sessions, users, userTokens } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { normaliseEmail, normaliseGhanaPhone } from '@/lib/contact';
-import { isPermission, type Permission, ROLE_PRESETS } from '@/lib/permissions';
+import { isPermission, type Permission, ROLE_PRESETS, STAFF_PRESETS, type StaffPreset } from '@/lib/permissions';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { sendEmail } from './email';
@@ -72,13 +72,13 @@ export async function listStaff(db: Db, ctx: Ctx): Promise<StaffMember[]> {
 
 export async function addStaff(
   db: Db, ctx: Ctx,
-  input: { name: string; email?: string; phone?: string; rolePreset: 'manager' | 'cashier'; branchIds: string[] },
+  input: { name: string; email?: string; phone?: string; rolePreset: StaffPreset; branchIds: string[] },
   now: Date,
 ): Promise<{ ok: true; userId: string; inviteUrl: string }
   | { ok: false; error: 'limit_reached' | 'contact_required' | 'duplicate_contact' | 'unknown_branch' | 'invalid_input' | 'cannot_grant' }> {
   assertPermission(ctx, 'manage_staff');
   const name = input.name.trim();
-  if (!name || !['manager', 'cashier'].includes(input.rolePreset)) return { ok: false, error: 'invalid_input' };
+  if (!name || !STAFF_PRESETS.includes(input.rolePreset)) return { ok: false, error: 'invalid_input' };
   if (!within(ROLE_PRESETS[input.rolePreset], ctx)) return { ok: false, error: 'cannot_grant' };
   const email = contact(input.email, normaliseEmail);
   const phone = contact(input.phone, normaliseGhanaPhone);

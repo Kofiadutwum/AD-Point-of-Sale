@@ -11,7 +11,7 @@ const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
 export type ChargeStatus = 'pending' | 'success' | 'failed' | 'mismatch';
 /** The sale a till charge completes once Paystack confirms it (prices were checked when the charge started). */
 export type ChargeSale = {
-  registerId: string; userId: string; customerId: string | null;
+  registerId: string; userId: string; customerId: string | null; couponId?: string; // a coupon checked when the charge started, used up when it completes
   lines: Array<{ variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number }>;
 };
 

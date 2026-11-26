@@ -20,7 +20,7 @@ export default async function StaffPage({ params }: { params: Promise<{ slug: st
         <ul className="flex flex-col gap-4">
           {staff.map((s) => (
             <li key={s.id} className="rounded border p-3">
-              <p className="font-medium">{s.name} <span className="text-sm text-gray-600">· {s.rolePreset} · {s.status}</span></p>
+              <p className="font-medium">{s.name} <span className="text-sm text-gray-600">· {s.rolePreset.replace("_", " ")} · {s.status}</span></p>
               <p className="text-sm text-gray-700">{[s.email, s.phone].filter(Boolean).join(' · ')} · {s.branchIds.map((id) => branchName.get(id)).join(', ')}</p>
               {s.rolePreset !== 'owner' && s.id !== ctx.userId && s.permissions.every((p) => (ctx.permissions as string[]).includes(p)) && (
                 <details className="mt-2 text-sm">
@@ -61,7 +61,7 @@ export default async function StaffPage({ params }: { params: Promise<{ slug: st
           <Field label="Email" name="email" type="email" required={false} />
           <label className="flex flex-col gap-1 text-sm">Role
             <select name="rolePreset" className="rounded border border-gray-400 px-3 py-2">
-              <option value="cashier">Cashier</option><option value="manager">Manager</option>
+              <option value="cashier">Cashier</option><option value="manager">Manager</option><option value="stock_clerk">Stock clerk</option><option value="accountant">Accountant</option>
             </select>
           </label>
           <fieldset className="flex flex-col gap-1 text-sm">

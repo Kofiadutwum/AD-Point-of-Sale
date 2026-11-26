@@ -3,6 +3,7 @@ import { getDb } from '@/db/client';
 import { runBillingJob } from '@/server/billing';
 import { queueDueReports, runNotifications } from '@/server/notifications';
 import { expireOnlineOrders } from '@/server/online-orders';
+import { expireAllPoints } from '@/server/rewards';
 import { runWebhookDeliveries } from '@/server/webhooks';
 import { paystack } from '@/server/paystack';
 import { sendSms } from '@/server/sms';
@@ -25,5 +26,6 @@ export async function GET(request: Request) {
   const expiredOrders = await expireOnlineOrders(db, now); // spec 6.49: before sending, so the lapse SMS goes out this run
   const result = await runNotifications(db, now, sendSms);
   const webhooks = await runWebhookDeliveries(db, now);
-  return Response.json({ queued, billing, expiredOrders, webhooks, ...result });
+  const expiredPoints = now.getUTCHours() === 2 ? await expireAllPoints(db, now) : 0; // once a day, in the 02:00 UTC runs (repeats are harmless)
+  return Response.json({ queued, billing, expiredOrders, webhooks, expiredPoints, ...result });
 }

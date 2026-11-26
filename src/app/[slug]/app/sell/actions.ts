@@ -50,11 +50,12 @@ export async function checkCouponAction(slug: string, input: { code: string; cus
 const CHARGE_ERRORS: Record<string, string> = {
   not_connected: 'Connect Paystack under Payments and integrations first.', no_register: 'Paystack charges are taken on a registered till.',
   unknown_item: 'Some items cannot be charged by Paystack (combos and sell-by-amount items). Take another payment.', discount_not_allowed: 'You may not give discounts.',
+  invalid_coupon: 'That coupon cannot be used.',
   provider_unavailable: 'Paystack is not answering. Try again or take another payment.', invalid_input: 'Add items first.',
 };
 
 /** Spec 4.3: opens a Paystack charge on the shop's own account; the customer pays on their phone by scanning the code. */
-export async function startPaystackAction(slug: string, input: { customerId: string | null; lines: Array<{ variantId: string; unitId: string; quantity: string; discountPesewas: number }> }) {
+export async function startPaystackAction(slug: string, input: { customerId: string | null; couponCode?: string | null; lines: Array<{ variantId: string; unitId: string; quantity: string; discountPesewas: number }> }) {
   const ctx = await pageCtx(slug, 'make_sale');
   const r = await startTillCharge(getDb(), ctx, input, new Date());
   if (!r.ok) return { ok: false as const, error: CHARGE_ERRORS[r.error] ?? 'The charge could not start.' };

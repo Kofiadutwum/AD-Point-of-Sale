@@ -9,6 +9,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ reso
   if (!(resource in RESOURCES)) return json(404, { error: 'not_found' });
   const auth = await authenticateKey(getDb(), request.headers.get('authorization'), new Date());
   if (!auth) return json(401, { error: 'invalid_key' });
+  if (auth.limited) return json(429, { error: 'rate_limited', retryAfterSeconds: 900 });
   const scope = RESOURCES[resource as Resource];
   if (!auth.scopes.includes(scope)) return json(403, { error: 'missing_scope', scope });
   const url = new URL(request.url);
