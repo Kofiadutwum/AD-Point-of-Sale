@@ -96,7 +96,7 @@ const canSeeAccounts = (ctx: Ctx) => {
 };
 
 export type CustomerAccount = {
-  customerId: string; name: string; phone: string; creditLimitPesewas: number; balancePesewas: number; reminderConsent: boolean; address: string | null; tin: string | null;
+  customerId: string; name: string; phone: string; creditLimitPesewas: number; balancePesewas: number; reminderConsent: boolean; marketingConsent: boolean; address: string | null; tin: string | null;
   ledger: Array<{ id: string; at: Date; type: LedgerType; amountPesewas: number; balanceAfterPesewas: number; method: string | null; reference: string | null; reason: string | null; by: string }>;
 };
 
@@ -112,7 +112,7 @@ export async function customerAccount(db: Db, ctx: Ctx, customerId: string): Pro
       method: customerLedger.method, reference: customerLedger.reference, reason: customerLedger.reason, by: users.name,
     }).from(customerLedger).innerJoin(users, eq(users.id, customerLedger.userId)).where(eq(customerLedger.customerId, customerId))
       .orderBy(desc(customerLedger.createdAt), desc(customerLedger.id)).limit(100);
-    return { customerId: c.id, name: c.name, phone: c.phone, creditLimitPesewas: c.creditLimitPesewas, balancePesewas: c.balancePesewas, reminderConsent: c.reminderConsent, address: c.address, tin: c.tin, ledger };
+    return { customerId: c.id, name: c.name, phone: c.phone, creditLimitPesewas: c.creditLimitPesewas, balancePesewas: c.balancePesewas, reminderConsent: c.reminderConsent, marketingConsent: c.marketingConsent, address: c.address, tin: c.tin, ledger };
   });
 }
 

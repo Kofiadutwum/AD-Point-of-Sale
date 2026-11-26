@@ -5,7 +5,7 @@ import { getDb } from '@/db/client';
 import { formatCedis } from '@/lib/money';
 import { customerAccount } from '@/server/customer-accounts';
 import { pageCtx } from '../../page-ctx';
-import { adjustAction, businessAction, paymentAction, termsAction } from './actions';
+import { adjustAction, businessAction, marketingAction, paymentAction, termsAction } from './actions';
 
 const select = 'rounded border border-gray-400 px-3 py-2';
 const TYPES = { sale: 'Bought on credit', payment: 'Paid', return: 'Returned', adjustment: 'Adjusted' } as const;
@@ -51,6 +51,14 @@ export default async function CustomerAccountPage({ params }: { params: Promise<
             </select>
             <Field label="Amount (GHS)" name="amount" inputMode="decimal" />
             <Field label="Reason" name="reason" maxLength={200} />
+          </ActionForm>
+        </section>
+      )}
+      {can('marketing') && (
+        <section className="flex max-w-md flex-col gap-2">
+          <h2 className="text-lg font-semibold">Promotional SMS</h2>
+          <ActionForm action={marketingAction.bind(null, slug, a.customerId)} submitLabel="Save">
+            <Check name="consent" label="The customer agreed to get promotional SMS" defaultChecked={a.marketingConsent} />
           </ActionForm>
         </section>
       )}

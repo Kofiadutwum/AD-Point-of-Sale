@@ -50,8 +50,8 @@ export async function previewCampaign(db: Db, ctx: Ctx, input: Input, now: Date)
   assertPermission(ctx, 'marketing');
   if (!valid(input)) return fail('invalid_input');
   return withTenant(db, ctx.tenantId, async (tx) => {
-    const { list: _list, ...p } = await preview(tx, ctx, input, now);
-    return { ok: true as const, preview: p };
+    const p = await preview(tx, ctx, input, now);
+    return { ok: true as const, preview: { recipients: p.recipients, partsEach: p.partsEach, totalParts: p.totalParts, remainingParts: p.remainingParts, text: p.text, sendAfter: p.sendAfter } };
   });
 }
 

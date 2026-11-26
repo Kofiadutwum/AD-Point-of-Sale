@@ -7,7 +7,7 @@ import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
-import { saveCashSettings, savePharmacySettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveCashSettings, savePharmacySettings, saveReportSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
@@ -149,4 +149,12 @@ export async function saveCashAction(slug: string, _prev: FormState, fd: FormDat
   if (!r.ok) return { error: 'Check the details.' };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Saved.' };
+}
+
+export async function saveReportsAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const r = await saveReportSettings(getDb(), ctx, { smsReports: fd.get('smsReports') === 'on', reportTime: String(fd.get('reportTime') ?? ''), weeklyReportDay: Number(fd.get('weeklyReportDay')) });
+  if (!r.ok) return { error: 'Enter the time as HH:MM.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved. Reports go to the manager phone in the shop profile.' };
 }
