@@ -21,6 +21,7 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/production`, label: 'Production', allowed: ctx.permissions.includes('record_production') },
     { href: `/${slug}/app/returns`, label: 'Returns', allowed: ctx.permissions.includes('process_return') },
     { href: `/${slug}/app/products`, label: 'Products', allowed: ctx.permissions.includes('manage_products') },
+    { href: `/${slug}/app/import`, label: 'Import from CSV', allowed: ctx.permissions.includes('import_data') },
     { href: `/${slug}/app/price-lists`, label: 'Price lists', allowed: ctx.permissions.includes('manage_products') },
     { href: `/${slug}/app/settings`, label: 'Settings', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/app/staff`, label: 'Staff', allowed: ctx.permissions.includes('manage_staff') },
