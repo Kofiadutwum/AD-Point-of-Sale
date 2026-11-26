@@ -6,6 +6,7 @@ import { formatCedis, parseCedis } from '@/lib/money';
 import { issueOwnerActivationLink } from '@/server/onboarding';
 import { type ManualPayment, recordManualPayment, setShopSuspended } from '@/server/subscriptions';
 import { resetOwnerMfa } from '@/server/platform-admin';
+import { setTakenDown } from '@/server/storefront';
 import { openEmergencyAccess } from '@/server/support';
 import { adminCtx, adminToken } from '../../../admin-ctx';
 
@@ -55,4 +56,12 @@ export async function emergencyAction(tenantId: string, _prev: FormState, fd: Fo
   if (!r.ok) return { error: r.error === 'reason_required' ? 'Write why you need access (at least 20 characters).' : 'Shop not found.' };
   revalidatePath(`/admin/shops/${tenantId}`);
   return { error: null, message: 'Emergency access open for 2 hours. The owner was emailed.' };
+}
+
+export async function takedownAction(tenantId: string, down: boolean, _prev: FormState, fd: FormData): Promise<FormState> {
+  await adminCtx();
+  const r = await setTakenDown(getDb(), await adminToken(), tenantId, down, String(fd.get('reason') ?? ''), new Date());
+  if (!r.ok) return { error: r.error === 'reason_required' ? 'Give the reason.' : 'Shop not found.' };
+  revalidatePath(`/admin/shops/${tenantId}`);
+  return { error: null, message: down ? 'Storefront taken down; the owner was emailed.' : 'Storefront restored.' };
 }

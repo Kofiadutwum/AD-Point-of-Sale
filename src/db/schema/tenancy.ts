@@ -1,10 +1,16 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, date, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, integer, jsonb, pgTable, primaryKey, text, unique, uuid } from 'drizzle-orm/pg-core';
 import type { ScaleLayout } from '@/lib/barcode';
 import type { ShopType } from '@/lib/permissions';
 import type { SubscriptionStatus } from '@/lib/subscription';
 import { createdAt, id, timestamptz } from './columns';
 import { plans, platformAdmins } from './platform';
+
+/** The storefront's shop section (spec 4.12). */
+export type StorefrontSettings = {
+  about: string; whatsapp: string; hours: string; themeColor: string; facebook: string; instagram: string;
+  showPrices: boolean; showStock: boolean; announcement: string; announcementUntil: string;
+};
 
 export const tenants = pgTable('tenants', {
   id: id(),
@@ -40,6 +46,9 @@ export const tenants = pgTable('tenants', {
   smsReports: boolean('sms_reports').notNull().default(false), // daily sales and weekly stock SMS to the manager phone (spec 4.8)
   reportTime: text('report_time').notNull().default('21:00'), // shop time the daily report goes out
   weeklyReportDay: integer('weekly_report_day').notNull().default(1), // 0 = Sunday ... 6 = Saturday
+  storefrontPublished: boolean('storefront_published').notNull().default(false), // spec 4.12: hidden until the owner publishes
+  storefrontTakenDown: boolean('storefront_taken_down').notNull().default(false), // set by the platform for terms breaches
+  storefront: jsonb('storefront').$type<StorefrontSettings>().notNull().default(sql`'{"about":"","whatsapp":"","hours":"","themeColor":"#1e40af","facebook":"","instagram":"","showPrices":true,"showStock":true,"announcement":"","announcementUntil":""}'::jsonb`),
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),
@@ -111,3 +120,11 @@ export const registers = pgTable('registers', {
   unique('registers_tenant_id').on(t.tenantId, t.id), // target of composite foreign keys
   check('registers_status', sql`${t.status} in ('active', 'retired')`),
 ]);
+
+/** Spec 4.12: storefront visits and clicks per day, counts only (no personal data). Keys: view, product:<id>, whatsapp[:<id>], call[:<id>]. */
+export const storefrontStats = pgTable('storefront_stats', {
+  tenantId: uuid('tenant_id').notNull().references(() => tenants.id),
+  day: date('day', { mode: 'string' }).notNull(),
+  key: text('key').notNull(),
+  count: integer('count').notNull(),
+}, (t) => [primaryKey({ name: 'storefront_stats_pk', columns: [t.tenantId, t.day, t.key] })]);

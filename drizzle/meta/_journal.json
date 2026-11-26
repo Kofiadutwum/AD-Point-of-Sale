@@ -309,6 +309,20 @@
       "when": 1795698623284,
       "tag": "0043_support_sessions_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795699309487,
+      "tag": "0044_storefront",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1795699315211,
+      "tag": "0045_storefront_rls",
+      "breakpoints": true
     }
   ]
 }

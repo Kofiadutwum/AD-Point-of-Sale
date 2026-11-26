@@ -4,7 +4,7 @@ import { getDb } from '@/db/client';
 import { listShops } from '@/server/platform-admin';
 import { currentSupportSession } from '@/server/support';
 import { adminCtx, adminToken } from '../../../admin-ctx';
-import { emergencyAction, issueLinkAction, recordPaymentAction, resetMfaAction, suspendAction } from './actions';
+import { emergencyAction, issueLinkAction, takedownAction, recordPaymentAction, resetMfaAction, suspendAction } from './actions';
 
 export default async function AdminShopPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -59,6 +59,14 @@ export default async function AdminShopPage({ params }: { params: Promise<{ id: 
         <h2 className="text-lg font-semibold">Owner access</h2>
         <ActionForm action={issueLinkAction.bind(null, shop.tenantId)} submitLabel="Issue new activation link"><span /></ActionForm>
         <ActionForm action={resetMfaAction.bind(null, shop.tenantId)} submitLabel="Reset owner two-step sign-in"><span /></ActionForm>
+      </section>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Storefront</h2>
+        <p className="text-sm"><a className="text-blue-800 underline" href={`/${shop.slug}`}>/{shop.slug}</a></p>
+        <ActionForm action={takedownAction.bind(null, shop.tenantId, true)} submitLabel="Take storefront down">
+          <Field label="Reason (sent to the owner)" name="reason" minLength={5} maxLength={300} />
+        </ActionForm>
+        <ActionForm action={takedownAction.bind(null, shop.tenantId, false)} submitLabel="Restore storefront"><span /></ActionForm>
       </section>
       <section className="flex flex-col gap-3">
         <h2 className="text-lg font-semibold">{suspended ? 'Unsuspend shop' : 'Suspend shop'}</h2>

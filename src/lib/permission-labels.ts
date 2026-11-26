@@ -44,4 +44,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   receive_debt_payment: 'Take payments towards what customers owe',
   issue_invoices: 'Issue invoices to business customers',
   marketing: 'Send promotional SMS to customers',
+  manage_storefront: 'Edit and publish the storefront',
 };
