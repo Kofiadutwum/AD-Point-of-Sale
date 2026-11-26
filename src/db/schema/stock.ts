@@ -7,7 +7,8 @@ import { branches, tenants } from './tenancy';
 
 // Stock is always held in base units (spec 6.0). Balances may go below zero: a sale is allowed even when recorded stock runs out (4.1).
 
-export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste' | 'return_restock' | 'produced';
+export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste' | 'return_restock' | 'produced'
+  | 'transfer_out' | 'transfer_in' | 'supplier_return' | 'count_adjustment' | 'adjustment';
 export type SerialStatus = 'in_stock' | 'sold';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -65,6 +66,8 @@ export const stockReceipts = pgTable('stock_receipts', {
   branchId: uuid('branch_id').notNull(),
   kind: text('kind').$type<'received' | 'opening_stock'>().notNull(),
   supplierName: text('supplier_name'),
+  supplierId: uuid('supplier_id'), // spec 6.23: receiving from a known supplier
+  purchaseOrderId: uuid('purchase_order_id'),
   note: text('note'),
   receivedBy: uuid('received_by').notNull(),
   createdAt: createdAt(),
@@ -86,7 +89,7 @@ export const stockMovements = pgTable('stock_movements', {
   batchId: uuid('batch_id'),
   serialId: uuid('serial_id'),
   unitCost: numeric('unit_cost', { precision: 14, scale: 4 }), // pesewas per base unit, receipts only
-  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage' | 'return' | 'production'>().notNull(),
+  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage' | 'return' | 'production' | 'transfer' | 'supplier_return' | 'stock_count' | 'adjustment'>().notNull(),
   referenceId: uuid('reference_id').notNull(),
   saleLineId: uuid('sale_line_id'),
   userId: uuid('user_id'),
@@ -97,8 +100,8 @@ export const stockMovements = pgTable('stock_movements', {
   foreignKey({ name: 'stock_movements_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
   foreignKey({ name: 'stock_movements_batch_fk', columns: [t.tenantId, t.batchId], foreignColumns: [stockBatches.tenantId, stockBatches.id] }),
   foreignKey({ name: 'stock_movements_serial_fk', columns: [t.tenantId, t.serialId], foreignColumns: [serials.tenantId, serials.id] }),
-  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock', 'produced')`),
-  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return', 'production')`),
+  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock', 'produced', 'transfer_out', 'transfer_in', 'supplier_return', 'count_adjustment', 'adjustment')`),
+  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return', 'production', 'transfer', 'supplier_return', 'stock_count', 'adjustment')`),
   check('stock_movements_quantity', sql`${t.quantity} <> 0`),
 ]);
 

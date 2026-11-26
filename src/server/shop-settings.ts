@@ -191,3 +191,25 @@ export async function saveReportSettings(db: Db, ctx: Ctx, input: ReportSettings
     return { ok: true } as const;
   });
 }
+
+export type StockSettings = { countApprovalLimitPesewas: number; adjustmentApprovalLimitPesewas: number; reorderCoverDays: number };
+
+export async function getStockSettings(db: Db, ctx: Ctx): Promise<StockSettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({
+    countApprovalLimitPesewas: tenants.countApprovalLimitPesewas, adjustmentApprovalLimitPesewas: tenants.adjustmentApprovalLimitPesewas, reorderCoverDays: tenants.reorderCoverDays,
+  }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 6.24, 6.26: count and adjustment values a person may leave without a manager (0 = always ask), and how many days suggested orders cover. */
+export async function saveStockSettings(db: Db, ctx: Ctx, input: StockSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const ok = (n: number) => Number.isInteger(n) && n >= 0 && n <= 100_000_000;
+  if (!ok(input.countApprovalLimitPesewas) || !ok(input.adjustmentApprovalLimitPesewas) || !Number.isInteger(input.reorderCoverDays) || input.reorderCoverDays < 0 || input.reorderCoverDays > 180) return { ok: false, error: 'invalid_input' };
+  const next = { countApprovalLimitPesewas: input.countApprovalLimitPesewas, adjustmentApprovalLimitPesewas: input.adjustmentApprovalLimitPesewas, reorderCoverDays: input.reorderCoverDays };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'stock_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}

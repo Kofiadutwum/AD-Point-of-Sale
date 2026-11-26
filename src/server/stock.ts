@@ -28,9 +28,11 @@ const lineSchema = z.object({
 const receiptSchema = z.object({
   branchId: z.string(), kind: z.enum(['received', 'opening_stock']),
   supplierName: z.string().trim().max(80).optional(), note: z.string().trim().max(200).optional(),
+  supplierId: z.string().optional(), purchaseOrderId: z.string().optional(),
   lines: z.array(lineSchema).min(1).max(100),
 });
 const isoDate = z.iso.date();
+export type ReceiptInput = z.infer<typeof receiptSchema>;
 
 /** On-hand in base units at one branch; '0.000' before any stock. May be negative. */
 export async function stockOnHand(tx: Tx, branchId: string, variantId: string): Promise<string> {
@@ -63,7 +65,7 @@ type PlannedLine = {
 
 /** Spec 6.23 (and opening stock, 6.3). Every line is checked before anything is written, so a refusal saves nothing. */
 export async function receiveStock(
-  db: Db, ctx: Ctx, input: { branchId: string; kind: 'received' | 'opening_stock'; supplierName?: string; note?: string; lines: ReceiveLine[] }, now: Date,
+  db: Db, ctx: Ctx, input: { branchId: string; kind: 'received' | 'opening_stock'; supplierName?: string; supplierId?: string; purchaseOrderId?: string; note?: string; lines: ReceiveLine[] }, now: Date,
 ): Promise<{ ok: true; receiptId: string } | Fail<ReceiveError>> {
   assertPermission(ctx, 'receive_stock');
   const parsed = receiptSchema.safeParse(input);
@@ -71,8 +73,13 @@ export async function receiveStock(
   const r = parsed.data;
   if (!isUuid(r.branchId)) return fail('unknown_branch');
   const today = todayIn(ctx.timezone, now);
+  const res = await withTenant(db, ctx.tenantId, (tx) => receiveStockTx(tx, ctx, r, today));
+  return res.ok ? { ok: true, receiptId: res.receiptId } : res;
+}
 
-  return withTenant(db, ctx.tenantId, async (tx) => {
+/** The receipt inside a caller's transaction (purchase orders add to it before it commits). The caller checks receive_stock. */
+export async function receiveStockTx(tx: Tx, ctx: Ctx, r: ReceiptInput, today: string): Promise<{ ok: true; receiptId: string; planned: Array<{ variantId: string; baseQty: string; unitCost: string }> } | Fail<ReceiveError>> {
+  {
     const [branch] = await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, r.branchId));
     if (!branch) return fail('unknown_branch');
 
@@ -124,7 +131,7 @@ export async function receiveStock(
     }
 
     const [receipt] = await tx.insert(stockReceipts).values({
-      tenantId: ctx.tenantId, branchId: r.branchId, kind: r.kind, supplierName: r.supplierName || null, note: r.note || null, receivedBy: ctx.userId,
+      tenantId: ctx.tenantId, branchId: r.branchId, kind: r.kind, supplierName: r.supplierName || null, supplierId: r.supplierId ?? null, purchaseOrderId: r.purchaseOrderId ?? null, note: r.note || null, receivedBy: ctx.userId,
     }).returning({ id: stockReceipts.id });
     const movement = { tenantId: ctx.tenantId, branchId: r.branchId, type: r.kind, referenceType: 'stock_receipt' as const, referenceId: receipt.id, userId: ctx.userId };
 
@@ -156,8 +163,8 @@ export async function receiveStock(
       tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'stock_received', recordType: 'stock_receipt', recordId: receipt.id,
       changes: { kind: r.kind, lines: planned.length },
     });
-    return { ok: true, receiptId: receipt.id } as const;
-  });
+    return { ok: true, receiptId: receipt.id, planned: planned.map((p) => ({ variantId: p.variantId, baseQty: p.baseQty, unitCost: p.unitCost })) } as const;
+  }
 }
 
 export type DeductProblems = { negative: boolean; onlyExpired: boolean; serialsMissing: boolean };

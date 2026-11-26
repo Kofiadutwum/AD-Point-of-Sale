@@ -45,4 +45,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   issue_invoices: 'Issue invoices to business customers',
   marketing: 'Send promotional SMS to customers',
   manage_storefront: 'Edit and publish the storefront',
+  manage_purchasing: 'Manage suppliers, purchase orders, bills, and supplier returns',
+  transfer_stock: 'Send stock to another branch',
+  stock_count: 'Count stock',
+  adjust_stock: 'Adjust stock (damage, loss, found)',
 };
