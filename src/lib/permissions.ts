@@ -1,7 +1,7 @@
 export const PERMISSIONS = [
   'manage_shop_settings', 'manage_staff', 'manage_devices', 'manage_products', 'receive_stock',
   'make_sale', 'give_discount', 'approve_actions', 'view_dashboard', 'view_reports', 'export_data',
-  'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_channels', 'take_orders', 'void_sent_items', 'process_return', 'refund_without_approval', 'refund_other_method', 'dispense_prescription', 'record_production',
+  'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_channels', 'take_orders', 'void_sent_items', 'process_return', 'refund_without_approval', 'refund_other_method', 'dispense_prescription', 'record_production', 'import_data',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 export type RolePreset = 'owner' | 'manager' | 'cashier';

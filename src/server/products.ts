@@ -200,7 +200,15 @@ const KINDS: readonly VariantKind[] = ['standard', 'bundle', 'recipe', 'combo'];
 /** Spec 6.3. Opening stock is a stock receipt (Plan 3); photos are added with uploadProductImage. */
 export async function createProduct(
   db: Db, ctx: Ctx, input: NewProductInput,
-): Promise<{ ok: true; productId: string; variants: Array<{ variantId: string; baseUnitId: string }> } | Fail<ProductError>> {
+): Promise<NewProductResult> {
+  assertPermission(ctx, 'manage_products');
+  return withTenant(db, ctx.tenantId, (tx) => createProductTx(tx, ctx, input));
+}
+
+type NewProductResult = { ok: true; productId: string; variants: Array<{ variantId: string; baseUnitId: string }> } | Fail<ProductError>;
+
+/** createProduct inside the caller's transaction (CSV import adds many products in one); every refusal comes before the first write. */
+export async function createProductTx(tx: Tx, ctx: Ctx, input: NewProductInput): Promise<NewProductResult> {
   assertPermission(ctx, 'manage_products');
   const f = fieldsSchema.safeParse(input);
   const baseUnit = typeof input.baseUnit === 'string' ? input.baseUnit.trim() : '';
@@ -211,7 +219,7 @@ export async function createProduct(
   const shape = { kind: input.kind, allowsFractions: input.allowsFractions, baseUnit };
   if (!clean.every((v) => trackingAllowed(f.data.tracking, shape.kind, shape.allowsFractions, v.scaleItemCode !== null))) return fail('invalid_input');
 
-  return withTenant(db, ctx.tenantId, async (tx) => {
+  {
     await lockTenant(tx, ctx.tenantId);
     if ((await checkPlanLimit(tx, ctx.tenantId, 'products')) === 'limit_reached') return fail('limit_reached');
     const ref = await refProblem(tx, f.data);
@@ -233,7 +241,7 @@ export async function createProduct(
     for (const v of clean) made.push(await insertVariant(tx, ctx.tenantId, product.id, shape, v));
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'product_created', recordType: 'product', recordId: product.id });
     return { ok: true, productId: product.id, variants: made } as const;
-  });
+  }
 }
 
 export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: ProductFields): Promise<{ ok: true } | Fail<ProductError | 'not_found' | 'in_use'>> {

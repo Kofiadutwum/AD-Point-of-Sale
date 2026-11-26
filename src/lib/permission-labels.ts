@@ -37,4 +37,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   refund_other_method: 'Refund by a different method',
   dispense_prescription: 'Sell prescription-only medicine (or approve it)',
   record_production: 'Record items made in advance (production)',
+  import_data: 'Import products, customers, and opening stock from CSV',
 };
