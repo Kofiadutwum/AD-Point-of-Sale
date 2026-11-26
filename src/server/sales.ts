@@ -137,7 +137,7 @@ export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
  * serverPrices: lines are charged today's catalogue price (web screens). exchangeCreditPesewas: returned goods pay up to this much (6.32).
  * quote: an unpaid sale is allowed so a caller can read the totals and roll back.
  */
-export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string }; // salespersonId: 6.39
+export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string; quotedPrices?: boolean }; // quotedPrices: a quote's prices and discounts stand (6.35) // salespersonId: 6.39
 
 export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date, opts: SaleOptions = {}): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
@@ -267,10 +267,10 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     const currentPrice = l.byAmount ? l.unitPricePesewas : listPrice + (comboPriced?.upgrades ?? 0) + (addOnCheck === 'ok' ? addOnTotal(addOnGroupsOfItem, l.addOns ?? []) : 0);
     if ((paying || opts.serverPrices) && !l.byAmount) l.unitPricePesewas = currentPrice; // the server prices a ticket: it is charged what the menu says today
     if (l.byAmount && l.unitPricePesewas < (item.minAmount ?? 0)) lenient('below_minimum_amount', 'below_minimum');
-    if (currentPrice !== l.unitPricePesewas) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
+    if (currentPrice !== l.unitPricePesewas && !opts.quotedPrices) lenient('price_changed', 'price_changed'); // an outbox sale keeps the price the customer paid
     const gross = pesewasTimesQty(l.unitPricePesewas, quantity);
     // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
-    if (l.discountPesewas > 0 && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
+    if (l.discountPesewas > 0 && !opts.quotedPrices && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
     if (l.discountPesewas > gross) return refuse('discount_too_large');
     const baseQty = multiplyQty(quantity, item.factor);
     const lineSerials = l.serials ?? [];

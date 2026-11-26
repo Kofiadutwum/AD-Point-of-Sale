@@ -26,6 +26,8 @@ export const customers = pgTable('customers', {
   creditLimitPesewas: integer('credit_limit_pesewas').notNull().default(0), // 0 = no credit (spec 4.5)
   balancePesewas: integer('balance_pesewas').notNull().default(0), // owed on credit; always the ledger's sum
   reminderConsent: boolean('reminder_consent').notNull().default(false), // agreed to debt reminders by SMS
+  address: text('address'), // business customers on invoices (spec 4.22)
+  tin: text('tin'), // taxpayer identification number on invoices
   createdAt: createdAt(),
 }, (t) => [
   unique('customers_tenant_id').on(t.tenantId, t.id),
@@ -407,4 +409,57 @@ export const customerLedger = pgTable('customer_ledger', {
   foreignKey({ name: 'customer_ledger_shift_fk', columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id] }),
   foreignKey({ name: 'customer_ledger_user_fk', columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'customer_ledger_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+export type QuoteLine = { variantId: string; unitId: string; name: string; unitName: string; quantity: string; unitPricePesewas: number; discountPesewas: number; taxRateBp: number; totalPesewas: number };
+export type QuoteStatus = 'open' | 'converted' | 'cancelled';
+
+/** Spec 4.22, 6.35: an itemised price offer valid until a date; converting it sells at these prices. */
+export const quotes = pgTable('quotes', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  number: text('number').notNull(), // Q-0001, per shop
+  customerId: uuid('customer_id'),
+  lines: jsonb('lines').$type<QuoteLine[]>().notNull(),
+  subtotalPesewas: integer('subtotal_pesewas').notNull(),
+  discountPesewas: integer('discount_pesewas').notNull(),
+  taxPesewas: integer('tax_pesewas').notNull(),
+  totalPesewas: integer('total_pesewas').notNull(),
+  validUntil: date('valid_until', { mode: 'string' }).notNull(),
+  status: text('status').$type<QuoteStatus>().notNull().default('open'),
+  note: text('note'),
+  shareCode: text('share_code').notNull().unique(),
+  createdBy: uuid('created_by').notNull(),
+  convertedSaleId: uuid('converted_sale_id'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('quotes_tenant_id').on(t.tenantId, t.id),
+  unique('quotes_number').on(t.tenantId, t.number),
+  check('quotes_status', sql`${t.status} in ('open', 'converted', 'cancelled')`),
+  foreignKey({ name: 'quotes_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'quotes_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
+  foreignKey({ name: 'quotes_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'quotes_sale_fk', columns: [t.tenantId, t.convertedSaleId], foreignColumns: [sales.tenantId, sales.id] }),
+]);
+
+/** Spec 4.22, 6.35: a credit sale to a business customer, due by a date; payments go through the customer's account. */
+export const invoices = pgTable('invoices', {
+  id: id(),
+  tenantId: tenantId(),
+  number: text('number').notNull(), // INV-0001, per shop
+  saleId: uuid('sale_id').notNull(),
+  customerId: uuid('customer_id').notNull(),
+  quoteId: uuid('quote_id'),
+  dueDate: date('due_date', { mode: 'string' }).notNull(),
+  shareCode: text('share_code').notNull().unique(),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('invoices_number').on(t.tenantId, t.number),
+  unique('invoices_sale').on(t.tenantId, t.saleId),
+  foreignKey({ name: 'invoices_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'invoices_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
+  foreignKey({ name: 'invoices_quote_fk', columns: [t.tenantId, t.quoteId], foreignColumns: [quotes.tenantId, quotes.id] }),
+  foreignKey({ name: 'invoices_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
 ]);
