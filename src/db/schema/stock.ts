@@ -86,7 +86,7 @@ export const stockMovements = pgTable('stock_movements', {
   batchId: uuid('batch_id'),
   serialId: uuid('serial_id'),
   unitCost: numeric('unit_cost', { precision: 14, scale: 4 }), // pesewas per base unit, receipts only
-  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage'>().notNull(),
+  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage' | 'return'>().notNull(),
   referenceId: uuid('reference_id').notNull(),
   saleLineId: uuid('sale_line_id'),
   userId: uuid('user_id'),
@@ -98,6 +98,6 @@ export const stockMovements = pgTable('stock_movements', {
   foreignKey({ name: 'stock_movements_batch_fk', columns: [t.tenantId, t.batchId], foreignColumns: [stockBatches.tenantId, stockBatches.id] }),
   foreignKey({ name: 'stock_movements_serial_fk', columns: [t.tenantId, t.serialId], foreignColumns: [serials.tenantId, serials.id] }),
   check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock')`),
-  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage')`),
+  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return')`),
   check('stock_movements_quantity', sql`${t.quantity} <> 0`),
 ]);
