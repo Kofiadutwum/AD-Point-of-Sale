@@ -43,6 +43,9 @@ export const tenants = pgTable('tenants', {
   requireShifts: boolean('require_shifts').notNull().default(false), // sales need an open shift at the till (spec 4.6)
   cashVarianceLimitPesewas: integer('cash_variance_limit_pesewas').notNull().default(0), // closing variance a cashier may leave without a manager
   expenseApprovalLimitPesewas: integer('expense_approval_limit_pesewas').notNull().default(0), // expenses above this need a manager (spec 6.43)
+  countApprovalLimitPesewas: integer('count_approval_limit_pesewas').notNull().default(0), // count differences above this value need a manager (6.26)
+  adjustmentApprovalLimitPesewas: integer('adjustment_approval_limit_pesewas').notNull().default(0),
+  reorderCoverDays: integer('reorder_cover_days').notNull().default(14), // suggested orders cover lead time plus this many days (6.24)
   smsReports: boolean('sms_reports').notNull().default(false), // daily sales and weekly stock SMS to the manager phone (spec 4.8)
   reportTime: text('report_time').notNull().default('21:00'), // shop time the daily report goes out
   weeklyReportDay: integer('weekly_report_day').notNull().default(1), // 0 = Sunday ... 6 = Saturday
