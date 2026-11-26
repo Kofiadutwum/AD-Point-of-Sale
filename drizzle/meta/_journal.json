@@ -204,6 +204,20 @@
       "when": 1795661839648,
       "tag": "0028_counter_orders_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1795685107067,
+      "tag": "0029_prescriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1795685113631,
+      "tag": "0030_prescriptions_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -269,3 +269,24 @@ export const counterOrders = pgTable('counter_orders', {
   foreignKey({ name: 'counter_orders_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
   foreignKey({ name: 'counter_orders_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
 ]);
+
+/** Spec 6.36: the prescription behind a prescription-only sale line. Health data: only people who may dispense read it. */
+export const prescriptions = pgTable('prescriptions', {
+  id: id(),
+  tenantId: tenantId(),
+  saleId: uuid('sale_id').notNull(),
+  saleLineId: uuid('sale_line_id').notNull(),
+  patientName: text('patient_name').notNull(),
+  prescriberName: text('prescriber_name').notNull(),
+  facility: text('facility').notNull(),
+  prescriptionDate: date('prescription_date', { mode: 'string' }).notNull(),
+  recordedBy: uuid('recorded_by').notNull(),
+  approvedBy: uuid('approved_by'), // the pharmacist whose PIN allowed it, when the seller could not dispense
+  createdAt: createdAt(),
+}, (t) => [
+  unique('prescriptions_sale_line').on(t.tenantId, t.saleLineId),
+  foreignKey({ name: 'prescriptions_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
+  foreignKey({ name: 'prescriptions_sale_line_fk', columns: [t.tenantId, t.saleLineId], foreignColumns: [saleLines.tenantId, saleLines.id] }),
+  foreignKey({ name: 'prescriptions_recorded_by_fk', columns: [t.tenantId, t.recordedBy], foreignColumns: [users.tenantId, users.id] }),
+  foreignKey({ name: 'prescriptions_approved_by_fk', columns: [t.tenantId, t.approvedBy], foreignColumns: [users.tenantId, users.id] }),
+]);
