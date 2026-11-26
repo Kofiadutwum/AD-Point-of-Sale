@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, eq, gt, gte, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, isNotNull, lte, ne, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import { notifications, payments, plans, products, returns, sales, shifts, stockBalances, stockBatches, subscriptions, tenants, variants } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
@@ -52,7 +52,7 @@ export async function weeklyStockSummary(tx: Tx, shopName: string, today: string
     .filter(Boolean).join('\n');
 }
 
-async function queue(tx: Tx, tenantId: string, n: { key: string; kind: 'report' | 'marketing'; toPhone: string; body: string; sendAfter: Date }) {
+export async function queue(tx: Tx, tenantId: string, n: { key: string; kind: 'report' | 'marketing' | 'billing'; toPhone: string; body: string; sendAfter: Date }) {
   await tx.insert(notifications).values({ tenantId, ...n, parts: smsParts(n.body) }).onConflictDoNothing();
 }
 const queued = async (tx: Tx, key: string) => (await tx.select({ id: notifications.id }).from(notifications).where(eq(notifications.key, key))).length > 0;
@@ -84,7 +84,7 @@ const monthStart = (now: Date) => new Date(Date.UTC(now.getUTCFullYear(), now.ge
 async function allowance(tx: Tx, tenantId: string, now: Date): Promise<{ usedParts: number; limitParts: number }> {
   const [plan] = await tx.select({ limits: plans.limits }).from(subscriptions).innerJoin(plans, eq(plans.id, subscriptions.planId)).where(eq(subscriptions.tenantId, tenantId));
   const [u] = await tx.select({ n: sql<number>`coalesce(sum(${notifications.parts}), 0)::int` }).from(notifications)
-    .where(and(eq(notifications.tenantId, tenantId), eq(notifications.status, 'sent'), gte(notifications.sentAt, monthStart(now))));
+    .where(and(eq(notifications.tenantId, tenantId), eq(notifications.status, 'sent'), ne(notifications.kind, 'billing'), gte(notifications.sentAt, monthStart(now))));
   return { usedParts: u.n, limitParts: plan?.limits.sms_per_month ?? 0 };
 }
 
@@ -105,7 +105,7 @@ export async function runNotifications(db: Db, now: Date, send: SendSms, batch =
   for (const n of due) {
     await withTenant(db, n.tenantId, async (tx) => {
       const a = await allowance(tx, n.tenantId, now);
-      if (a.usedParts + n.parts > a.limitParts) {
+      if (n.kind !== 'billing' && a.usedParts + n.parts > a.limitParts) {
         await tx.update(notifications).set({ status: 'blocked_quota' }).where(eq(notifications.id, n.id));
         out.blocked++;
         return;

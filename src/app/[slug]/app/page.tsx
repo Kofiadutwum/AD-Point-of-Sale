@@ -42,6 +42,7 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/export`, label: 'Export data', allowed: ctx.permissions.includes('export_data') },
     { href: `/${slug}/app/marketing`, label: 'Promotional SMS', allowed: ctx.permissions.includes('marketing') },
     { href: `/${slug}/app/storefront`, label: 'Storefront', allowed: ctx.permissions.includes('manage_storefront') },
+    { href: `/${slug}/app/billing`, label: 'Billing', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/app/reports/pharmacy`, label: 'Pharmacy report', allowed: ctx.permissions.includes('view_reports') },
     { href: `/${slug}/till`, label: 'Till PIN screen', allowed: true },
     { href: `/${slug}/till/sell`, label: 'Selling screen', allowed: ctx.permissions.includes('make_sale') },
@@ -58,7 +59,11 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
           <button type="submit" className="rounded border px-3 py-1 text-sm">Sign out</button>
         </form>
       </header>
-      {home.banner && <p role="status" className="rounded bg-amber-100 p-3 text-sm">{home.banner}</p>}
+      {home.banner && (
+        <p role="status" className="rounded bg-amber-100 p-3 text-sm">
+          {home.banner} {ctx.permissions.includes('manage_shop_settings') && <a className="font-semibold underline" href={`/${slug}/app/billing`}>Choose a plan or renew</a>}
+        </p>
+      )}
       <nav className="flex flex-wrap gap-3">
         {links.map((l) => <a key={l.href} href={l.href} className="rounded border px-3 py-2 text-blue-800">{l.label}</a>)}
       </nav>

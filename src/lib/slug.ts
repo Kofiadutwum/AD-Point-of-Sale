@@ -1,4 +1,4 @@
-export const RESERVED_SLUGS = ['admin', 'api', 'app', 'login', 'help', 'pricing', 'terms', 'privacy', 'www', 'static', 'activate'] as const;
+export const RESERVED_SLUGS = ['admin', 'api', 'app', 'login', 'help', 'pricing', 'terms', 'privacy', 'www', 'static', 'activate', 'signup'] as const;
 export type SlugProblem = 'too_short' | 'too_long' | 'invalid_chars' | 'reserved';
 
 export function normaliseSlug(input: string): string {
