@@ -4,7 +4,9 @@ import { barcodes, products, variants, variantUnits } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import type { Module } from '@/lib/permissions';
 import type { Ctx } from '@/server/context';
-import { getReturnSettings, getSalesSettings, getSellingSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings } from '@/server/shop-settings';
+import {
+  getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings, savePharmacySettings, saveReturnSettings, saveSalesSettings, saveSellingSettings,
+} from '@/server/shop-settings';
 import { ctxFor, expectAccess, PRICE_LAYOUT, productFor, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -78,4 +80,11 @@ it('saves the refund limit and no-receipt returns', async () => {
   expect(await saveReturnSettings(db, owner, { refundLimitPesewas: 5000, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 })).toEqual({ ok: true });
   expect(await getReturnSettings(db, owner)).toEqual({ refundLimitPesewas: 5000, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 });
   expect(await saveReturnSettings(db, owner, { refundLimitPesewas: -1, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 })).toEqual({ ok: false, error: 'invalid_input' });
+});
+
+it('saves OTC-only and the near-expiry window', async () => {
+  expect(await getPharmacySettings(db, owner)).toEqual({ otcOnly: false, expiryWarningDays: 90 });
+  expect(await savePharmacySettings(db, owner, { otcOnly: true, expiryWarningDays: 60 })).toEqual({ ok: true });
+  expect(await getPharmacySettings(db, owner)).toEqual({ otcOnly: true, expiryWarningDays: 60 });
+  expect(await savePharmacySettings(db, owner, { otcOnly: true, expiryWarningDays: 0 })).toEqual({ ok: false, error: 'invalid_input' });
 });

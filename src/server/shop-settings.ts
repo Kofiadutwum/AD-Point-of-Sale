@@ -124,3 +124,25 @@ export async function saveReturnSettings(db: Db, ctx: Ctx, input: ReturnSettings
     return { ok: true } as const;
   });
 }
+
+export type PharmacySettings = { otcOnly: boolean; expiryWarningDays: number };
+
+/** Readable by any signed-in member: the till and reports need them. */
+export async function getPharmacySettings(db: Db, ctx: Ctx): Promise<PharmacySettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({ otcOnly: tenants.otcOnly, expiryWarningDays: tenants.expiryWarningDays })
+    .from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 4.17, 4.23: a licensed chemical seller sells over-the-counter medicine only; the near-expiry window in days. */
+export async function savePharmacySettings(db: Db, ctx: Ctx, input: PharmacySettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const days = input.expiryWarningDays;
+  if (typeof input.otcOnly !== 'boolean' || !Number.isInteger(days) || days < 1 || days > 365) return { ok: false, error: 'invalid_input' };
+  const next = { otcOnly: input.otcOnly, expiryWarningDays: days };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'pharmacy_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}
