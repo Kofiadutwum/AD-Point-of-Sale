@@ -4,7 +4,7 @@ import { and, asc, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, customers, payments, products, registers, returnLines, returns, saleLines, sales, stockBatches, stockMovements, tenants, users, variants, variantUnits,
+  branches, customerLedger, customers, payments, products, registers, returnLines, returns, saleLines, sales, stockBatches, stockMovements, tenants, users, variants, variantUnits,
   type TenderMethod,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
@@ -22,11 +22,11 @@ import { completeSaleTx, type SaleError, type SaleInput, saleFailure, throwSaleF
 import { openShiftId } from './shift-link';
 import { changeBalance } from './stock';
 
-export type RefundMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit';
+export type RefundMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'credit'; // credit: off what the customer owes
 export type ReturnItem = { saleLineId: string; quantity: string; condition: 'saleable' | 'damaged' | 'expired' };
 export type ReturnLineView = { saleLineId: string; name: string; unitName: string; sold: string; returned: string; returnable: string; unitRefundPesewas: number };
 
-const REFUND_METHODS = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit'] as const;
+const REFUND_METHODS = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'credit'] as const;
 const itemSchema = z.object({ saleLineId: z.string(), quantity: z.string(), condition: z.enum(['saleable', 'damaged', 'expired']) });
 const quoteSchema = z.object({ saleId: z.uuid(), items: z.array(itemSchema).min(1).max(100), refundMethod: z.enum(REFUND_METHODS) });
 const processSchema = quoteSchema.extend({
@@ -53,6 +53,7 @@ async function loadSale(tx: Tx, ctx: Ctx, where: { saleId: string } | { receiptN
   const [main] = await tx.select({ method: payments.method }).from(payments).where(eq(payments.saleId, sale.id)).orderBy(desc(payments.amountPesewas)).limit(1);
   return {
     sale, method: (main?.method ?? 'cash') as TenderMethod,
+    creditPaid: (await tx.select({ id: payments.id }).from(payments).where(and(eq(payments.saleId, sale.id), eq(payments.method, 'credit'))).limit(1)).length > 0,
     lines: lines.map((l) => {
       const d = done.find((x) => x.saleLineId === l.id);
       // shortcut: bundles, recipes, combos, serial and by-amount items come back with exchanges (Plan 1b-8)
@@ -128,7 +129,7 @@ export async function quoteReturn(db: Db, ctx: Ctx, input: { saleId: string; ite
   });
 }
 
-type ProcessError = PlanError | 'approval_required' | 'reference_required' | 'needs_customer';
+type ProcessError = 'not_credit_sale' | 'credit_refund_exceeds_balance' | PlanError | 'approval_required' | 'reference_required' | 'needs_customer';
 
 /** Spec 6.12: records the return, puts saleable stock back (into the batches it was sold from), and refunds, all in one transaction. */
 export async function processReturn(db: Db, ctx: Ctx, input: {
@@ -151,14 +152,14 @@ export async function processReturnTx(tx: Tx, ctx: Ctx, input: Parameters<typeof
   const plan = planReturn(loaded, s.items);
   if (!plan.ok) return plan;
   const reference = s.reference || null;
-  const refusal = refundRefusal(loaded, s.refundMethod, reference);
+  const refusal = refundRefusal(loaded, s.refundMethod, reference) ?? await creditShort(tx, loaded, s.refundMethod, plan.total);
   if (refusal) return fail<ProcessError>(refusal);
   const needed = await approvalFor(tx, ctx, loaded, s.refundMethod, plan.total);
   const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
   if (needed && !approval) return fail<ProcessError>('approval_required');
 
   const returnId = await recordReturn(tx, ctx, loaded, plan, { reason: s.reason, refundMethod: s.refundMethod, reference, approvedBy: approval?.approverId ?? null }, now);
-  await payRefund(tx, ctx, loaded, s.refundMethod, plan.total, s.reason);
+  await payRefund(tx, ctx, loaded, s.refundMethod, plan.total, s.reason, returnId, now);
   await writeAudit(tx, {
     tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'return_processed', recordType: 'sale', recordId: loaded.sale.id,
     reason: s.reason, changes: { returnId, refundPesewas: plan.total, refundMethod: s.refundMethod, approvedBy: approval?.approverId ?? null },
@@ -168,14 +169,31 @@ export async function processReturnTx(tx: Tx, ctx: Ctx, input: Parameters<typeof
 
 type Plan = Extract<ReturnType<typeof planReturn>, { ok: true }>;
 
-const refundRefusal = (loaded: Loaded, method: RefundMethod, reference: string | null): 'reference_required' | 'needs_customer' | null =>
-  method !== 'cash' && method !== 'store_credit' && !reference ? 'reference_required'
-    : method === 'store_credit' && !loaded.sale.customerId ? 'needs_customer' : null;
+const refundRefusal = (loaded: Loaded, method: RefundMethod, reference: string | null): 'reference_required' | 'needs_customer' | 'not_credit_sale' | null =>
+  method === 'credit' ? (loaded.creditPaid && loaded.sale.customerId ? null : 'not_credit_sale')
+    : method !== 'cash' && method !== 'store_credit' && !reference ? 'reference_required'
+      : method === 'store_credit' && !loaded.sale.customerId ? 'needs_customer' : null;
 
-/** Store credit is the only refund the system pays itself; cash, MoMo, card, and bank leave the till by hand. */
-async function payRefund(tx: Tx, ctx: Ctx, loaded: Loaded, method: RefundMethod, pesewas: number, reason: string) {
-  if (method !== 'store_credit' || !loaded.sale.customerId || pesewas <= 0) return;
-  await creditStoreCredit(tx, { tenantId: ctx.tenantId, customerId: loaded.sale.customerId, amountPesewas: pesewas, source: 'refund', userId: ctx.userId, saleId: loaded.sale.id, reason });
+/** Spec 6.12: a refund off what the customer owes never takes the balance below zero (the customer row is locked). */
+async function creditShort(tx: Tx, loaded: Loaded, method: RefundMethod, pesewas: number): Promise<'credit_refund_exceeds_balance' | null> {
+  if (method !== 'credit' || !loaded.sale.customerId) return null;
+  const [c] = await tx.select({ balance: customers.balancePesewas }).from(customers).where(eq(customers.id, loaded.sale.customerId)).for('update');
+  return !c || c.balance < pesewas ? 'credit_refund_exceeds_balance' : null;
+}
+
+/** Store credit and credit accounts are the refunds the system pays itself; cash, MoMo, card, and bank leave the till by hand. */
+async function payRefund(tx: Tx, ctx: Ctx, loaded: Loaded, method: RefundMethod, pesewas: number, reason: string, returnId: string, now: Date) {
+  if (!loaded.sale.customerId || pesewas <= 0) return;
+  if (method === 'store_credit') {
+    await creditStoreCredit(tx, { tenantId: ctx.tenantId, customerId: loaded.sale.customerId, amountPesewas: pesewas, source: 'refund', userId: ctx.userId, saleId: loaded.sale.id, reason });
+  } else if (method === 'credit') {
+    const [after] = await tx.update(customers).set({ balancePesewas: sql`${customers.balancePesewas} - ${pesewas}` })
+      .where(eq(customers.id, loaded.sale.customerId)).returning({ balance: customers.balancePesewas });
+    await tx.insert(customerLedger).values({
+      tenantId: ctx.tenantId, customerId: loaded.sale.customerId, type: 'return', amountPesewas: -pesewas, balanceAfterPesewas: after.balance,
+      saleId: loaded.sale.id, returnId, reason, userId: ctx.userId, createdAt: now,
+    });
+  }
 }
 
 /** The return, its lines, and saleable items back on hand; shared by returns and exchanges. */
@@ -420,7 +438,7 @@ async function exchangeTx(
   }
   if (leftover > 0 && !method) refuse('invalid_input');
   if (method) {
-    const refusal = refundRefusal(loaded, method, reference);
+    const refusal = refundRefusal(loaded, method, reference) ?? await creditShort(tx, loaded, method, leftover);
     if (refusal) refuse(refusal);
   }
   const approval = needed ? await consumeApproval(tx, ctx, { token: s.approvalToken ?? '', ...needed }, now) : null;
@@ -428,7 +446,7 @@ async function exchangeTx(
   await tx.update(returns).set({
     refundMethod: method ?? 'exchange', reference: method ? reference : null, approvedBy: approval?.approverId ?? null, exchangeSaleId: saleId, exchangeCreditPesewas: credit,
   }).where(eq(returns.id, returnId));
-  if (method) await payRefund(tx, ctx, loaded, method, leftover, s.reason);
+  if (method) await payRefund(tx, ctx, loaded, method, leftover, s.reason, returnId, now);
   await writeAudit(tx, {
     tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'exchange_processed', recordType: 'sale', recordId: loaded.sale.id, reason: s.reason,
     changes: { returnId, newSaleId: saleId, returnPesewas: plan.total, creditPesewas: credit, refundPesewas: leftover, refundMethod: method ?? null, approvedBy: approval?.approverId ?? null },

@@ -6,7 +6,7 @@ import type { Db, Tx } from '@/db/client';
 import {
   addOnGroups, addOnOptions, branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
   salesChannels, taxRules, ticketLines, tickets, variantAddOnGroups, diningTables,
-  prescriptions, TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
+  customerLedger, prescriptions, TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { cashRounding } from '@/lib/cash-rounding';
@@ -43,6 +43,7 @@ export type SaleInput = {
     prescription?: Prescription; // spec 6.36: required for prescription-only medicine
   }>;
   prescriptionApprovalToken?: string; // a pharmacist's approval (approvals.ts, action dispense_prescription, context = saleId)
+  creditApprovalToken?: string; // a manager's approval for credit over the customer's limit (action credit_over_limit, context = saleId:amount)
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: {
@@ -52,7 +53,7 @@ export type SaleInput = {
   };
 };
 export type Prescription = { patientName: string; prescriberName: string; facility: string; prescriptionDate: string };
-export type SaleError = 'no_open_shift' | 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
+export type SaleError = 'credit_needs_customer' | 'credit_not_allowed' | 'credit_over_limit' | 'no_open_shift' | 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
   | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
@@ -81,6 +82,7 @@ const inputSchema = z.object({
     }).optional(),
   })).min(1).max(200),
   prescriptionApprovalToken: z.string().max(200).optional(),
+  creditApprovalToken: z.string().max(200).optional(),
   tenders: z.array(z.object({
     id: z.uuid(), method: z.enum(TENDER_METHODS as [TenderMethod, ...TenderMethod[]]), amountPesewas: pesewas.min(1),
     reference: z.string().trim().max(100).optional(),
@@ -307,6 +309,21 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
   if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
   if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
+  // spec 6.13: credit is for a named customer, by someone allowed, within the customer's limit unless a manager approves; never offline
+  const creditPesewas = s.tenders.filter((t) => t.method === 'credit').reduce((a, t) => a + t.amountPesewas, 0);
+  let creditApprovedBy: string | null = null;
+  if (creditPesewas > 0) {
+    if (!customer) return refuse('credit_needs_customer');
+    if (outbox) reasons.add('credit_offline');
+    if (!(ctx.permissions.includes('sell_on_credit') && cashierPermissions.includes('sell_on_credit'))) lenient('credit_not_allowed', 'credit_not_allowed');
+    const [acct] = await tx.select({ balance: customers.balancePesewas, limit: customers.creditLimitPesewas }).from(customers).where(eq(customers.id, customer.id)).for('update');
+    if (acct.balance + creditPesewas > acct.limit) {
+      const approval = s.creditApprovalToken && !outbox
+        ? await consumeApproval(tx, ctx, { token: s.creditApprovalToken, action: 'credit_over_limit', contextKey: `${s.saleId}:${creditPesewas}` }, now) : null;
+      if (approval) creditApprovedBy = approval.approverId;
+      else lenient('credit_over_limit', 'credit_over_limit');
+    }
+  }
   const paid = s.tenders.reduce((a, t) => a + t.amountPesewas, 0);
   // spec 6.40: when cash pays what is left, the amount due rounds to the shop's smallest coin
   const rounding = cashRounding(saleTotal, nonCash, s.tenders.some((t) => t.method === 'cash'), shop.cashRoundingStep);
@@ -354,6 +371,15 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
       status: 'confirmed', confirmedBy: t.method === 'cash' ? null : ctx.userId, // manual payments: the cashier confirms the money arrived (4.3)
     }).onConflictDoNothing({ target: payments.id }).returning({ id: payments.id });
     if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
+  }
+  if (creditPesewas > 0 && customer) {
+    const [after] = await tx.update(customers).set({ balancePesewas: sql`${customers.balancePesewas} + ${creditPesewas}` })
+      .where(eq(customers.id, customer.id)).returning({ balance: customers.balancePesewas });
+    await tx.insert(customerLedger).values({
+      tenantId: ctx.tenantId, customerId: customer.id, type: 'sale', amountPesewas: creditPesewas, balanceAfterPesewas: after.balance, saleId: s.saleId,
+      shiftId, userId: ctx.userId, approvedBy: creditApprovedBy, createdAt: now,
+    });
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'credit_sale', recordType: 'customer', recordId: customer.id, changes: { saleId: s.saleId, creditPesewas, balance: after.balance, approvedBy: creditApprovedBy } });
   }
   await tx.update(registers).set({ receiptCounter: sql`greatest(${registers.receiptCounter}, ${receipt.counter})` }).where(eq(registers.id, reg.id));
   if (channel?.collectedBy === 'app') {
