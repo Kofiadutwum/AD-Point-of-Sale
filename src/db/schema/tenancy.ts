@@ -34,6 +34,9 @@ export const tenants = pgTable('tenants', {
   counterOrderExpiryMinutes: integer('counter_order_expiry_minutes').notNull().default(120), // unpaid counter orders lapse after this (spec 6.39)
   otcOnly: boolean('otc_only').notNull().default(false), // licensed chemical seller: no prescription-only medicine (spec 4.23)
   expiryWarningDays: integer('expiry_warning_days').notNull().default(90), // near-expiry window (spec 4.17)
+  requireShifts: boolean('require_shifts').notNull().default(false), // sales need an open shift at the till (spec 4.6)
+  cashVarianceLimitPesewas: integer('cash_variance_limit_pesewas').notNull().default(0), // closing variance a cashier may leave without a manager
+  expenseApprovalLimitPesewas: integer('expense_approval_limit_pesewas').notNull().default(0), // expenses above this need a manager (spec 6.43)
   createdAt: createdAt(),
 }, (t) => [
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),

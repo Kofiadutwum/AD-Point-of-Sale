@@ -239,6 +239,20 @@
       "when": 1795689703356,
       "tag": "0033_import_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1795692325816,
+      "tag": "0034_shifts",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1795692333271,
+      "tag": "0035_shifts_rls",
+      "breakpoints": true
     }
   ]
 }

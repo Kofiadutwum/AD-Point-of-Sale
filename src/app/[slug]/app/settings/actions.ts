@@ -7,7 +7,7 @@ import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
-import { savePharmacySettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveCashSettings, savePharmacySettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
 
@@ -136,6 +136,17 @@ export async function savePharmacyAction(slug: string, _prev: FormState, fd: For
   const ctx = await pageCtx(slug, 'manage_shop_settings');
   const r = await savePharmacySettings(getDb(), ctx, { otcOnly: fd.get('otcOnly') === 'on', expiryWarningDays: Number(fd.get('expiryWarningDays')) });
   if (!r.ok) return { error: 'Enter a warning period from 1 to 365 days.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
+}
+
+export async function saveCashAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const variance = parseCedis(String(fd.get('varianceLimit') ?? '').trim() || '0');
+  const expense = parseCedis(String(fd.get('expenseLimit') ?? '').trim() || '0');
+  if (variance === null || expense === null) return { error: 'Enter the limits in GHS (0 = always ask a manager).' };
+  const r = await saveCashSettings(getDb(), ctx, { requireShifts: fd.get('requireShifts') === 'on', cashVarianceLimitPesewas: variance, expenseApprovalLimitPesewas: expense });
+  if (!r.ok) return { error: 'Check the details.' };
   revalidatePath(`/${slug}/app/settings`);
   return { error: null, message: 'Saved.' };
 }

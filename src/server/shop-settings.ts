@@ -146,3 +146,26 @@ export async function savePharmacySettings(db: Db, ctx: Ctx, input: PharmacySett
     return { ok: true } as const;
   });
 }
+
+export type CashSettings = { requireShifts: boolean; cashVarianceLimitPesewas: number; expenseApprovalLimitPesewas: number };
+
+/** Readable by any signed-in member: the till checks whether a shift is required. */
+export async function getCashSettings(db: Db, ctx: Ctx): Promise<CashSettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({
+    requireShifts: tenants.requireShifts, cashVarianceLimitPesewas: tenants.cashVarianceLimitPesewas, expenseApprovalLimitPesewas: tenants.expenseApprovalLimitPesewas,
+  }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 4.6, 6.14, 6.43: require shifts; the till variance and the expense a person may leave or record without a manager (0 = always ask). */
+export async function saveCashSettings(db: Db, ctx: Ctx, input: CashSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  const ok = (n: number) => Number.isInteger(n) && n >= 0 && n <= 100_000_000;
+  if (typeof input.requireShifts !== 'boolean' || !ok(input.cashVarianceLimitPesewas) || !ok(input.expenseApprovalLimitPesewas)) return { ok: false, error: 'invalid_input' };
+  const next = { requireShifts: input.requireShifts, cashVarianceLimitPesewas: input.cashVarianceLimitPesewas, expenseApprovalLimitPesewas: input.expenseApprovalLimitPesewas };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(next).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'cash_settings_saved', changes: next });
+    return { ok: true } as const;
+  });
+}
