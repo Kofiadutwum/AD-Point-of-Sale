@@ -3,7 +3,9 @@ import { type CartTotals, calculateCartTotals } from '@/lib/cart-totals';
 import { fromMilli, ratioToQty, validSaleQuantity } from '@/lib/decimal';
 import type { DeviceCache } from '@/lib/device-contract';
 import { type AddOnChoice, addOnTotal, checkAddOns, checkComboChoices, type ComboChoice, comboUpgradeTotal, type DiningOption, packCount, sameAddOns } from '@/lib/food';
+import { pesewasTimesQty } from '@/lib/money';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
+import { applyPromotions, promoRunning } from '@/lib/promotions';
 import { chooseTaxRule } from '@/lib/tax';
 
 // The till's catalogue lookups, run against the cached catalogue so they work offline (spec 6.5, 6.21, 6.22).
@@ -15,7 +17,14 @@ export type CartLine = {
   amountPesewas?: number | null; choices?: ComboChoice[]; // sold by amount (spec 6.53); combo choices (spec 6.52)
   addOns?: AddOnChoice[]; note?: string; // spec 4.24
 };
-export type PricedLine = CartLine & { label: string; unitName: string; unitPricePesewas: number; taxRateBp: number };
+export type PricedLine = CartLine & { label: string; unitName: string; unitPricePesewas: number; taxRateBp: number; promotionDiscountPesewas: number };
+
+/** The shop's local date, weekday, and time for promotion windows. */
+function shopClock(timeZone: string, at: Date) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short', hourCycle: 'h23' }).formatToParts(at);
+  const g = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return { date: `${g('year')}-${g('month')}-${g('day')}`, time: `${g('hour')}:${g('minute')}`, weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(g('weekday')) };
+}
 
 const labelOf = (productName: string, variantName: string) => (variantName ? `${productName} – ${variantName}` : productName);
 
@@ -115,7 +124,7 @@ export function comboSlotsOf(cache: DeviceCache, comboVariantId: string) {
 
 /** `priceListId`: a channel's own prices (spec 6.57); walk-in uses the branch or retail list. */
 export function priceCart(
-  cache: DeviceCache, lines: CartLine[], today: string, opts: { priceListId?: string | null } = {},
+  cache: DeviceCache, lines: CartLine[], today: string, opts: { priceListId?: string | null; now?: Date } = {},
 ): { lines: PricedLine[]; totals: CartTotals } {
   const priced: PricedLine[] = [];
   for (const l of lines) {
@@ -127,10 +136,21 @@ export function priceCart(
       unitPricePesewas: p.variant.sellByAmount && l.amountPesewas != null ? l.amountPesewas
         : unitPrice(cache, p.variant, p.unit, l.quantity, today, opts.priceListId ?? null) + (p.variant.kind === 'combo' ? comboUpgradeTotal(comboSlotsOf(cache, l.variantId), l.choices ?? []) : 0)
           + addOnTotal(addOnGroupsOf(cache, l.variantId), l.addOns ?? []),
-      taxRateBp: rule?.rateBp ?? 0,
+      taxRateBp: rule?.rateBp ?? 0, promotionDiscountPesewas: 0,
     });
   }
-  const totals = calculateCartTotals(priced.map((l) => ({ ...l, discountPesewas: 0 })), { taxMode: cache.shop.taxMode });
+  // spec 6.29: the same automatic promotions the server applies, so the till shows what the server will charge
+  const at = { ...shopClock(cache.shop.timezone, opts.now ?? new Date()), branchId: cache.register.branchId };
+  const promos = (cache.promotions ?? []).filter((p) => promoRunning(p, at));
+  if (promos.length) {
+    const promoLines = priced.map((l) => {
+      const product = cache.products.find((p) => p.id === cache.variants.find((v) => v.id === l.variantId)?.productId);
+      const gross = l.labelPricePesewas ?? pesewasTimesQty(l.unitPricePesewas, l.quantity);
+      return { productId: product?.id ?? '', categoryId: product?.categoryId ?? null, unitPricePesewas: l.unitPricePesewas, quantity: l.quantity, grossPesewas: gross, manualDiscountPesewas: 0 };
+    });
+    applyPromotions(promoLines, promos).discounts.forEach((d, i) => { priced[i].promotionDiscountPesewas = d; });
+  }
+  const totals = calculateCartTotals(priced.map((l) => ({ ...l, discountPesewas: l.promotionDiscountPesewas })), { taxMode: cache.shop.taxMode });
   return { lines: priced, totals };
 }
 

@@ -11,6 +11,7 @@ import { todayIn } from '@/lib/dates';
 import { fromMilli, multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import { unitCostOf, weightedAverageCost } from '@/lib/stock';
 import { writeAudit } from './audit';
+import { markSpecialOrdersReady } from './order-arrivals';
 import { assertPermission, type Ctx } from './context';
 import type { Permission } from '@/lib/permissions';
 import { type Fail, fail, isUuid, itemLabel, normaliseSku } from './products';
@@ -73,7 +74,11 @@ export async function receiveStock(
   const r = parsed.data;
   if (!isUuid(r.branchId)) return fail('unknown_branch');
   const today = todayIn(ctx.timezone, now);
-  const res = await withTenant(db, ctx.tenantId, (tx) => receiveStockTx(tx, ctx, r, today));
+  const res = await withTenant(db, ctx.tenantId, async (tx) => {
+    const done = await receiveStockTx(tx, ctx, r, today);
+    if (done.ok) await markSpecialOrdersReady(tx, ctx.tenantId, r.branchId, done.planned.map((p) => p.variantId), now);
+    return done;
+  });
   return res.ok ? { ok: true, receiptId: res.receiptId } : res;
 }
 

@@ -19,6 +19,7 @@ import { assertPermission, type Ctx } from './context';
 import { creditStoreCredit } from './customers';
 import { type Fail, fail, isUuid } from './products';
 import { completeSaleTx, type SaleError, type SaleInput, saleFailure, throwSaleFailure } from './sales';
+import { reverseCommissions, reversePoints } from './rewards';
 import { openShiftId } from './shift-link';
 import { changeBalance } from './stock';
 
@@ -212,6 +213,9 @@ async function recordReturn(tx: Tx, ctx: Ctx, loaded: Loaded, plan: Plan, f: { r
       await restock(tx, ctx, { branchId: loaded.sale.branchId, returnId: ret.id, saleLineId: x.line.id, variantId: x.line.variantId, tracking: x.line.tracking, baseQuantity: x.baseQuantity });
     }
   }
+  // spec 6.30, 6.41: points earned and commission on the returned part come off
+  await reversePoints(tx, ctx.tenantId, loaded.sale.id, plan.total, loaded.sale.totalPesewas);
+  await reverseCommissions(tx, ctx.tenantId, ret.id, plan.planned.map((x) => ({ saleLineId: x.line.id, fraction: Number(x.quantity) / Number(x.line.quantity) })));
   return ret.id;
 }
 

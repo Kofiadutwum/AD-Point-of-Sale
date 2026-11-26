@@ -4,6 +4,7 @@ import type { ScaleLayout } from './barcode';
 import type { AddOnGroupDef, ChannelKind, ComboSlotDef, DiningOption } from './food';
 import type { Permission } from './permissions';
 import type { PriceRule } from './pricing';
+import type { Promo } from './promotions';
 
 export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement';
 
@@ -15,6 +16,7 @@ export type SaleRequest = {
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
     addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
     prescription?: { patientName: string; prescriberName: string; facility: string; prescriptionDate: string }; // spec 6.36
+    promotionDiscountPesewas?: number; // spec 6.29
   }>;
   prescriptionApprovalToken?: string;
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
@@ -43,7 +45,7 @@ export type DeviceCache = {
   staff: CachedStaff[];
   taxRules: Array<{ id: string; isDefault: boolean; rateBp: number }>; // rateBp = effectiveRateBp(rule)
   priceRules: PriceRule[];
-  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null; prescriptionOnly?: boolean; kitchenStation?: 'kitchen' | 'bar' | 'grill' }>;
+  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null; prescriptionOnly?: boolean; kitchenStation?: 'kitchen' | 'bar' | 'grill'; categoryId?: string | null }>;
   variants: Array<{
     id: string; productId: string; name: string; sku: string | null; allowsFractions: boolean; basePricePesewas: number;
     scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus; needsPack: boolean;
@@ -52,6 +54,8 @@ export type DeviceCache = {
   units: Array<{ id: string; variantId: string; name: string; factor: string; pricePesewas: number | null; sellable: boolean; isBase: boolean }>;
   barcodes: Array<{ code: string; variantId: string; unitId: string }>;
   resolvedHeldSaleIds: string[];
+  /** Automatic promotions (spec 6.29); the till filters by date, time, and branch. Missing in caches saved before promotions existed. */
+  promotions?: Promo[];
   /** Choice slots of every combo (spec 6.52). */
   comboSlots: Array<ComboSlotDef & { comboVariantId: string; name: string; sortOrder: number; choiceNames: Record<string, string> }>;
   /** Add-on groups with every option (the till offers active ones only) and the groups each item offers, in order (spec 4.24). */

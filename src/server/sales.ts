@@ -20,6 +20,7 @@ import { pesewasTimesQty } from '@/lib/money';
 import type { Permission } from '@/lib/permissions';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { parseReceiptNumber } from '@/lib/receipt';
+import { applyPromotions, type Promo } from '@/lib/promotions';
 import { chooseTaxRule, effectiveRateBp } from '@/lib/tax';
 import { consumeApproval } from './approvals';
 import { openShiftId } from './shift-link';
@@ -28,6 +29,8 @@ import { assertPermission, type Ctx } from './context';
 import { redeemStoreCredit } from './customers';
 import { foodEnabled } from './food-settings';
 import { loadPriceRules } from './price-lists';
+import { activePromotions, checkCoupon, useCoupon } from './promotions';
+import { awardPoints, issueGiftCards, recordCommissions, redeemGiftCard, redeemPoints } from './rewards';
 import { type Fail, fail, isUuid, itemLabel } from './products';
 import type { PendingLine, SaleLineAddOn, SaleLineChoice } from '@/db/schema';
 import { isSoldOut } from './sold-out';
@@ -41,7 +44,9 @@ export type SaleInput = {
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
     addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
     prescription?: Prescription; // spec 6.36: required for prescription-only medicine
+    promotionDiscountPesewas?: number; // the automatic discount the device worked out (6.29); the server checks it
   }>;
+  couponCode?: string;
   prescriptionApprovalToken?: string; // a pharmacist's approval (approvals.ts, action dispense_prescription, context = saleId)
   creditApprovalToken?: string; // a manager's approval for credit over the customer's limit (action credit_over_limit, context = saleId:amount)
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
@@ -60,9 +65,11 @@ export type SaleError = 'credit_needs_customer' | 'credit_not_allowed' | 'credit
   | 'store_credit_needs_customer' | 'insufficient_store_credit' | 'sold_out' | 'pack_fee_mismatch' | 'service_mode_not_allowed' | 'invalid_order_number'
   | 'invalid_choices' | 'amount_required' | 'not_sold_by_amount' | 'below_minimum_amount'
   | 'unknown_channel' | 'channel_not_allowed' | 'external_order_id_required' | 'channel_order_exists' | 'channel_settlement_required'
-  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open' | 'invalid_add_ons' | 'ticket_not_open';
+  | 'invalid_tender' | 'customer_details_required' | 'dining_option_not_allowed' | 'order_changed' | 'order_not_open' | 'invalid_add_ons' | 'ticket_not_open'
+  | 'invalid_coupon' | 'loyalty_off' | 'insufficient_points' | 'points_need_customer' | 'invalid_gift_card' | 'insufficient_gift_card' | 'try_again_later' | 'gift_card_discount';
 export type SaleResult = {
   ok: true; saleId: string; status: 'completed' | 'pending'; changeDuePesewas: number; alreadyExisted: boolean; orderNumber: string | null;
+  giftCards?: Array<{ code: string; amountPesewas: number }>; // shown once to print or send (6.31)
 } | { ok: false; error: SaleError };
 
 const pesewas = z.number().int().min(0).max(2_000_000_000);
@@ -80,7 +87,9 @@ const inputSchema = z.object({
       patientName: z.string().trim().min(1).max(80), prescriberName: z.string().trim().min(1).max(80), facility: z.string().trim().min(1).max(120),
       prescriptionDate: z.iso.date(),
     }).optional(),
+    promotionDiscountPesewas: pesewas.optional(),
   })).min(1).max(200),
+  couponCode: z.string().trim().max(30).optional(),
   prescriptionApprovalToken: z.string().max(200).optional(),
   creditApprovalToken: z.string().max(200).optional(),
   tenders: z.array(z.object({
@@ -100,7 +109,8 @@ const inputSchema = z.object({
   }).optional(),
 });
 
-const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer', 'channel_settlement'];
+const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer', 'channel_settlement', 'gift_card']; // a gift card's reference is its code
+const MONEY: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer']; // what earns loyalty points (6.30)
 
 /** A refusal found after the first write: thrown so the whole transaction rolls back. */
 class SaleRefused extends Error {
@@ -137,7 +147,7 @@ export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
  * serverPrices: lines are charged today's catalogue price (web screens). exchangeCreditPesewas: returned goods pay up to this much (6.32).
  * quote: an unpaid sale is allowed so a caller can read the totals and roll back.
  */
-export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string; quotedPrices?: boolean }; // quotedPrices: a quote's prices and discounts stand (6.35) // salespersonId: 6.39
+export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string; quotedPrices?: boolean; depositPesewas?: number }; // depositPesewas: a customer order's payments pay towards it (6.34) // quotedPrices: a quote's prices and discounts stand (6.35) // salespersonId: 6.39
 
 export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date, opts: SaleOptions = {}): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
@@ -232,6 +242,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
       kind: variants.kind, variantName: variants.name, allowsFractions: variants.allowsFractions, basePrice: variants.basePricePesewas,
       sellable: variants.sellable, variantStatus: variants.status, productName: products.name, productStatus: products.status,
       taxRuleId: products.taxRuleId, tracking: products.tracking, prescriptionOnly: products.prescriptionOnly, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
+      productId: products.id, categoryId: products.categoryId, isGiftCard: variants.isGiftCard,
     }).from(variantUnits)
       .innerJoin(variants, eq(variants.id, variantUnits.variantId))
       .innerJoin(products, eq(products.id, variants.productId))
@@ -272,12 +283,13 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     // both the signed-in user and the recorded cashier must hold it: a client-supplied cashier never lends a permission
     if (l.discountPesewas > 0 && !opts.quotedPrices && !(ctx.permissions.includes('give_discount') && cashierPermissions.includes('give_discount'))) return refuse('discount_not_allowed');
     if (l.discountPesewas > gross) return refuse('discount_too_large');
+    if (item.isGiftCard && (l.discountPesewas > 0 || !/\.000$/.test(quantity))) return refuse(l.discountPesewas > 0 ? 'gift_card_discount' : 'invalid_quantity'); // a card is issued per whole unit
     const baseQty = multiplyQty(quantity, item.factor);
     const lineSerials = l.serials ?? [];
     if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
     const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
     if (item.prescriptionOnly) rxLines.push(i);
-    priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
+    priced.push({ ...l, productId: item.productId, categoryId: item.categoryId, isGiftCard: item.isGiftCard, promotionDiscountPesewas: 0, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
   }
 
   let rxApprovedBy: string | null = null;
@@ -294,12 +306,35 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
       else lenient('prescription_not_allowed', 'prescription_unapproved');
     }
   }
+  // spec 6.29: automatic promotions (and a coupon's) on top of manual discounts; the server's figure stands unless an offline sale already charged the device's
+  let coupon: { couponId: string; promo: Promo } | null = null;
+  if (s.couponCode && !opts.quotedPrices) {
+    const c = await checkCoupon(tx, s.couponCode, customer?.id ?? null, reg.branchId, shop.timezone, happenedAt);
+    if (c === 'invalid_coupon') lenient('invalid_coupon', 'coupon_invalid');
+    else coupon = c;
+  }
+  const promos = opts.quotedPrices ? [] : [...await activePromotions(tx, reg.branchId, shop.timezone, happenedAt), ...(coupon ? [coupon.promo] : [])];
+  const promoLines = priced.map((l) => ({
+    productId: l.productId, categoryId: l.categoryId, unitPricePesewas: l.isGiftCard ? 0 : l.unitPricePesewas, quantity: l.quantity,
+    grossPesewas: l.isGiftCard ? 0 : pesewasTimesQty(l.unitPricePesewas, l.quantity), manualDiscountPesewas: l.discountPesewas,
+  }));
+  const serverPromo = promos.length ? applyPromotions(promoLines, promos).discounts : priced.map(() => 0);
+  const serverDecides = opts.serverPrices === true || paying !== null || opts.quotedPrices === true;
+  priced.forEach((l, i) => {
+    const device = s.lines[i].promotionDiscountPesewas ?? 0;
+    if (!serverDecides && device !== serverPromo[i]) lenient('price_changed', 'promotion_changed');
+    const promo = serverDecides || !outbox ? serverPromo[i] : Math.min(device, Math.max(0, promoLines[i].grossPesewas - l.discountPesewas));
+    l.promotionDiscountPesewas = promo;
+    l.discountPesewas += promo;
+  });
   const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
   // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
   const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
   const saleTotal = totals.totalPesewas + serviceCharge;
   const exchangeCredit = Math.min(opts.exchangeCreditPesewas ?? 0, saleTotal); // never more than the new items cost
   if (exchangeCredit > 0) s.tenders.push({ id: randomUUID(), method: 'exchange_credit', amountPesewas: exchangeCredit });
+  const deposit = Math.min(opts.depositPesewas ?? 0, saleTotal); // money already paid towards a customer order
+  if (deposit > 0) s.tenders.push({ id: randomUUID(), method: 'deposit', amountPesewas: deposit });
   // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
   const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
   if (channel?.collectedBy === 'app') {
@@ -309,6 +344,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const nonCash = s.tenders.filter((t) => t.method !== 'cash').reduce((a, t) => a + t.amountPesewas, 0);
   if (nonCash > saleTotal) return refuse('reduce_non_cash_amount'); // only cash can produce change
   if (s.tenders.some((t) => t.method === 'store_credit') && !customer) return refuse('store_credit_needs_customer');
+  if (s.tenders.some((t) => t.method === 'points') && !customer) return refuse('points_need_customer');
   // spec 6.13: credit is for a named customer, by someone allowed, within the customer's limit unless a manager approves; never offline
   const creditPesewas = s.tenders.filter((t) => t.method === 'credit').reduce((a, t) => a + t.amountPesewas, 0);
   let creditApprovedBy: string | null = null;
@@ -341,7 +377,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     changeDuePesewas: changeDue, fromOffline: outbox, deviceCreatedAt: deviceAt, receivedAt: now,
     businessDate: saleDay, shareCode: randomBytes(16).toString('base64url'),
     serviceMode: s.food?.serviceMode ?? null, diningOption: dining ?? null,
-    channelId: channel?.id ?? null, externalOrderId: order?.externalOrderId ?? null, commissionPesewas: commission,
+    channelId: channel?.id ?? null, externalOrderId: order?.externalOrderId ?? null, commissionPesewas: commission, couponId: coupon?.couponId ?? null,
   }).onConflictDoNothing({ target: sales.id }).returning({ id: sales.id });
   if (!saved) {
     const again = await findSale(tx, s.saleId); // row-level security hides another shop's sale with this id
@@ -351,7 +387,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
     quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
     discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
-    taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note,
+    taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note, promotionDiscountPesewas: l.promotionDiscountPesewas,
   }))).returning({ id: saleLines.id, lineNo: saleLines.lineNo });
   const rxRecords = rxLines.flatMap((i) => {
     const rx = s.lines[i].prescription;
@@ -366,8 +402,19 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
       refuse('insufficient_store_credit');
     }
+    let reference = t.reference || null;
+    if (t.method === 'points') {
+      const pr = await redeemPoints(tx, ctx.tenantId, customer!.id, t.amountPesewas, s.saleId);
+      if (pr !== true) refuse(pr);
+    }
+    if (t.method === 'gift_card') {
+      // shortcut: a refused sale rolls back the wrong-code count too; 16-character codes (80 bits) make guessing hopeless anyway
+      const gr = await redeemGiftCard(tx, ctx.tenantId, { code: t.reference ?? '', amountPesewas: t.amountPesewas, saleId: s.saleId, registerId: reg.id }, today, now);
+      if (typeof gr === 'string') refuse(gr);
+      else reference = `GIFT-****${gr.last4}`; // never the code itself
+    }
     const [paidRow] = await tx.insert(payments).values({
-      id: t.id, tenantId: ctx.tenantId, saleId: s.saleId, method: t.method, amountPesewas: t.amountPesewas, reference: t.reference || null,
+      id: t.id, tenantId: ctx.tenantId, saleId: s.saleId, method: t.method, amountPesewas: t.amountPesewas, reference,
       status: 'confirmed', confirmedBy: t.method === 'cash' ? null : ctx.userId, // manual payments: the cashier confirms the money arrived (4.3)
     }).onConflictDoNothing({ target: payments.id }).returning({ id: payments.id });
     if (!paidRow) refuse('duplicate_tender_id'); // tender ids are global; another shop's (hidden by row-level security) or a racing request
@@ -418,8 +465,21 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     });
     await tx.update(sales).set({ orderNumber }).where(eq(sales.id, s.saleId));
   }
+  let giftCardsIssued: Array<{ code: string; amountPesewas: number }> | undefined;
+  if (done.status === 'completed') {
+    if (coupon) await useCoupon(tx, ctx.tenantId, coupon.couponId, s.saleId, customer?.id ?? null);
+    if (customer) {
+      const money = s.tenders.filter((t) => MONEY.includes(t.method)).reduce((a, t) => a + t.amountPesewas, 0) - changeDue;
+      await awardPoints(tx, ctx.tenantId, customer.id, s.saleId, money, saleTotal, totals.taxPesewas);
+    }
+    const cards = priced.flatMap((l, i) => (l.isGiftCard ? Array.from({ length: Number(l.quantity) }, () => Math.round(totals.lines[i].totalPesewas / Number(l.quantity))) : []));
+    if (cards.length) giftCardsIssued = await issueGiftCards(tx, ctx.tenantId, s.saleId, cards, today);
+    await recordCommissions(tx, ctx.tenantId, s.saleId, opts.salespersonId ?? cashierId, priced.flatMap((l, i) => (l.isGiftCard ? [] : [{
+      saleLineId: savedLines.find((x) => x.lineNo === i + 1)!.id, productId: l.productId, categoryId: l.categoryId, netPesewas: totals.lines[i].netPesewas, quantity: l.quantity,
+    }])));
+  }
   if (reasons.size) await tx.update(sales).set({ needsReview: true, reviewReasons: [...reasons] }).where(eq(sales.id, s.saleId));
-  return { ok: true, saleId: s.saleId, status: done.status, changeDuePesewas: changeDue, alreadyExisted: false, orderNumber };
+  return { ok: true, saleId: s.saleId, status: done.status, changeDuePesewas: changeDue, alreadyExisted: false, orderNumber, ...(giftCardsIssued ? { giftCards: giftCardsIssued } : {}) };
 }
 
 type PricedLine = { variantId: string; quantity: string };
@@ -668,8 +728,9 @@ export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, n
   const [shop] = await tx.select({ timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, tenantId));
   const today = todayIn(shop.timezone, now);
   const lines = await tx.select().from(saleLines).where(eq(saleLines.saleId, saleId)).orderBy(asc(saleLines.lineNo));
+  const giftCardVariants = new Set((await tx.select({ id: variants.id }).from(variants).where(and(inArray(variants.id, lines.map((l) => l.variantId)), eq(variants.isGiftCard, true)))).map((v) => v.id));
   for (const l of lines) {
-    if (l.byAmount) continue; // spec 6.54: by-amount stock moves when pots are recorded
+    if (l.byAmount || giftCardVariants.has(l.variantId)) continue; // spec 6.54: by-amount stock moves when pots are recorded; a gift card holds no stock
     const p = await deductStockForLine(tx, { tenantId, branchId: sale.branchId, saleId, saleLineId: l.id, userId: sale.cashierId, today },
       { variantId: l.variantId, baseQty: l.baseQuantity, serials: l.serials, choices: l.choices.map((c) => c.variantId) });
     // spec 6.28: an add-on with an ingredient (extra chicken) deducts it once per plate
