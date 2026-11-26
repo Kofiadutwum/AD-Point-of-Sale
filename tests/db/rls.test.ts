@@ -58,9 +58,9 @@ it('every table with a tenant_id column has RLS enabled', async () => {
   expect(found.filter((r) => !r.relrowsecurity)).toEqual([]);
 });
 
-it('seeds the trial and standard plans', async () => {
+it('seeds the trial and paid plans (monthly prices, spec 4.27)', async () => {
   const p = await asPlatform(db, (tx) => tx.select().from(plans));
-  expect(p.map((x) => x.id).sort()).toEqual(['standard', 'trial']);
+  expect(p.map((x) => [x.id, x.pricePesewas]).sort()).toEqual([['pro', 60000], ['standard', 30000], ['starter', 15000], ['trial', 0]]);
   expect(p.find((x) => x.id === 'trial')!.limits).toEqual({ branches: 1, registers: 2, staff: 5, products: 500, sms_per_month: 50 });
 });
 
@@ -73,5 +73,5 @@ it('every table in the public schema has RLS enabled', async () => {
 });
 
 it('pos_app can still read plans', async () => {
-  expect(await withTenant(db, a.tenantId, (tx) => tx.select().from(plans))).toHaveLength(2);
+  expect(await withTenant(db, a.tenantId, (tx) => tx.select().from(plans))).toHaveLength(4);
 });
