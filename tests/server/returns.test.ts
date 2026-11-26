@@ -7,7 +7,7 @@ import { asPlatform, withTenant } from '@/db/tenant';
 import { requestApproval } from '@/server/approvals';
 import type { Ctx } from '@/server/context';
 import { addCustomer } from '@/server/customers';
-import { findReturnableSale, processReturn, quoteReturn } from '@/server/returns';
+import { findReturnableSale, processReturn, quoteNoReceiptReturn, quoteReturn, returnWithoutReceipt } from '@/server/returns';
 import { completeSale, type SaleInput } from '@/server/sales';
 import { addComponent } from '@/server/variants';
 import { stockOnHand } from '@/server/stock';
@@ -139,4 +139,56 @@ it('bundles and serial items are not returnable yet', async () => {
   expect(sale.lines.map((l) => l.returnable)).toEqual(['0.000', '0.000']);
   for (const l of sale.lines) expect(await back(sale.saleId, l.saleLineId, '1')).toEqual({ ok: false, error: 'not_returnable' });
   expect(await back(sale.saleId, randomUUID(), '1')).toEqual({ ok: false, error: 'not_found' });
+});
+
+const allowNoReceipt = () => asPlatform(db, (tx) => tx.update(tenants).set({ allowNoReceiptReturns: true }).where(eq(tenants.id, shop.tenantId)));
+const walkIn = { name: 'Kofi', phone: '024 400 0002' };
+const noReceipt = async (quantity: string, opts: { approve?: boolean; ctx?: Ctx; item?: Item } = {}) => {
+  const ctx = opts.ctx ?? cashier;
+  const items = [{ variantId: (opts.item ?? p).variantId, unitId: (opts.item ?? p).baseUnitId, quantity, condition: 'saleable' as const }];
+  let approvalToken = '';
+  if (opts.approve !== false) {
+    const q = await quoteNoReceiptReturn(db, ctx, { customer: walkIn, items });
+    if (q.ok) {
+      const a = await requestApproval(db, ctx, { action: 'no_receipt_return', contextKey: q.contextKey, approverId: shop.users.manager.id, pin: '4321' }, t0);
+      approvalToken = (a as { token: string }).token;
+    }
+  }
+  return returnWithoutReceipt(db, ctx, { customer: walkIn, items, reason: 'no receipt', approvalToken }, t0);
+};
+
+it('gives store credit at the lowest price of the last 90 days', async () => {
+  await allowNoReceipt();
+  const manager = await tillCtxFor(db, shop, 'manager', t0);
+  const old = new Date(t0.getTime() - 100 * 86_400_000);
+  expect(await completeSale(db, manager, saleInput({ lines: [line(p, '1', 500, { discountPesewas: 200 })] }), old)).toMatchObject({ ok: true }); // too old to count
+  await sell([line(p, '1', 500, { discountPesewas: 50 })], {}, manager); // GHS 4.50
+  await sell([line(p, '2', 500)]);
+  expect(await noReceipt('2')).toEqual({ ok: true, returnId: expect.any(String), creditPesewas: 900 });
+  const [c] = await asPlatform(db, (tx) => tx.select().from(customers).where(eq(customers.phone, '233244000002')));
+  expect(c).toMatchObject({ name: 'Kofi', storeCreditPesewas: 900 });
+  expect(await asPlatform(db, (tx) => tx.select().from(returns).where(eq(returns.kind, 'no_receipt'))))
+    .toMatchObject([{ refundMethod: 'store_credit', saleId: null, customerId: c.id, approvedBy: shop.users.manager.id }]);
+  expect(await onHand()).toBe('8.000'); // 10 - 1 - 1 - 2 + 2
+  const fresh = await productFor(db, owner);
+  expect(await noReceipt('1', { item: fresh })).toEqual({ ok: false, error: 'no_price_history' });
+});
+
+it('refused when the shop does not allow it', async () => {
+  await sell([line(p, '1', 500)]);
+  expect(await noReceipt('1')).toEqual({ ok: false, error: 'not_allowed' });
+});
+
+it('at most the monthly limit per customer', async () => {
+  await allowNoReceipt();
+  await sell([line(p, '3', 500)]);
+  expect(await noReceipt('1')).toMatchObject({ ok: true });
+  expect(await noReceipt('1')).toMatchObject({ ok: true });
+  expect(await noReceipt('1')).toEqual({ ok: false, error: 'monthly_limit' });
+});
+
+it('always needs approval', async () => {
+  await allowNoReceipt();
+  await sell([line(p, '1', 500)]);
+  expect(await noReceipt('1', { approve: false, ctx: owner })).toEqual({ ok: false, error: 'approval_required' });
 });
