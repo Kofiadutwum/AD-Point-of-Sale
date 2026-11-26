@@ -6,7 +6,7 @@ import type { Db, Tx } from '@/db/client';
 import {
   addOnGroups, addOnOptions, branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
   salesChannels, taxRules, ticketLines, tickets, variantAddOnGroups, diningTables,
-  TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
+  prescriptions, TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { cashRounding } from '@/lib/cash-rounding';
@@ -21,6 +21,7 @@ import type { Permission } from '@/lib/permissions';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
 import { parseReceiptNumber } from '@/lib/receipt';
 import { chooseTaxRule, effectiveRateBp } from '@/lib/tax';
+import { consumeApproval } from './approvals';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { redeemStoreCredit } from './customers';
@@ -38,7 +39,9 @@ export type SaleInput = {
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; discountPesewas: number; serials?: string[];
     byAmount?: boolean; choices?: Array<{ slotId: string; variantId: string }>;
     addOns?: Array<{ groupId: string; optionId: string }>; note?: string; // spec 4.24
+    prescription?: Prescription; // spec 6.36: required for prescription-only medicine
   }>;
+  prescriptionApprovalToken?: string; // a pharmacist's approval (approvals.ts, action dispense_prescription, context = saleId)
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: {
@@ -47,7 +50,8 @@ export type SaleInput = {
     kitchenOrderId?: string;
   };
 };
-export type SaleError = 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
+export type Prescription = { patientName: string; prescriberName: string; facility: string; prescriptionDate: string };
+export type SaleError = 'otc_only' | 'prescription_required' | 'prescription_not_allowed' | 'invalid_input' | 'no_register' | 'not_assigned' | 'cashier_not_allowed' | 'wrong_receipt_prefix' | 'duplicate_receipt_number'
   | 'sale_id_taken' | 'duplicate_tender_id' | 'unknown_item' | 'item_unavailable' | 'not_sellable' | 'invalid_quantity' | 'empty_bundle'
   | 'price_changed' | 'discount_not_allowed' | 'discount_too_large' | 'serials_required' | 'unknown_serial' | 'not_enough_stock'
   | 'only_expired_stock' | 'reference_required' | 'reduce_non_cash_amount' | 'payment_incomplete' | 'unknown_customer'
@@ -70,7 +74,12 @@ const inputSchema = z.object({
     choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
     addOns: z.array(z.object({ groupId: z.uuid(), optionId: z.uuid() })).max(30).optional(),
     note: z.string().trim().max(140).optional(),
+    prescription: z.object({
+      patientName: z.string().trim().min(1).max(80), prescriberName: z.string().trim().min(1).max(80), facility: z.string().trim().min(1).max(120),
+      prescriptionDate: z.iso.date(),
+    }).optional(),
   })).min(1).max(200),
+  prescriptionApprovalToken: z.string().max(200).optional(),
   tenders: z.array(z.object({
     id: z.uuid(), method: z.enum(TENDER_METHODS as [TenderMethod, ...TenderMethod[]]), amountPesewas: pesewas.min(1),
     reference: z.string().trim().max(100).optional(),
@@ -183,7 +192,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   if (s.customerId && !customer) return refuse('unknown_customer');
 
   const [shop] = await tx.select({
-    serviceChargeBp: tenants.serviceChargeBp, cashRoundingStep: tenants.cashRoundingStep, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
+    serviceChargeBp: tenants.serviceChargeBp, cashRoundingStep: tenants.cashRoundingStep, otcOnly: tenants.otcOnly, taxMode: tenants.taxMode, taxEnabled: tenants.taxEnabled, allowNegativeStock: tenants.allowNegativeStock, timezone: tenants.timezone, cutoff: tenants.businessDayCutoff,
   }).from(tenants).where(eq(tenants.id, ctx.tenantId));
   const today = todayIn(shop.timezone, now);
   const deviceAt = new Date(s.deviceCreatedAt);
@@ -208,13 +217,14 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   const list = choosePriceList(await loadPriceRules(tx), { cartListId: channel?.priceListId ?? null, customerListId: customer?.priceListId ?? null, branchId: reg.branchId, today });
 
   const priced = [];
+  const rxLines: number[] = []; // spec 6.36
   for (const [i, l] of s.lines.entries()) {
     const quantity = quantities[i]!;
     const [item] = await tx.select({
       unitName: variantUnits.name, factor: variantUnits.factor, isBase: variantUnits.isBase, unitSellable: variantUnits.sellable, unitPrice: variantUnits.pricePesewas,
       kind: variants.kind, variantName: variants.name, allowsFractions: variants.allowsFractions, basePrice: variants.basePricePesewas,
       sellable: variants.sellable, variantStatus: variants.status, productName: products.name, productStatus: products.status,
-      taxRuleId: products.taxRuleId, tracking: products.tracking, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
+      taxRuleId: products.taxRuleId, tracking: products.tracking, prescriptionOnly: products.prescriptionOnly, sellByAmount: variants.sellByAmount, minAmount: variants.minAmountPesewas,
     }).from(variantUnits)
       .innerJoin(variants, eq(variants.id, variantUnits.variantId))
       .innerJoin(products, eq(products.id, variants.productId))
@@ -259,9 +269,24 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     const lineSerials = l.serials ?? [];
     if (item.tracking === 'serial' && toMilli(baseQty) !== BigInt(lineSerials.length) * 1000n) lenient('serials_required', 'serials_missing');
     const rule = chooseTaxRule(shop.taxEnabled, item.taxRuleId, rules);
+    if (item.prescriptionOnly) rxLines.push(i);
     priced.push({ ...l, quantity, baseQty, serials: lineSerials, currentPrice, byAmount: l.byAmount === true, choices: comboPriced?.choices ?? [], addOns, note: l.note || null, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, taxRateBp: rule ? effectiveRateBp(rule) : 0 });
   }
 
+  let rxApprovedBy: string | null = null;
+  if (rxLines.length) {
+    if (shop.otcOnly) lenient('otc_only', 'otc_only'); // a licensed chemical seller cannot sell it
+    const oldest = new Date(Date.parse(`${today}T00:00:00Z`) - 365 * 86_400_000).toISOString().slice(0, 10);
+    const valid = (rx?: Prescription) => rx !== undefined && rx.prescriptionDate <= today && rx.prescriptionDate >= oldest;
+    if (rxLines.some((i) => !valid(s.lines[i].prescription))) lenient('prescription_required', 'prescription_missing');
+    const mayDispense = ctx.permissions.includes('dispense_prescription') && cashierPermissions.includes('dispense_prescription');
+    if (!mayDispense) {
+      const approval = s.prescriptionApprovalToken && !outbox
+        ? await consumeApproval(tx, ctx, { token: s.prescriptionApprovalToken, action: 'dispense_prescription', contextKey: s.saleId }, now) : null;
+      if (approval) rxApprovedBy = approval.approverId;
+      else lenient('prescription_not_allowed', 'prescription_unapproved');
+    }
+  }
   const totals = calculateCartTotals(priced, { taxMode: shop.taxMode });
   // spec 6.6: a table bill carries the shop's service charge on the amount after discounts
   const serviceCharge = paying ? serviceChargePesewas(totals.subtotalPesewas - totals.discountPesewas, shop.serviceChargeBp) : 0;
@@ -300,12 +325,21 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
     const again = await findSale(tx, s.saleId); // row-level security hides another shop's sale with this id
     return again ? repeat(tx, ctx, again, deviceNumberOk ? deviceNumber : undefined, now) : refuse('sale_id_taken');
   }
-  await tx.insert(saleLines).values(priced.map((l, i) => ({
+  const savedLines = await tx.insert(saleLines).values(priced.map((l, i) => ({
     tenantId: ctx.tenantId, saleId: s.saleId, lineNo: i + 1, variantId: l.variantId, unitId: l.unitId, name: l.name, unitName: l.unitName,
     quantity: l.quantity, baseQuantity: l.baseQty, unitPricePesewas: l.unitPricePesewas, currentPricePesewas: l.currentPrice,
     discountPesewas: totals.lines[i].discountPesewas, grossPesewas: totals.lines[i].grossPesewas, taxRateBp: l.taxRateBp,
     taxPesewas: totals.lines[i].taxPesewas, totalPesewas: totals.lines[i].totalPesewas, serials: l.serials, byAmount: l.byAmount, choices: l.choices, addOns: l.addOns, note: l.note,
-  })));
+  }))).returning({ id: saleLines.id, lineNo: saleLines.lineNo });
+  const rxRecords = rxLines.flatMap((i) => {
+    const rx = s.lines[i].prescription;
+    const line = savedLines.find((x) => x.lineNo === i + 1);
+    return rx && line ? [{ tenantId: ctx.tenantId, saleId: s.saleId, saleLineId: line.id, ...rx, recordedBy: cashierId, approvedBy: rxApprovedBy }] : [];
+  });
+  if (rxRecords.length) {
+    await tx.insert(prescriptions).values(rxRecords);
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'prescription_recorded', recordType: 'sale', recordId: s.saleId, changes: { lines: rxRecords.length, approvedBy: rxApprovedBy } });
+  }
   for (const t of s.tenders) {
     if (t.method === 'store_credit' && !(await redeemStoreCredit(tx, { tenantId: ctx.tenantId, customerId: customer!.id, amountPesewas: t.amountPesewas, saleId: s.saleId, userId: ctx.userId }))) {
       refuse('insufficient_store_credit');
