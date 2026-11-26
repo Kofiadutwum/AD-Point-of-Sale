@@ -7,7 +7,7 @@ import { branches, tenants } from './tenancy';
 
 // Stock is always held in base units (spec 6.0). Balances may go below zero: a sale is allowed even when recorded stock runs out (4.1).
 
-export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste';
+export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste' | 'return_restock';
 export type SerialStatus = 'in_stock' | 'sold';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -97,7 +97,7 @@ export const stockMovements = pgTable('stock_movements', {
   foreignKey({ name: 'stock_movements_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
   foreignKey({ name: 'stock_movements_batch_fk', columns: [t.tenantId, t.batchId], foreignColumns: [stockBatches.tenantId, stockBatches.id] }),
   foreignKey({ name: 'stock_movements_serial_fk', columns: [t.tenantId, t.serialId], foreignColumns: [serials.tenantId, serials.id] }),
-  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste')`),
+  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock')`),
   check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage')`),
   check('stock_movements_quantity', sql`${t.quantity} <> 0`),
 ]);
