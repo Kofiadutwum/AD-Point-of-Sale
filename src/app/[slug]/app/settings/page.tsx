@@ -5,17 +5,17 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getOfflineEnabled, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
+import { getCashSettings, getOfflineEnabled, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveOfflineAction, savePharmacyAction, saveProfileAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, saveCashAction, savePharmacyAction, saveProfileAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy] = await Promise.all([
+  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy, cash] = await Promise.all([
     getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
-    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx),
+    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx), getCashSettings(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -81,6 +81,14 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               <option value={0}>No rounding</option><option value={5}>5 pesewas</option><option value={10}>10 pesewas</option><option value={50}>50 pesewas</option><option value={100}>GHS 1</option>
             </select>
           </label>
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Shifts and cash</h2>
+        <ActionForm action={saveCashAction.bind(null, slug)} submitLabel="Save cash settings">
+          <Check name="requireShifts" label="Require an open shift to sell" defaultChecked={cash.requireShifts} />
+          <Field label="Till difference a cashier may leave without a manager (GHS, 0 = any)" name="varianceLimit" inputMode="decimal" defaultValue={(cash.cashVarianceLimitPesewas / 100).toFixed(2)} />
+          <Field label="Expenses above this need a manager (GHS, 0 = always)" name="expenseLimit" inputMode="decimal" defaultValue={(cash.expenseApprovalLimitPesewas / 100).toFixed(2)} />
         </ActionForm>
       </section>
       <section className="max-w-md">
