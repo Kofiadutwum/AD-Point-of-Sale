@@ -7,10 +7,13 @@ import { writeAudit } from './audit';
 import type { Ctx } from './context';
 import { newToken, tokenHash } from './crypto';
 import { verifyStaffPin } from './devices';
+import type { Permission } from '@/lib/permissions';
 import { type Fail, fail, isUuid } from './products';
 
-export type ApprovalAction = 'refund' | 'refund_other_method' | 'no_receipt_return';
-const ACTIONS: readonly ApprovalAction[] = ['refund', 'refund_other_method', 'no_receipt_return'];
+export type ApprovalAction = 'refund' | 'refund_other_method' | 'no_receipt_return' | 'dispense_prescription';
+const ACTIONS: readonly ApprovalAction[] = ['refund', 'refund_other_method', 'no_receipt_return', 'dispense_prescription'];
+/** A pharmacist approves prescription-only medicine (spec 6.36); managers approve everything else. */
+const approverPermission = (action: ApprovalAction): Permission => (action === 'dispense_prescription' ? 'dispense_prescription' : 'approve_actions');
 const VALID_MS = 2 * 60_000;
 
 type RequestResult = { ok: true; token: string } | Fail<'invalid_input' | 'self_approval' | 'not_authorised' | 'wrong_pin' | 'pin_locked'>;
@@ -23,7 +26,7 @@ export async function requestApproval(db: Db, ctx: Ctx, input: { action: Approva
   return withTenant(db, ctx.tenantId, async (tx): Promise<RequestResult> => {
     const [me] = await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId));
     const [approver] = await tx.select().from(users).where(eq(users.id, input.approverId)).for('update');
-    if (!approver || approver.status !== 'active' || !approver.permissions.includes('approve_actions')
+    if (!approver || approver.status !== 'active' || !approver.permissions.includes(approverPermission(input.action))
       || !approver.branchIds.some((b) => me?.branchIds.includes(b))) return fail('not_authorised');
     const pin = await verifyStaffPin(tx, { tenantId: ctx.tenantId, staff: approver, pin: input.pin, registerId: ctx.registerId ?? null }, now);
     if (pin !== 'ok') return fail(pin);
@@ -47,12 +50,12 @@ export async function consumeApproval(tx: Tx, ctx: Ctx, input: { token: string; 
 }
 
 /** People who could approve for this user: active, not themselves, with a PIN and `approve_actions`, sharing a branch. */
-export async function listApprovers(db: Db, ctx: Ctx): Promise<Array<{ id: string; name: string }>> {
+export async function listApprovers(db: Db, ctx: Ctx, permission: Permission = 'approve_actions'): Promise<Array<{ id: string; name: string }>> {
   return withTenant(db, ctx.tenantId, async (tx) => {
     const [me] = await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId));
     const rows = await tx.select({ id: users.id, name: users.name, permissions: users.permissions, branchIds: users.branchIds, pinHash: users.pinHash })
       .from(users).where(and(eq(users.status, 'active'), ne(users.id, ctx.userId))).orderBy(asc(users.name));
-    return rows.filter((u) => u.pinHash && u.permissions.includes('approve_actions') && u.branchIds.some((b) => me?.branchIds.includes(b)))
+    return rows.filter((u) => u.pinHash && u.permissions.includes(permission) && u.branchIds.some((b) => me?.branchIds.includes(b)))
       .map((u) => ({ id: u.id, name: u.name }));
   });
 }

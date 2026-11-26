@@ -5,17 +5,17 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getOfflineEnabled, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
+import { getOfflineEnabled, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveOfflineAction, saveProfileAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, savePharmacyAction, saveProfileAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules, offline, salesSettings, returnSettings] = await Promise.all([
+  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy] = await Promise.all([
     getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
-    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx),
+    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -81,6 +81,13 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
               <option value={0}>No rounding</option><option value={5}>5 pesewas</option><option value={10}>10 pesewas</option><option value={50}>50 pesewas</option><option value={100}>GHS 1</option>
             </select>
           </label>
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Pharmacy</h2>
+        <ActionForm action={savePharmacyAction.bind(null, slug)} submitLabel="Save pharmacy settings">
+          <Check name="otcOnly" label="Over-the-counter medicine only (licensed chemical seller)" defaultChecked={pharmacy.otcOnly} />
+          <Field label="Warn about expiry this many days ahead" name="expiryWarningDays" type="number" min={1} max={365} defaultValue={pharmacy.expiryWarningDays} />
         </ActionForm>
       </section>
       <section className="max-w-md">

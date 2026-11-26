@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { PricedLine } from '@/device/catalogue';
 import { type ActiveCashier, switchCashier as switchCashierOnDevice } from '@/device/pin';
 import { refreshCache, REFRESH_EVERY_MS } from '@/device/refresh';
-import { buildSaleRequest, checkTenders, formatReceiptNumber, offlineBlock, outboxHasChannelOrder, type TenderInput } from '@/device/sale';
+import {
+  buildSaleRequest, checkTenders, formatReceiptNumber, isPrescriptionOnly, offlineBlock, outboxHasChannelOrder, type TenderInput, type TillPrescription,
+} from '@/device/sale';
 import { type DeviceMeta, type OutboxEntry, openDeviceStore } from '@/device/store';
 import { retryHeld as retryHeldOnDevice, sendSaleNow, type SyncDeps, syncOutbox } from '@/device/sync';
 import type { CartTotals } from '@/lib/cart-totals';
@@ -90,7 +92,7 @@ export function useDevice(slug: string) {
     return r;
   }, [deps, setCashier, tick]);
 
-  const completeSale = useCallback(async (lines: PricedLine[], totals: CartTotals, tenders: TenderInput[], foodChoice?: FoodChoice):
+  const completeSale = useCallback(async (lines: PricedLine[], totals: CartTotals, tenders: TenderInput[], foodChoice?: FoodChoice, rx?: TillPrescription):
     Promise<{ ok: true; receipt: Receipt } | { ok: false; error: string }> => {
     if (!cache || !meta || !cashier) return { ok: false, error: 'Switch in with your PIN first.' };
     if (!cache.staff.find((s) => s.id === cashier.staffId)?.permissions.includes('make_sale')) return { ok: false, error: 'You are not set up to sell on this till.' };
@@ -110,11 +112,28 @@ export function useDevice(slug: string) {
         return { ok: false, error: 'This app order is already waiting to send from this till.' };
       }
     }
+    const saleId = crypto.randomUUID();
+    const online = reachable && cashier.serverSession;
+    // spec 6.36: prescription-only medicine needs a record and someone who may dispense; a PIN never waits in the outbox
+    const isRx = (variantId: string) => isPrescriptionOnly(cache, variantId);
+    let prescriptionApprovalToken: string | undefined;
+    if (lines.some((l) => isRx(l.variantId))) {
+      if (!rx?.prescription) return { ok: false, error: 'Enter the prescription details.' };
+      if (!cache.staff.find((s) => s.id === cashier.staffId)?.permissions.includes('dispense_prescription')) {
+        if (!online) return { ok: false, error: 'Connect to the internet, or have a pharmacist switch in, to sell prescription-only medicine.' };
+        if (!rx.approverId || !rx.pin) return { ok: false, error: 'A pharmacist must approve: choose who and enter their PIN.' };
+        const res = await fetch(`/api/${slug}/approvals`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'dispense_prescription', contextKey: saleId, approverId: rx.approverId, pin: rx.pin }),
+        }).catch(() => null);
+        const a = (await res?.json().catch(() => null)) as { ok: boolean; token?: string; error?: string } | null;
+        if (!a?.ok || !a.token) return { ok: false, error: a?.error === 'wrong_pin' ? 'Wrong PIN.' : a?.error === 'pin_locked' ? 'Too many wrong PINs. Try again later.' : 'That person cannot approve.' };
+        prescriptionApprovalToken = a.token;
+      }
+    }
     const now = new Date();
     const counter = await store.takeReceiptCounter();
     const receiptNumber = formatReceiptNumber(cache.register.branchCode, cache.register.registerCode, counter);
-    const saleId = crypto.randomUUID();
-    const online = reachable && cashier.serverSession;
     const food = cache.food && foodChoice
       ? { ...foodChoice, diningOption: foodChoice.serviceMode === 'quick' ? 'eat_in' as const : foodChoice.diningOption }
       : undefined;
@@ -124,7 +143,8 @@ export function useDevice(slug: string) {
       await store.takeOrderNumber(businessDate(cache.shop.timezone, cache.shop.businessDayCutoff, now)));
     const offlineNumber = counterOrder && !online ? await deviceNumber() : undefined;
     const request = buildSaleRequest({
-      saleId, receiptNumber, cashierId: cashier.staffId, lines, tenders, tenderIds: tenders.map(() => crypto.randomUUID()), now, fromOfflineOutbox: !online,
+      saleId, receiptNumber, cashierId: cashier.staffId, tenders, tenderIds: tenders.map(() => crypto.randomUUID()), now, fromOfflineOutbox: !online, prescriptionApprovalToken,
+      lines: lines.map((l) => (isRx(l.variantId) && rx ? { ...l, prescription: rx.prescription } : l)),
       food: food && { ...food, ...(offlineNumber ? { orderNumber: offlineNumber } : {}) },
     });
     const entry = { saleId, seq: counter, request, totalPesewas: totals.totalPesewas, status: 'queued' as const, attempts: 0, nextAttemptAt: 0, lastError: null, reported: false };
@@ -155,7 +175,7 @@ export function useDevice(slug: string) {
     await reload();
     void tick(false);
     return { ok: true, receipt };
-  }, [cache, cashier, deps, meta, reachable, reload, store, tick]);
+  }, [cache, cashier, deps, meta, reachable, reload, slug, store, tick]);
 
   const retryHeld = useCallback(async (saleId: string) => {
     await retryHeldOnDevice(store, saleId);

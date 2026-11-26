@@ -1,7 +1,7 @@
 export const PERMISSIONS = [
   'manage_shop_settings', 'manage_staff', 'manage_devices', 'manage_products', 'receive_stock',
   'make_sale', 'give_discount', 'approve_actions', 'view_dashboard', 'view_reports', 'export_data',
-  'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_channels', 'take_orders', 'void_sent_items', 'process_return', 'refund_without_approval', 'refund_other_method',
+  'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'manage_channels', 'take_orders', 'void_sent_items', 'process_return', 'refund_without_approval', 'refund_other_method', 'dispense_prescription',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 export type RolePreset = 'owner' | 'manager' | 'cashier';
@@ -16,7 +16,7 @@ export const ROLE_PRESETS: Record<RolePreset, readonly Permission[]> = {
 export const READ_ONLY_PERMISSIONS: readonly Permission[] = ['view_dashboard', 'view_reports', 'export_data'];
 
 /** A PIN unlocks only selling: a 4-6 digit PIN must never carry staff, settings, or device control. */
-export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_discount', 'approve_actions', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return'];
+export const TILL_PERMISSIONS: readonly Permission[] = ['make_sale', 'give_discount', 'approve_actions', 'mark_sold_out', 'run_kitchen', 'record_kitchen_stock', 'enter_channel_orders', 'take_orders', 'process_return', 'dispense_prescription'];
 
 export type ShopType = 'retail' | 'pharmacy' | 'food';
 export const SHOP_TYPES: readonly ShopType[] = ['retail', 'pharmacy', 'food'];

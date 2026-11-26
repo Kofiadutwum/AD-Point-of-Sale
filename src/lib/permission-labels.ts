@@ -35,4 +35,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   process_return: 'Take returns and refunds',
   refund_without_approval: 'Refund without a manager',
   refund_other_method: 'Refund by a different method',
+  dispense_prescription: 'Sell prescription-only medicine (or approve it)',
 };

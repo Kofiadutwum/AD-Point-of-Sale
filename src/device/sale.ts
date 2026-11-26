@@ -44,20 +44,31 @@ export function buildSaleRequest(i: {
   saleId: string; receiptNumber: string; cashierId: string;
   lines: Array<{
     variantId: string; unitId: string; quantity: string; unitPricePesewas: number; amountPesewas?: number | null; choices?: Array<{ slotId: string; variantId: string }>;
-    addOns?: Array<{ groupId: string; optionId: string }>; note?: string;
+    addOns?: Array<{ groupId: string; optionId: string }>; note?: string; prescription?: SaleRequest['lines'][number]['prescription'];
   }>;
-  tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean; food?: SaleRequest['food'];
+  tenders: TenderInput[]; tenderIds: string[]; now: Date; fromOfflineOutbox: boolean; food?: SaleRequest['food']; prescriptionApprovalToken?: string;
 }): SaleRequest {
   return {
     saleId: i.saleId, receiptNumber: i.receiptNumber, cashierId: i.cashierId, deviceCreatedAt: i.now.toISOString(), fromOfflineOutbox: i.fromOfflineOutbox,
-    ...(i.food ? { food: i.food } : {}),
+    ...(i.food ? { food: i.food } : {}), ...(i.prescriptionApprovalToken ? { prescriptionApprovalToken: i.prescriptionApprovalToken } : {}),
     lines: i.lines.map((l) => ({
       variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, unitPricePesewas: l.unitPricePesewas, discountPesewas: 0,
       ...(l.amountPesewas != null ? { byAmount: true } : {}), ...(l.choices?.length ? { choices: l.choices } : {}),
-      ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note?.trim() ? { note: l.note.trim() } : {}),
+      ...(l.addOns?.length ? { addOns: l.addOns } : {}), ...(l.note?.trim() ? { note: l.note.trim() } : {}), ...(l.prescription ? { prescription: l.prescription } : {}),
     })),
     tenders: i.tenders.map((t, k) => ({
       id: i.tenderIds[k], method: t.method, amountPesewas: t.amountPesewas, ...(t.method === 'cash' ? {} : { reference: t.reference.trim() }),
     })),
   };
+}
+
+/** Spec 6.36: what the till collects for prescription-only medicine; the PIN goes straight to the server, never into the outbox. */
+export type TillPrescription = {
+  prescription: { patientName: string; prescriberName: string; facility: string; prescriptionDate: string }; approverId?: string; pin?: string;
+};
+
+/** True when the variant's product is prescription-only (caches saved before the flag existed say no). */
+export function isPrescriptionOnly(cache: DeviceCache, variantId: string): boolean {
+  const productId = cache.variants.find((v) => v.id === variantId)?.productId;
+  return cache.products.find((p) => p.id === productId)?.prescriptionOnly === true;
 }

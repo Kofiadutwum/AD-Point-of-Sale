@@ -28,7 +28,7 @@ export async function tillRegister(db: Db, ctx: Ctx, deviceToken: string | undef
 
 export type TillItem = {
   variantId: string; unitId: string; name: string; unitName: string; quantity: string; unitPricePesewas: number; taxRateBp: number;
-  tracking: Tracking; fractions: boolean; available: boolean;
+  tracking: Tracking; fractions: boolean; available: boolean; prescriptionOnly: boolean; // spec 6.36
 };
 
 /** A scanned barcode or scale label (6.22), priced for this branch and customer (6.21). */
@@ -52,7 +52,7 @@ export async function tillItemForVariant(
     const [item] = await tx.select({
       unitId: variantUnits.id, unitName: variantUnits.name, factor: variantUnits.factor, isBase: variantUnits.isBase, unitPrice: variantUnits.pricePesewas,
       variantName: variants.name, basePrice: variants.basePricePesewas, allowsFractions: variants.allowsFractions, variantStatus: variants.status,
-      productName: products.name, productStatus: products.status, taxRuleId: products.taxRuleId, tracking: products.tracking,
+      productName: products.name, productStatus: products.status, taxRuleId: products.taxRuleId, tracking: products.tracking, prescriptionOnly: products.prescriptionOnly,
     }).from(variantUnits).innerJoin(variants, eq(variants.id, variantUnits.variantId)).innerJoin(products, eq(products.id, variants.productId))
       .where(and(eq(variantUnits.variantId, input.variantId), input.unitId ? eq(variantUnits.id, input.unitId) : eq(variantUnits.isBase, true)));
     if (!item) return null;
@@ -67,7 +67,7 @@ export async function tillItemForVariant(
       variantId: input.variantId, unitId: item.unitId, name: itemLabel(item.productName, item.variantName), unitName: item.unitName, quantity,
       unitPricePesewas: resolvePrice(list, { unitId: item.unitId, quantity, unitPricePesewas: item.unitPrice, unitFactor: item.factor, basePricePesewas: item.basePrice }),
       taxRateBp: rule ? effectiveRateBp(rule) : 0, tracking: item.tracking, fractions: item.isBase && item.allowsFractions,
-      available: item.productStatus === 'active' && item.variantStatus === 'active',
+      available: item.productStatus === 'active' && item.variantStatus === 'active', prescriptionOnly: item.prescriptionOnly,
     };
   });
 }
