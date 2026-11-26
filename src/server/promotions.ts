@@ -100,7 +100,7 @@ export async function checkCoupon(tx: Tx, code: string, customerId: string | nul
 }
 
 /** The coupon is used up when its sale is saved. */
-export async function useCoupon(tx: Tx, tenantId: string, couponId: string, saleId: string, customerId: string | null): Promise<void> {
+export async function redeemCoupon(tx: Tx, tenantId: string, couponId: string, saleId: string, customerId: string | null): Promise<void> {
   await tx.insert(couponUses).values({ tenantId, couponId, saleId, customerId });
   await tx.update(coupons).set({ usedCount: sql`${coupons.usedCount} + 1` }).where(eq(coupons.id, couponId));
 }
@@ -140,5 +140,16 @@ export async function previewCoupon(db: Db, ctx: Ctx, code: string, customerId: 
   return withTenant(db, ctx.tenantId, async (tx) => {
     const c = await checkCoupon(tx, code, customerId, branchId, ctx.timezone, now);
     return c === 'invalid_coupon' ? null : c.promo;
+  });
+}
+
+export async function setPromotionActive(db: Db, ctx: Ctx, id: string, active: boolean): Promise<{ ok: true } | Fail<'not_found'>> {
+  assertPermission(ctx, 'manage_promotions');
+  if (!isUuid(id)) return fail('not_found');
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const [p] = await tx.update(promotions).set({ active }).where(eq(promotions.id, id)).returning({ id: promotions.id });
+    if (!p) return fail('not_found');
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: active ? 'promotion_started' : 'promotion_stopped', recordType: 'promotion', recordId: id });
+    return { ok: true as const };
   });
 }

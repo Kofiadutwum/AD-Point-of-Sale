@@ -1,6 +1,6 @@
 'use client';
 import { cashRounding } from '@/lib/cash-rounding';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { checkCouponAction, findCustomersAction, findItemAction, priceItemAction, rxApprovalAction } from '@/app/[slug]/app/sell/actions';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { formatCedis, parseCedis, pesewasTimesQty } from '@/lib/money';
@@ -66,6 +66,8 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
   const [busy, setBusy] = useState(false);
   const [coupon, setCoupon] = useState<{ code: string; promo: Promo } | null>(null);
   const [couponText, setCouponText] = useState('');
+  const [clock, setClock] = useState(() => new Date()); // promotion windows (happy hours) move with the time
+  useEffect(() => { const t = setInterval(() => setClock(new Date()), 60_000); return () => clearInterval(t); }, []);
   const [done, setDone] = useState<{ saleId: string; change: number; receiptNumber: string; total: number; giftCards?: Array<{ code: string; amountPesewas: number }> } | null>(null);
   const saleId = useRef<string | null>(null);
   const codeInput = useRef<HTMLInputElement>(null);
@@ -84,7 +86,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     });
     setHits([]);
     setMessage(null);
-  }, []);
+  }, [setMessage]);
 
   const find = useCallback(async (text: string) => {
     if (!text.trim()) return;
@@ -94,7 +96,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     else setMessage('Product not found.');
     setCode('');
     codeInput.current?.focus();
-  }, [slug, till.branchId, customer, add]);
+  }, [slug, till.branchId, customer, add, setMessage]);
 
   const onCamera = useCallback((c: string) => { setCamera(false); void find(c); }, [find]);
 
@@ -105,7 +107,7 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
     setLines((ls) => ls.map((x, j) => (j === i ? { ...x, quantity: priced.quantity, unitPricePesewas: priced.unitPricePesewas } : x)));
   }
 
-  const at = { ...clockIn(timeZone, new Date()), branchId: till.branchId };
+  const at = { ...clockIn(timeZone, clock), branchId: till.branchId };
   const running = [...promotions.filter((x) => promoRunning(x, at)), ...(coupon ? [coupon.promo] : [])];
   const promo = running.length ? applyPromotions(lines.map((l) => ({
     productId: l.productId, categoryId: l.categoryId, unitPricePesewas: l.unitPricePesewas, quantity: l.quantity,
@@ -117,6 +119,16 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
   } catch {
     totals = null; // a discount above its line; shown as an error below
   }
+  // spec 6.50: the paired customer display follows this cart (best effort; a missing display is fine)
+  const displayCart = totals && lines.length ? JSON.stringify({
+    lines: lines.map((l, i) => ({ name: l.name, quantity: l.quantity, totalPesewas: totals!.lines[i].totalPesewas })), discountPesewas: totals.discountPesewas, totalPesewas: totals.totalPesewas, paidPesewas: 0, changePesewas: 0,
+  }) : null;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void fetch(`/api/${slug}/display/cart`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: `{"cart":${done ? 'null' : displayCart ?? 'null'}}` }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(t);
+  }, [slug, displayCart, done]);
   const cashPesewas = cash.trim() ? parseCedis(cash) : 0;
   const otherPesewas = other.amount.trim() ? parseCedis(other.amount) : 0;
   const paid = (cashPesewas ?? 0) + (otherPesewas ?? 0);

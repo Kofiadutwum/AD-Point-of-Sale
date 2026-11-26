@@ -213,3 +213,24 @@ export async function saveStockSettings(db: Db, ctx: Ctx, input: StockSettings):
     return { ok: true } as const;
   });
 }
+
+export type OrderSettings = { layawayMinDepositPercent: number; orderCancellationFeePesewas: number; orderRefundAs: 'store_credit' | 'cash'; momoNumber: string | null };
+
+export async function getOrderSettings(db: Db, ctx: Ctx): Promise<OrderSettings> {
+  const [t] = await withTenant(db, ctx.tenantId, (tx) => tx.select({
+    layawayMinDepositPercent: tenants.layawayMinDepositPercent, orderCancellationFeePesewas: tenants.orderCancellationFeePesewas, orderRefundAs: tenants.orderRefundAs, momoNumber: tenants.momoNumber,
+  }).from(tenants).where(eq(tenants.id, ctx.tenantId)));
+  return t;
+}
+
+/** Spec 4.21, 4.28: layaway deposit and cancellation rules, and the MoMo number on the customer display. */
+export async function saveOrderSettings(db: Db, ctx: Ctx, input: OrderSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
+  assertPermission(ctx, 'manage_shop_settings');
+  if (!Number.isInteger(input.layawayMinDepositPercent) || input.layawayMinDepositPercent < 0 || input.layawayMinDepositPercent > 100 || !Number.isInteger(input.orderCancellationFeePesewas)
+    || input.orderCancellationFeePesewas < 0 || input.orderCancellationFeePesewas > 100_000_000 || !['store_credit', 'cash'].includes(input.orderRefundAs) || (input.momoNumber !== null && input.momoNumber.length > 20)) return { ok: false, error: 'invalid_input' };
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    await tx.update(tenants).set(input).where(eq(tenants.id, ctx.tenantId));
+    await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'order_settings_saved', changes: input });
+    return { ok: true } as const;
+  });
+}

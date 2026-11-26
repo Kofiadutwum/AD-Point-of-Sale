@@ -29,7 +29,7 @@ import { assertPermission, type Ctx } from './context';
 import { redeemStoreCredit } from './customers';
 import { foodEnabled } from './food-settings';
 import { loadPriceRules } from './price-lists';
-import { activePromotions, checkCoupon, useCoupon } from './promotions';
+import { activePromotions, checkCoupon, redeemCoupon } from './promotions';
 import { awardPoints, issueGiftCards, recordCommissions, redeemGiftCard, redeemPoints } from './rewards';
 import { type Fail, fail, isUuid, itemLabel } from './products';
 import type { PendingLine, SaleLineAddOn, SaleLineChoice } from '@/db/schema';
@@ -466,7 +466,7 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   }
   let giftCardsIssued: Array<{ code: string; amountPesewas: number }> | undefined;
   if (done.status === 'completed') {
-    if (coupon) await useCoupon(tx, ctx.tenantId, coupon.couponId, s.saleId, customer?.id ?? null);
+    if (coupon) await redeemCoupon(tx, ctx.tenantId, coupon.couponId, s.saleId, customer?.id ?? null);
     if (customer) {
       const money = s.tenders.filter((t) => MONEY.includes(t.method)).reduce((a, t) => a + t.amountPesewas, 0) - changeDue;
       await awardPoints(tx, ctx.tenantId, customer.id, s.saleId, money, saleTotal, totals.taxPesewas);

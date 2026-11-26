@@ -269,14 +269,14 @@ export async function deductStockForLine(
 /** An item to receive by barcode (its own unit) or SKU (the base unit). */
 export async function lookupStockItem(
   db: Db, ctx: Ctx, code: string, permission: Permission = 'receive_stock', // the returns screen looks items up too
-): Promise<{ variantId: string; unitId: string; name: string; unitName: string; tracking: Tracking } | null> {
+): Promise<{ variantId: string; unitId: string; productId: string; name: string; unitName: string; tracking: Tracking } | null> {
   assertPermission(ctx, permission);
   const barcode = typeof code === 'string' ? normaliseBarcode(code) : null;
   const sku = typeof code === 'string' ? normaliseSku(code) : null;
   if (!barcode && !sku) return null;
   return withTenant(db, ctx.tenantId, async (tx) => {
     const cols = {
-      variantId: variants.id, unitId: variantUnits.id, productName: products.name, variantName: variants.name, unitName: variantUnits.name,
+      variantId: variants.id, unitId: variantUnits.id, productId: products.id, productName: products.name, variantName: variants.name, unitName: variantUnits.name,
       tracking: products.tracking,
     };
     const [byBarcode] = barcode ? await tx.select(cols).from(barcodes)
@@ -287,7 +287,7 @@ export async function lookupStockItem(
       .innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
       .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.sku, sku)) : [];
     const hit = byBarcode ?? bySku;
-    return hit ? { variantId: hit.variantId, unitId: hit.unitId, name: itemLabel(hit.productName, hit.variantName), unitName: hit.unitName, tracking: hit.tracking } : null;
+    return hit ? { variantId: hit.variantId, unitId: hit.unitId, productId: hit.productId, name: itemLabel(hit.productName, hit.variantName), unitName: hit.unitName, tracking: hit.tracking } : null;
   });
 }
 

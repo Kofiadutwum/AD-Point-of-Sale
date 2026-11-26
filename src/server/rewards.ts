@@ -2,7 +2,7 @@ import 'server-only';
 import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, desc, eq, gte, isNull, lt, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
-import { commissionEntries, commissionRules, customers, giftCardEntries, giftCards, loyaltyEntries, tenants, users } from '@/db/schema';
+import { commissionEntries, commissionRules, customers, giftCardEntries, giftCards, loyaltyEntries, tenants, users, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { addMonths, todayIn } from '@/lib/dates';
 import { divHalfUp } from '@/lib/decimal';
@@ -253,4 +253,19 @@ export async function markCommissionPaid(db: Db, ctx: Ctx, input: { userId: stri
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'commission_paid', recordType: 'user', recordId: input.userId, changes: { ...input, paidPesewas: paid } });
     return { ok: true as const, paidPesewas: paid };
   });
+}
+
+/** Spec 4.20: a gift card is sold as an item; this makes one for a fixed value (no stock is kept for it). */
+export async function createGiftCardProduct(db: Db, ctx: Ctx, amountPesewas: number): Promise<{ ok: true; variantId: string } | Fail<'invalid_input'>> {
+  assertPermission(ctx, 'manage_promotions');
+  if (!Number.isInteger(amountPesewas) || amountPesewas < 100 || amountPesewas > 10_000_000) return fail('invalid_input');
+  const { createProduct } = await import('./products');
+  const r = await createProduct(db, ctx, {
+    name: `Gift card GHS ${(amountPesewas / 100).toFixed(2)}`, kind: 'standard', tracking: 'none', baseUnit: 'card', allowsFractions: false,
+    variants: [{ basePricePesewas: amountPesewas, costPesewas: 0 }],
+  });
+  if (!r.ok) return fail('invalid_input');
+  const variantId = r.variants[0].variantId;
+  await withTenant(db, ctx.tenantId, (tx) => tx.update(variants).set({ isGiftCard: true }).where(eq(variants.id, variantId)));
+  return { ok: true, variantId };
 }
