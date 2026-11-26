@@ -45,6 +45,8 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/marketing`, label: 'Promotional SMS', allowed: ctx.permissions.includes('marketing') },
     { href: `/${slug}/app/storefront`, label: 'Storefront', allowed: ctx.permissions.includes('manage_storefront') },
     { href: `/${slug}/app/billing`, label: 'Billing', allowed: ctx.permissions.includes('manage_shop_settings') },
+    { href: `/${slug}/app/online-orders`, label: 'Online orders', allowed: ctx.permissions.includes('online_orders') },
+    { href: `/${slug}/app/integrations`, label: 'Payments and integrations', allowed: ctx.permissions.includes('manage_integrations') },
     { href: `/${slug}/app/promotions`, label: 'Promotions and loyalty', allowed: ctx.permissions.includes('manage_promotions') },
     { href: `/${slug}/app/orders`, label: 'Layaway and special orders', allowed: ctx.permissions.includes('layaway') },
     { href: `/${slug}/app/commissions`, label: 'Staff commission', allowed: ctx.permissions.includes('manage_commissions') },

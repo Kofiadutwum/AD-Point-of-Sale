@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
 import { DEFAULT_MODULES, MODULES, PERMISSIONS, ROLE_PRESETS, TILL_PERMISSIONS } from '@/lib/permissions';
 
-it('gives owners every permission and managers all but shop settings', () => {
+it('gives owners every permission and managers all but shop settings and integrations', () => {
   expect([...ROLE_PRESETS.owner].sort()).toEqual([...PERMISSIONS].sort());
   expect(ROLE_PRESETS.manager).not.toContain('manage_shop_settings');
-  expect(ROLE_PRESETS.manager).toHaveLength(PERMISSIONS.length - 1);
+  expect(ROLE_PRESETS.manager).not.toContain('manage_integrations'); // API keys, webhooks and the Paystack key stay with the owner
+  expect(ROLE_PRESETS.manager).toHaveLength(PERMISSIONS.length - 2);
 });
 
 it('lets cashiers only sell, mark items sold out, and run the kitchen', () => {

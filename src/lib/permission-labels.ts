@@ -52,4 +52,6 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   manage_promotions: 'Set up promotions, coupons, loyalty, and gift cards',
   layaway: 'Take layaway and special orders',
   manage_commissions: 'Set and pay staff commissions',
+  online_orders: 'Handle storefront online orders',
+  manage_integrations: 'Manage payments, API keys, webhooks and domains',
 };

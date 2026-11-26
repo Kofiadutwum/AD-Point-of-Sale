@@ -2,6 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { getDb } from '@/db/client';
 import { runBillingJob } from '@/server/billing';
 import { queueDueReports, runNotifications } from '@/server/notifications';
+import { expireOnlineOrders } from '@/server/online-orders';
+import { runWebhookDeliveries } from '@/server/webhooks';
 import { paystack } from '@/server/paystack';
 import { sendSms } from '@/server/sms';
 
@@ -20,6 +22,8 @@ export async function GET(request: Request) {
   const now = new Date();
   const queued = await queueDueReports(db, now);
   const billing = await runBillingJob(db, now, paystack); // reminders and renewals; keys make every-15-minute runs safe
+  const expiredOrders = await expireOnlineOrders(db, now); // spec 6.49: before sending, so the lapse SMS goes out this run
   const result = await runNotifications(db, now, sendSms);
-  return Response.json({ queued, billing, ...result });
+  const webhooks = await runWebhookDeliveries(db, now);
+  return Response.json({ queued, billing, expiredOrders, webhooks, ...result });
 }

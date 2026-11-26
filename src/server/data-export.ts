@@ -8,13 +8,22 @@ import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { type Fail, fail, itemLabel } from './products';
 
-export const DATASETS = ['products', 'customers', 'stock', 'sales', 'payments', 'ledger', 'expenses', 'accounting'] as const;
+export const DATASETS = ['products', 'customers', 'stock', 'sales', 'payments', 'ledger', 'expenses', 'accounting', 'journal'] as const;
 export type Dataset = (typeof DATASETS)[number];
 export const DATASET_LABELS: Record<Dataset, string> = {
   products: 'Products and prices', customers: 'Customers and balances', stock: 'Stock on hand by branch', sales: 'Sales, one row per item sold',
   payments: 'Payments taken', ledger: 'Customer account entries', expenses: 'Expenses', accounting: 'Accounting summary by day',
+  journal: 'General journal for accounting software (QuickBooks, Xero, Sage)',
 };
-const DATED: readonly Dataset[] = ['sales', 'payments', 'ledger', 'expenses', 'accounting'];
+const DATED: readonly Dataset[] = ['sales', 'payments', 'ledger', 'expenses', 'accounting', 'journal'];
+
+/** Ledger accounts a day's money moves through; shops map these names once in their accounting software. */
+const ACCOUNT: Record<string, string> = {
+  cash: 'Cash on hand', momo_manual: 'Mobile money', card_terminal: 'Card clearing', bank_transfer: 'Bank', paystack: 'Paystack clearing',
+  credit: 'Accounts receivable', store_credit: 'Store credit liability', gift_card: 'Gift card liability', deposit: 'Customer deposits',
+  points: 'Loyalty rewards expense', exchange_credit: 'Sales returns', channel_settlement: 'Delivery app receivable',
+};
+const accountOf = (method: string) => ACCOUNT[method] ?? 'Suspense';
 export const isDated = (d: Dataset) => DATED.includes(d);
 
 const MAX_DAYS = 366;
@@ -27,6 +36,7 @@ const cedis = (p: number | null) => (p === null ? null : (p / 100).toFixed(2)); 
 const createdIn = (col: Parameters<typeof gte>[0], r: Range) => and(gte(col, new Date(`${r.from}T00:00:00Z`)), lt(col, new Date(Date.parse(`${r.to}T00:00:00Z`) + 86_400_000)));
 
 const BUILDERS: Record<Dataset, (tx: Tx, r: Range) => Promise<Row[]>> = {
+  journal: (tx, r) => journalRows(tx, r),
   products: async (tx) => [
     ['Product', 'Variant', 'SKU', 'Price (GHS)', 'Average cost per base unit (GHS)', 'Reorder level', 'Status'],
     ...(await tx.select({ p: products.name, v: variants.name, sku: variants.sku, price: variants.basePricePesewas, cost: variants.averageCost, reorder: variants.reorderLevel, status: variants.status })
@@ -82,7 +92,7 @@ const BUILDERS: Record<Dataset, (tx: Tx, r: Range) => Promise<Row[]>> = {
     const utcDay = (col: typeof returns.createdAt | typeof expenses.createdAt) => sql<string>`to_char(${col} at time zone 'UTC', 'YYYY-MM-DD')`;
     for (const x of await tx.select({ d: utcDay(returns.createdAt), amount: sql<number>`sum(${returns.refundPesewas})::int` }).from(returns).where(createdIn(returns.createdAt, r)).groupBy(utcDay(returns.createdAt))) at(x.d).refunds = x.amount;
     for (const x of await tx.select({ d: utcDay(expenses.createdAt), amount: sql<number>`sum(${expenses.amountPesewas})::int` }).from(expenses).where(createdIn(expenses.createdAt, r)).groupBy(utcDay(expenses.createdAt))) at(x.d).expenses = x.amount;
-    const methods = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'credit', 'store_credit', 'exchange_credit', 'channel_settlement'];
+    const methods = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'paystack', 'credit', 'store_credit', 'exchange_credit', 'channel_settlement', 'gift_card', 'points', 'deposit'];
     return [
       ['Date', 'Sales (GHS)', 'Discounts (GHS)', 'Tax (GHS)', ...methods.map((m) => `${m} (GHS)`), 'Refunds (GHS)', 'Expenses (GHS)'],
       ...[...days.entries()].sort(([a], [b]) => a.localeCompare(b))
@@ -90,6 +100,53 @@ const BUILDERS: Record<Dataset, (tx: Tx, r: Range) => Promise<Row[]>> = {
     ];
   },
 };
+
+/**
+ * Spec 4.29: a balanced general journal, one entry per business day, in the columns QuickBooks, Xero and Sage journal imports take.
+ * Sales: debit each payment account (cash less change given), credit sales and tax; cash rounding balances the entry.
+ * Refunds and expenses: their own entries from the account the money left.
+ */
+async function journalRows(tx: Tx, r: Range): Promise<Row[]> {
+  type Line = [string, number, number, string]; // account, debit, credit, description (pesewas)
+  const entries = new Map<string, Line[]>();
+  const add = (key: string, l: Line) => { if (l[1] || l[2]) (entries.get(key) ?? entries.set(key, []).get(key)!).push(l); };
+  const inRange = and(eq(sales.status, 'completed'), between(sales.businessDate, r.from, r.to));
+  const daySales = await tx.select({ d: sales.businessDate, total: sql<number>`sum(${sales.totalPesewas})::int`, tax: sql<number>`sum(${sales.taxPesewas})::int`, change: sql<number>`coalesce(sum(${sales.changeDuePesewas}), 0)::int` })
+    .from(sales).where(inRange).groupBy(sales.businessDate);
+  const dayPays = await tx.select({ d: sales.businessDate, m: payments.method, amount: sql<number>`sum(${payments.amountPesewas})::int` })
+    .from(payments).innerJoin(sales, eq(sales.id, payments.saleId)).where(and(inRange, eq(payments.status, 'confirmed'))).groupBy(sales.businessDate, payments.method);
+  for (const s of daySales) {
+    const key = `${s.d}|S`;
+    let debits = 0;
+    for (const p of dayPays.filter((x) => x.d === s.d)) {
+      const amount = p.m === 'cash' ? p.amount - s.change : p.amount;
+      debits += amount;
+      add(key, [accountOf(p.m), amount, 0, `Sales ${s.d}: ${p.m}`]);
+    }
+    add(key, ['Sales', 0, s.total - s.tax, `Sales ${s.d}`]);
+    add(key, ['Tax payable (VAT and levies)', 0, s.tax, `Sales ${s.d}: tax`]);
+    const diff = s.total - debits;
+    if (diff) add(key, ['Cash rounding', diff > 0 ? diff : 0, diff < 0 ? -diff : 0, `Sales ${s.d}: rounding`]);
+  }
+  const utcDay = (col: typeof returns.createdAt | typeof expenses.createdAt) => sql<string>`to_char(${col} at time zone 'UTC', 'YYYY-MM-DD')`;
+  for (const x of await tx.select({ d: utcDay(returns.createdAt), m: returns.refundMethod, amount: sql<number>`sum(${returns.refundPesewas})::int` }).from(returns)
+    .where(createdIn(returns.createdAt, r)).groupBy(utcDay(returns.createdAt), returns.refundMethod)) {
+    add(`${x.d}|R`, ['Sales returns', x.amount, 0, `Refunds ${x.d}: ${x.m}`]);
+    add(`${x.d}|R`, [accountOf(x.m), 0, x.amount, `Refunds ${x.d}: ${x.m}`]);
+  }
+  for (const x of await tx.select({ d: utcDay(expenses.createdAt), c: expenses.category, m: expenses.method, amount: sql<number>`sum(${expenses.amountPesewas})::int` }).from(expenses)
+    .where(createdIn(expenses.createdAt, r)).groupBy(utcDay(expenses.createdAt), expenses.category, expenses.method)) {
+    add(`${x.d}|E`, [`Expenses: ${x.c}`, x.amount, 0, `Expenses ${x.d}: ${x.c}`]);
+    add(`${x.d}|E`, [accountOf(x.m), 0, x.amount, `Expenses ${x.d}: ${x.c}`]);
+  }
+  const rows: Row[] = [['Date', 'Journal No', 'Account', 'Debit', 'Credit', 'Description']];
+  [...entries.keys()].sort().forEach((key, i) => {
+    const [d, kind] = key.split('|');
+    const no = `${kind}-${d.replaceAll('-', '')}-${i + 1}`;
+    for (const [account, debit, credit, memo] of entries.get(key)!) rows.push([d, no, account, debit ? cedis(debit) : '', credit ? cedis(credit) : '', memo]);
+  });
+  return rows;
+}
 
 /** Spec 4.29, 6.46: one dataset as CSV, allowed during read-only expiry; every export is audited. Prescriptions are never exported here. */
 export async function exportData(db: Db, ctx: Ctx, dataset: string, range: Partial<Range>): Promise<{ ok: true; csv: string; filename: string } | Fail<'invalid_input' | 'range_too_long'>> {

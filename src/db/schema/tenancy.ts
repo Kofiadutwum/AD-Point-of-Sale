@@ -62,8 +62,15 @@ export const tenants = pgTable('tenants', {
   storefrontPublished: boolean('storefront_published').notNull().default(false), // spec 4.12: hidden until the owner publishes
   storefrontTakenDown: boolean('storefront_taken_down').notNull().default(false), // set by the platform for terms breaches
   storefront: jsonb('storefront').$type<StorefrontSettings>().notNull().default(sql`'{"about":"","whatsapp":"","hours":"","themeColor":"#1e40af","facebook":"","instagram":"","showPrices":true,"showStock":true,"announcement":"","announcementUntil":""}'::jsonb`),
+  paystackSecretSealed: text('paystack_secret_sealed'), // spec 6.11: the shop's own Paystack secret key, sealed; sales money settles to the shop
+  paystackKeyHint: text('paystack_key_hint'), // e.g. sk_live_…a1b2, shown in settings
+  onlineOrdersEnabled: boolean('online_orders_enabled').notNull().default(false), // spec 6.49
+  onlineOrderExpiryMinutes: integer('online_order_expiry_minutes').notNull().default(60), // unpaid online orders lapse and release stock
+  deliveryFeePesewas: integer('delivery_fee_pesewas').notNull().default(0),
+  transferInstructions: text('transfer_instructions'), // bank or MoMo details shown to visitors paying by transfer
   createdAt: createdAt(),
 }, (t) => [
+  check('tenants_online_order_expiry', sql`${t.onlineOrderExpiryMinutes} between 10 and 10080`),
   check('tenants_service_charge', sql`${t.serviceChargeBp} between 0 and 2500`),
   check('tenants_cash_rounding', sql`${t.cashRoundingStep} in (0, 5, 10, 50, 100)`),
   check('tenants_counter_order_expiry', sql`${t.counterOrderExpiryMinutes} between 5 and 1440`),

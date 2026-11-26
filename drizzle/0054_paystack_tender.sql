@@ -1,0 +1,2 @@
+ALTER TABLE "payments" DROP CONSTRAINT "payments_method";--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_method" CHECK ("payments"."method" in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit', 'points', 'gift_card', 'deposit', 'paystack'));

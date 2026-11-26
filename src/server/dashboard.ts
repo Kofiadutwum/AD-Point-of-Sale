@@ -1,12 +1,14 @@
 import 'server-only';
 import { and, asc, desc, eq, gte, isNotNull, sql } from 'drizzle-orm';
 import type { Db } from '@/db/client';
-import { branches, payments, potRecords, products, sales, stockBalances, TENDER_METHODS, type TenderMethod, tenants, variants } from '@/db/schema';
+import { branches, payments, potRecords, products, registers, sales, stockBalances, TENDER_METHODS, type TenderMethod, tenants, variants } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { addDays, businessDate } from '@/lib/dates';
 import { assertPermission, type Ctx } from './context';
 import { potReminders } from './pots';
 import { itemLabel } from './products';
+
+const ORDER: readonly string[] = [...TENDER_METHODS, 'deposit', 'paystack', 'exchange_credit']; // display order; server-only tenders last
 
 export type Dashboard = {
   businessDate: string; salesCount: number; grossPesewas: number; discountPesewas: number; netPesewas: number; taxPesewas: number;
@@ -14,6 +16,7 @@ export type Dashboard = {
   lowStock: Array<{ variantId: string; name: string; branchName: string; onHand: string; reorderLevel: string }>;
   negativeStock: Array<{ variantId: string; name: string; branchName: string; onHand: string }>;
   needsReview: number;
+  registers: Array<{ name: string; branchName: string; salesCount: number; totalPesewas: number }>; // Phase 6: several tills per branch
   potReminders: Array<{ name: string; businessDate: string }>;
   potVariances: Array<{ name: string; businessDate: string; expectedPesewas: number; actualPesewas: number; variancePesewas: number }>;
 };
@@ -32,9 +35,12 @@ export async function getDashboard(db: Db, ctx: Ctx, now: Date): Promise<Dashboa
     }).from(sales).where(today);
     const byMethod = await tx.select({ method: payments.method, amount: int(payments.amountPesewas) }).from(payments)
       .innerJoin(sales, eq(sales.id, payments.saleId)).where(today).groupBy(payments.method);
-    const paid = TENDER_METHODS.map((method) => ({
-      method, amountPesewas: (byMethod.find((m) => m.method === method)?.amount ?? 0) - (method === 'cash' ? t.change : 0), // cash collected, after change given
-    })).filter((m) => m.amountPesewas > 0);
+    const paid = byMethod.map((m) => ({
+      method: m.method as TenderMethod, amountPesewas: m.amount - (m.method === 'cash' ? t.change : 0), // cash collected, after change given
+    })).filter((m) => m.amountPesewas > 0).sort((a, b) => ORDER.indexOf(a.method) - ORDER.indexOf(b.method));
+    const tills = await tx.select({ name: registers.name, branchName: branches.name, n: sql<number>`count(*)::int`, total: int(sales.totalPesewas) }).from(sales)
+      .innerJoin(registers, eq(registers.id, sales.registerId)).innerJoin(branches, eq(branches.id, registers.branchId))
+      .where(today).groupBy(registers.name, branches.name).orderBy(asc(branches.name), asc(registers.name));
     const [{ review }] = await tx.select({ review: sql<number>`count(*)::int` }).from(sales).where(eq(sales.needsReview, true));
     const stockCols = {
       variantId: variants.id, productName: products.name, variantName: variants.name, branchName: branches.name, onHand: stockBalances.onHand,
@@ -58,6 +64,7 @@ export async function getDashboard(db: Db, ctx: Ctx, now: Date): Promise<Dashboa
       lowStock: low.map((r) => ({ variantId: r.variantId, name: itemLabel(r.productName, r.variantName), branchName: r.branchName, onHand: r.onHand, reorderLevel: r.reorderLevel! })),
       negativeStock: negative.map((r) => ({ variantId: r.variantId, name: itemLabel(r.productName, r.variantName), branchName: r.branchName, onHand: r.onHand })),
       needsReview: review,
+      registers: tills.map((r) => ({ name: r.name, branchName: r.branchName, salesCount: r.n, totalPesewas: r.total })),
       potReminders: reminders.map((r) => ({ name: r.name, businessDate: r.businessDate })),
       potVariances: variances.map((v) => ({ name: v.name, businessDate: v.businessDate, expectedPesewas: v.expectedPesewas!, actualPesewas: v.actualPesewas!, variancePesewas: v.variancePesewas! })),
     };

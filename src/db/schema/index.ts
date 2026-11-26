@@ -2,6 +2,7 @@ export * from './audit';
 export * from './catalogue';
 export * from './food';
 export * from './growth';
+export * from './integrations';
 export * from './offline';
 export * from './people';
 export * from './platform';

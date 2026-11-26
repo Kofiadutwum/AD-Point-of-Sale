@@ -5,7 +5,7 @@ import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
 import { branches, registers, tenants } from './tenancy';
 
-export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit' | 'credit' | 'points' | 'gift_card' | 'deposit'; // exchange_credit and deposit: server only (6.32, 6.34)
+export type TenderMethod = 'cash' | 'momo_manual' | 'card_terminal' | 'bank_transfer' | 'store_credit' | 'channel_settlement' | 'exchange_credit' | 'credit' | 'points' | 'gift_card' | 'deposit' | 'paystack'; // exchange_credit, deposit and paystack: server only (6.32, 6.34, 6.11)
 export type SaleStatus = 'pending' | 'completed';
 export type SaleLineChoice = { slotId: string; variantId: string; name: string; upgradePesewas: number };
 export type SaleLineAddOn = { groupId: string; optionId: string; name: string; pricePesewas: number };
@@ -213,7 +213,7 @@ export const payments = pgTable('payments', {
   createdAt: createdAt(),
 }, (t) => [
   foreignKey({ name: 'payments_sale_fk', columns: [t.tenantId, t.saleId], foreignColumns: [sales.tenantId, sales.id] }),
-  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit', 'points', 'gift_card', 'deposit')`),
+  check('payments_method', sql`${t.method} in ('cash', 'momo_manual', 'card_terminal', 'bank_transfer', 'store_credit', 'channel_settlement', 'exchange_credit', 'credit', 'points', 'gift_card', 'deposit', 'paystack')`),
   check('payments_reference', sql`${t.method} in ('cash', 'store_credit', 'exchange_credit', 'credit', 'points', 'deposit') or ${t.reference} is not null`),
   check('payments_amount', sql`${t.amountPesewas} > 0`),
   check('payments_status', sql`${t.status} in ('confirmed', 'pending')`),

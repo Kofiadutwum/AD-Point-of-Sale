@@ -19,7 +19,7 @@ export type ReceiptView = {
 };
 
 export const TENDER_LABELS: Record<TenderMethod, string> = {
-  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app', exchange_credit: 'Exchange credit', credit: 'On credit', points: 'Loyalty points', gift_card: 'Gift card', deposit: 'Paid in advance',
+  cash: 'Cash', momo_manual: 'Mobile money', card_terminal: 'Card', bank_transfer: 'Bank transfer', store_credit: 'Store credit', channel_settlement: 'Paid through delivery app', exchange_credit: 'Exchange credit', credit: 'On credit', points: 'Loyalty points', gift_card: 'Gift card', deposit: 'Paid in advance', paystack: 'Paid by Paystack',
 };
 
 async function loadReceipt(tx: Tx, where: SQL): Promise<(ReceiptView & { id: string }) | null> {

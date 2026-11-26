@@ -26,6 +26,12 @@ export default async function DashboardPage({ params }: { params: Promise<{ slug
         <h2 className="mb-2 font-semibold">Payments</h2>
         <ul className="text-sm">{d.payments.length === 0 ? <li>No payments yet today.</li> : d.payments.map((p) => <li key={p.method}>{TENDER_LABELS[p.method]}: {formatCedis(p.amountPesewas)}</li>)}</ul>
       </section>
+      {d.registers.length > 1 && (
+        <section>
+          <h2 className="mb-2 font-semibold">By till</h2>
+          <ul className="text-sm">{d.registers.map((r) => <li key={`${r.branchName}-${r.name}`}>{r.branchName} · {r.name}: {r.salesCount} sale(s), {formatCedis(r.totalPesewas)}</li>)}</ul>
+        </section>
+      )}
       {(d.potReminders.length > 0 || d.potVariances.length > 0) && (
         <section>
           <h2 className="mb-2 font-semibold">Pots</h2>
