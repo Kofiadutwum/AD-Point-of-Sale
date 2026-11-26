@@ -5,18 +5,18 @@ import { getShopProfile } from '@/server/onboarding';
 import { MODULE_LABELS } from '@/lib/permission-labels';
 import { MODULES } from '@/lib/permissions';
 import { effectiveRateBp } from '@/lib/tax';
-import { getCashSettings, getOfflineEnabled, getReportSettings, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
+import { getCashSettings, getOfflineEnabled, getReportSettings, getStockSettings, getPharmacySettings, getReturnSettings, getSalesSettings, getSellingSettings } from '@/server/shop-settings';
 import { supportHistory } from '@/server/support';
 import { listTaxRules, type TaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
-import { addBranchAction, addRegisterAction, saveOfflineAction, saveCashAction, savePharmacyAction, grantSupportAction, revokeSupportAction, saveProfileAction, saveReportsAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
+import { addBranchAction, addRegisterAction, saveOfflineAction, saveCashAction, savePharmacyAction, grantSupportAction, revokeSupportAction, saveProfileAction, saveReportsAction, saveStockAction, saveReturnsAction, saveSalesAction, saveSellingAction, saveTaxRuleAction } from './actions';
 
 export default async function SettingsPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const ctx = await pageCtx(slug, 'manage_shop_settings');
-  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy, cash, reports, support] = await Promise.all([
+  const [p, branchList, selling, rules, offline, salesSettings, returnSettings, pharmacy, cash, reports, support, stock] = await Promise.all([
     getShopProfile(getDb(), ctx), listBranches(getDb(), ctx), getSellingSettings(getDb(), ctx), listTaxRules(getDb(), ctx), getOfflineEnabled(getDb(), ctx),
-    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx), getCashSettings(getDb(), ctx), getReportSettings(getDb(), ctx), supportHistory(getDb(), ctx, new Date()),
+    getSalesSettings(getDb(), ctx), getReturnSettings(getDb(), ctx), getPharmacySettings(getDb(), ctx), getCashSettings(getDb(), ctx), getReportSettings(getDb(), ctx), supportHistory(getDb(), ctx, new Date()), getStockSettings(getDb(), ctx),
   ]);
   const scale = selling.scaleLayout;
   return (
@@ -90,6 +90,14 @@ export default async function SettingsPage({ params }: { params: Promise<{ slug:
           <Check name="requireShifts" label="Require an open shift to sell" defaultChecked={cash.requireShifts} />
           <Field label="Till difference a cashier may leave without a manager (GHS, 0 = any)" name="varianceLimit" inputMode="decimal" defaultValue={(cash.cashVarianceLimitPesewas / 100).toFixed(2)} />
           <Field label="Expenses above this need a manager (GHS, 0 = always)" name="expenseLimit" inputMode="decimal" defaultValue={(cash.expenseApprovalLimitPesewas / 100).toFixed(2)} />
+        </ActionForm>
+      </section>
+      <section className="max-w-md">
+        <h2 className="mb-3 text-lg font-semibold">Stock controls</h2>
+        <ActionForm action={saveStockAction.bind(null, slug)} submitLabel="Save stock controls">
+          <Field label="Count differences above this need a manager (GHS, 0 = always)" name="countLimit" inputMode="decimal" defaultValue={(stock.countApprovalLimitPesewas / 100).toFixed(2)} />
+          <Field label="Adjustments above this need a manager (GHS, 0 = always)" name="adjustLimit" inputMode="decimal" defaultValue={(stock.adjustmentApprovalLimitPesewas / 100).toFixed(2)} />
+          <Field label="Suggested orders cover delivery time plus (days)" name="coverDays" type="number" min={0} max={180} defaultValue={stock.reorderCoverDays} />
         </ActionForm>
       </section>
       <section className="max-w-md">

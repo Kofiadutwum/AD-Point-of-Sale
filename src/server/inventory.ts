@@ -248,7 +248,7 @@ export async function adjustStock(db: Db, ctx: Ctx, input: { branchId: string; l
     const [t] = await tx.select({ limit: tenants.adjustmentApprovalLimitPesewas }).from(tenants).where(eq(tenants.id, ctx.tenantId));
     let approvedBy: string | null = null;
     if (value > t.limit && !ctx.permissions.includes('approve_actions')) {
-      const a = input.approvalToken ? await consumeApproval(tx, ctx, { token: input.approvalToken, action: 'stock_adjustment', contextKey: adjustmentKey(input.branchId, r.variantId, r.baseQty, input.reason) }, now) : null;
+      const a = input.approvalToken ? await consumeApproval(tx, ctx, { token: input.approvalToken, action: 'stock_adjustment', contextKey: adjustmentKey(input.branchId, input.line, input.reason) }, now) : null;
       if (!a) return fail('approval_required');
       approvedBy = a.approverId;
     }
@@ -276,7 +276,7 @@ export async function adjustStock(db: Db, ctx: Ctx, input: { branchId: string; l
 }
 
 /** The approval context for an adjustment: the same branch, item, quantity, and reason the manager approved. */
-export const adjustmentKey = (branchId: string, variantId: string, baseQty: string, reason: string) => `${branchId}:${variantId}:${baseQty}:${reason}`;
+export const adjustmentKey = (branchId: string, line: MoveLine, reason: string) => `${branchId}:${line.variantId}:${line.unitId}:${line.quantity}:${line.batchNumber ?? ''}:${reason}`;
 
 // ---- Valuation and low stock ------------------------------------------------
 

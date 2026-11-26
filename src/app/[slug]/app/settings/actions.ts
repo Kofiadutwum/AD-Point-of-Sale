@@ -7,7 +7,7 @@ import { updateShopProfile } from '@/server/onboarding';
 import type { Module } from '@/lib/permissions';
 import { parseCedis } from '@/lib/money';
 import { parsePercent } from '@/lib/tax';
-import { saveCashSettings, savePharmacySettings, saveReportSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
+import { saveCashSettings, savePharmacySettings, saveReportSettings, saveStockSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings, setOfflineEnabled } from '@/server/shop-settings';
 import { grantSupportAccess, revokeSupportAccess } from '@/server/support';
 import { saveTaxRule } from '@/server/tax-rules';
 import { pageCtx } from '../page-ctx';
@@ -173,4 +173,15 @@ export async function revokeSupportAction(slug: string, sessionId: string): Prom
   const r = await revokeSupportAccess(getDb(), ctx, sessionId, new Date());
   revalidatePath(`/${slug}/app/settings`);
   return r.ok ? { error: null, message: 'Support access ended.' } : { error: 'That access already ended.' };
+}
+
+export async function saveStockAction(slug: string, _prev: FormState, fd: FormData): Promise<FormState> {
+  const ctx = await pageCtx(slug, 'manage_shop_settings');
+  const count = parseCedis(String(fd.get('countLimit') ?? '').trim() || '0');
+  const adjust = parseCedis(String(fd.get('adjustLimit') ?? '').trim() || '0');
+  if (count === null || adjust === null) return { error: 'Enter the limits in GHS.' };
+  const r = await saveStockSettings(getDb(), ctx, { countApprovalLimitPesewas: count, adjustmentApprovalLimitPesewas: adjust, reorderCoverDays: Number(fd.get('coverDays')) });
+  if (!r.ok) return { error: 'Check the details.' };
+  revalidatePath(`/${slug}/app/settings`);
+  return { error: null, message: 'Saved.' };
 }

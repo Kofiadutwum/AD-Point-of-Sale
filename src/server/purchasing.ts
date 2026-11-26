@@ -123,7 +123,7 @@ export async function createPurchaseOrder(db: Db, ctx: Ctx, input: { branchId: s
 }
 
 export type PurchaseOrderDetail = {
-  id: string; number: string; status: string; suggested: boolean; branchId: string; branchName: string; supplierId: string; supplierName: string; supplierPhone: string | null; supplierEmail: string | null; note: string | null; createdAt: Date;
+  id: string; shopName: string; number: string; status: string; suggested: boolean; branchId: string; branchName: string; supplierId: string; supplierName: string; supplierPhone: string | null; supplierEmail: string | null; note: string | null; createdAt: Date;
   lines: Array<{ id: string; variantId: string; unitId: string; name: string; unitName: string; quantity: string; receivedQuantity: string; unitCostPesewas: number; tracking: string }>;
 };
 
@@ -134,11 +134,12 @@ export async function getPurchaseOrder(db: Db, ctx: Ctx, id: string): Promise<Pu
     const [po] = await tx.select({ po: purchaseOrders, branchName: branches.name, s: suppliers }).from(purchaseOrders)
       .innerJoin(branches, eq(branches.id, purchaseOrders.branchId)).innerJoin(suppliers, eq(suppliers.id, purchaseOrders.supplierId)).where(eq(purchaseOrders.id, id));
     if (!po) return null;
+    const [shop] = await tx.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, ctx.tenantId));
     const lines = await tx.select({ l: purchaseOrderLines, p: products.name, v: variants.name, unitName: variantUnits.name, tracking: products.tracking }).from(purchaseOrderLines)
       .innerJoin(variants, eq(variants.id, purchaseOrderLines.variantId)).innerJoin(products, eq(products.id, variants.productId)).innerJoin(variantUnits, eq(variantUnits.id, purchaseOrderLines.unitId))
       .where(eq(purchaseOrderLines.purchaseOrderId, id)).orderBy(asc(products.name));
     return {
-      id: po.po.id, number: po.po.number, status: po.po.status, suggested: po.po.suggested, branchId: po.po.branchId, branchName: po.branchName, supplierId: po.s.id, supplierName: po.s.name,
+      id: po.po.id, shopName: shop.name, number: po.po.number, status: po.po.status, suggested: po.po.suggested, branchId: po.po.branchId, branchName: po.branchName, supplierId: po.s.id, supplierName: po.s.name,
       supplierPhone: po.s.phone, supplierEmail: po.s.email, note: po.po.note, createdAt: po.po.createdAt,
       lines: lines.map((x) => ({ id: x.l.id, variantId: x.l.variantId, unitId: x.l.unitId, name: itemLabel(x.p, x.v), unitName: x.unitName, quantity: x.l.quantity, receivedQuantity: x.l.receivedQuantity, unitCostPesewas: x.l.unitCostPesewas, tracking: x.tracking })),
     };
@@ -152,8 +153,8 @@ export async function listPurchaseOrders(db: Db, ctx: Ctx) {
 }
 
 /** The order as text for WhatsApp or email. */
-export function purchaseOrderMessage(po: PurchaseOrderDetail, shopName: string): string {
-  return [`${shopName}: purchase order ${po.number}`, `Deliver to ${po.branchName}`, ...po.lines.map((l) => `- ${Number(l.quantity)} ${l.unitName} ${l.name}`), po.note ?? ''].filter(Boolean).join('\n');
+export function purchaseOrderMessage(po: PurchaseOrderDetail): string {
+  return [`${po.shopName}: purchase order ${po.number}`, `Deliver to ${po.branchName}`, ...po.lines.map((l) => `- ${Number(l.quantity)} ${l.unitName} ${l.name}`), po.note ?? ''].filter(Boolean).join('\n');
 }
 
 /** Spec 4.19: a reviewed draft is marked sent (the page then opens WhatsApp or email with the text). */
