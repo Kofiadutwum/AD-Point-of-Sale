@@ -43,7 +43,7 @@ export type DeviceCache = {
   staff: CachedStaff[];
   taxRules: Array<{ id: string; isDefault: boolean; rateBp: number }>; // rateBp = effectiveRateBp(rule)
   priceRules: PriceRule[];
-  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null; prescriptionOnly?: boolean }>;
+  products: Array<{ id: string; name: string; genericName: string | null; taxRuleId: string | null; tracking: Tracking; status: CatalogueStatus; imageId: string | null; prescriptionOnly?: boolean; kitchenStation?: 'kitchen' | 'bar' | 'grill' }>;
   variants: Array<{
     id: string; productId: string; name: string; sku: string | null; allowsFractions: boolean; basePricePesewas: number;
     scaleItemCode: number | null; sellable: boolean; status: CatalogueStatus; needsPack: boolean;
