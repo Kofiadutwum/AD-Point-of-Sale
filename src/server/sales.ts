@@ -11,7 +11,7 @@ import {
 import { withTenant } from '@/db/tenant';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
-import { multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
+import { fromMilli, multiplyQty, parseQuantity, toMilli, validSaleQuantity } from '@/lib/decimal';
 import {
   addOnTotal, checkAddOns, checkComboChoices, sameAddOns, type ComboSlotDef, comboUpgradeTotal, commissionPesewas, DINING_OPTIONS, type DiningOption, formatOrderNumber, needsPacking, ORDER_NUMBER, packCount, phoneCustomer, serviceChargePesewas,
 } from '@/lib/food';
@@ -41,7 +41,7 @@ export type SaleInput = {
   tenders: Array<{ id: string; method: TenderMethod; amountPesewas: number; reference?: string }>;
   customerId?: string; cashierId?: string; deviceCreatedAt: string; fromOfflineOutbox?: boolean;
   food?: {
-    serviceMode: 'counter' | 'quick' | 'table'; diningOption: DiningOption; orderNumber?: string; ticketId?: string; // 'table' only from payTicket
+    serviceMode: 'counter' | 'quick' | 'table'; diningOption: DiningOption; orderNumber?: string; ticketId?: string; ticketPart?: Array<{ lineId: string; quantity: string }>; // 'table' only from payTicket
     channelId?: string; externalOrderId?: string; customer?: { name: string; phone: string }; pickupAt?: string; deliveryAddress?: string;
     kitchenOrderId?: string;
   };
@@ -80,6 +80,7 @@ const inputSchema = z.object({
   fromOfflineOutbox: z.boolean().optional(),
   food: z.object({
     serviceMode: z.enum(['counter', 'quick', 'table']), diningOption: z.enum(DINING_OPTIONS), orderNumber: z.string().max(10).optional(), ticketId: z.uuid().optional(),
+    ticketPart: z.array(z.object({ lineId: z.uuid(), quantity: z.string().max(20) })).min(1).max(200).optional(),
     channelId: z.uuid().optional(), externalOrderId: z.string().max(100).optional(),
     customer: z.object({ name: z.string().max(100), phone: z.string().max(30) }).optional(),
     pickupAt: z.iso.datetime({ offset: true }).optional(), deliveryAddress: z.string().max(300).optional(), kitchenOrderId: z.uuid().optional(),
@@ -297,8 +298,14 @@ export async function completeSale(db: Db, ctx: Ctx, input: SaleInput, now: Date
       }
       let orderNumber: string | null = null;
       if (paying) {
-        await tx.update(tickets).set({ status: 'paid', saleId: s.saleId, closedAt: now }).where(eq(tickets.id, paying.ticket.id));
-        if (paying.ticket.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, paying.ticket.tableId));
+        for (const l of paying.due) await tx.update(ticketLines).set({ paidQuantity: sql`${ticketLines.paidQuantity} + ${l.due}::numeric` }).where(eq(ticketLines.id, l.id));
+        // the ticket closes with its last part: nothing live left unpaid
+        const [owing] = await tx.select({ id: ticketLines.id }).from(ticketLines)
+          .where(and(eq(ticketLines.ticketId, paying.ticket.id), ne(ticketLines.kitchenStatus, 'void'), sql`${ticketLines.paidQuantity} < ${ticketLines.quantity}`)).limit(1);
+        if (!owing) {
+          await tx.update(tickets).set({ status: 'paid', saleId: s.saleId, closedAt: now }).where(eq(tickets.id, paying.ticket.id));
+          if (paying.ticket.tableId) await tx.update(diningTables).set({ status: 'free' }).where(eq(diningTables.id, paying.ticket.tableId));
+        }
       }
       if (collecting) {
         orderNumber = collecting.orderNumber; // already in the kitchen under its number: it is paid, not sent again
@@ -425,18 +432,36 @@ export async function nextOrderNumber(tx: Tx, tenantId: string, branchId: string
   return formatOrderNumber(row.last);
 }
 
-/** The open table ticket being paid, locked, with its live lines as they must appear on the sale. */
+/** Spec 6.38: the ticket lines a payment covers, with the quantity due: the given part, or everything still unpaid; null when a part asks for more than is unpaid. */
+export function dueTicketLines<T extends { id: string; lineNo: number; quantity: string; paidQuantity: string; byAmount: boolean }>(rows: T[], part?: Array<{ lineId: string; quantity: string }>): Array<T & { due: string }> | null {
+  const unpaid = (l: T) => toMilli(l.quantity) - toMilli(l.paidQuantity);
+  if (!part) return rows.filter((l) => unpaid(l) > 0n).map((l) => ({ ...l, due: fromMilli(unpaid(l)) }));
+  if (new Set(part.map((p) => p.lineId)).size !== part.length) return null;
+  const out: Array<T & { due: string }> = [];
+  for (const p of part) {
+    const l = rows.find((r) => r.id === p.lineId);
+    const q = parseQuantity(p.quantity);
+    // a by-amount line is one serving at its amount: it is paid whole
+    if (!l || !q || toMilli(q) <= 0n || toMilli(q) > unpaid(l) || (l.byAmount && toMilli(q) !== toMilli(l.quantity))) return null;
+    out.push({ ...l, due: q });
+  }
+  return out.sort((a, b) => a.lineNo - b.lineNo);
+}
+
+/** The open table ticket being paid, locked, with the lines this payment covers as they must appear on the sale. */
 async function openTicketForSale(tx: Tx, food: NonNullable<SaleInput['food']>, branchId: string) {
   const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, food.ticketId!)).for('update');
   if (!ticket || ticket.status !== 'open' || ticket.branchId !== branchId) return refuse('ticket_not_open');
   if (food.serviceMode !== 'table' || food.diningOption !== ticket.diningOption) return refuse('order_changed');
   const rows = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, ticket.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
-  const lines: PendingLine[] = rows.map((l) => ({
-    variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, ...(l.note ? { note: l.note } : {}),
+  const due = dueTicketLines(rows, food.ticketPart); // read under the ticket lock, so two parts cannot pay the same quantity
+  if (!due?.length) return refuse('order_changed');
+  const lines: PendingLine[] = due.map((l) => ({
+    variantId: l.variantId, unitId: l.unitId, quantity: l.due, ...(l.note ? { note: l.note } : {}),
     ...(l.byAmount ? { byAmount: true, amountPesewas: l.amountPesewas ?? undefined } : {}), ...(l.choices.length ? { choices: l.choices } : {}),
     ...(l.addOns.length ? { addOns: l.addOns } : {}),
   }));
-  return { ticket, lines };
+  return { ticket, lines, due };
 }
 
 /** The unpaid phone order being collected, locked; anything else (paid, cancelled, another branch) is not open. */

@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { diningTables, products, users, wastageEntries } from '@/db/schema';
+import { diningTables, products, ticketLines, users, wastageEntries } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import type { Ctx } from '@/server/context';
 import { setServiceModes } from '@/server/food-settings';
@@ -76,6 +76,18 @@ describe('lines', () => {
       { lineNo: 1, name: 'Jollof', station: 'kitchen', note: 'no pepper', kitchenStatus: 'new' }, { lineNo: 2, name: 'Coke', station: 'bar' },
     ]);
     expect(await add({ variantId: s.packVariantId, baseUnitId: s.packUnitId })).toEqual({ ok: false, error: 'invalid_input' });
+  });
+
+  it('adds a line for a seat; a paid line cannot be voided, removed, or moved', async () => {
+    await add(jollof, { seat: 2 });
+    expect((await getTicket(db, till, ticketId))!.lines[0]).toMatchObject({ seat: 2, paidQuantity: '0.000' });
+    const [lineId] = await lineIds();
+    await asPlatform(db, (tx) => tx.update(ticketLines).set({ paidQuantity: '1' }).where(eq(ticketLines.id, lineId)));
+    expect(await removeTicketLine(db, till, lineId)).toEqual({ ok: false, error: 'already_paid' });
+    const other = (await openTicket(db, till, { label: 'Bar', diningOption: 'eat_in' }, t) as { ticketId: string }).ticketId;
+    expect(await moveTicketLines(db, till, { fromTicketId: ticketId, toTicketId: other, lineIds: [lineId] }, t)).toEqual({ ok: false, error: 'already_paid' });
+    await asPlatform(db, (tx) => tx.update(ticketLines).set({ kitchenStatus: 'sent' }).where(eq(ticketLines.id, lineId)));
+    expect(await voidSentLine(db, till, { lineId, reason: 'x', prepared: false, approverId: s.users.manager.id, approverPin: '1234' }, t)).toEqual({ ok: false, error: 'already_paid' });
   });
 
   it('removes a new line but not a sent one', async () => {

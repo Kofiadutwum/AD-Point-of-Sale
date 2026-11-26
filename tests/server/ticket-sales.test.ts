@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
 import { diningTables, saleLines, sales, ticketLines, tickets, variants } from '@/db/schema';
@@ -49,6 +49,37 @@ it('adds the service charge to the bill', async () => {
   // GHS 90 of jollof + 10% service charge
   expect(await saleOf(r)).toMatchObject({ totalPesewas: 9900, serviceChargePesewas: 900, serviceMode: 'table', diningOption: 'eat_in' });
   expect(await payTicket(db, till, { ticketId, tenders: cash(9000) }, t)).toEqual({ ok: false, error: 'ticket_not_open' });
+});
+
+const lineOf = async (variantId: string) => (await asPlatform(db, (tx) => tx.select({ id: ticketLines.id }).from(ticketLines)
+  .where(and(eq(ticketLines.ticketId, ticketId), eq(ticketLines.variantId, variantId)))))[0].id;
+const ticketRow = async () => (await asPlatform(db, (tx) => tx.select().from(tickets).where(eq(tickets.id, ticketId))))[0];
+
+it("pays one person's items and keeps the ticket open; the last part closes it", async () => {
+  await addTicketLine(db, till, ticketId, { variantId: coke.variantId, unitId: coke.baseUnitId, quantity: '1' }, t);
+  const first = await payTicket(db, till, { ticketId, tenders: cash(550), part: [{ lineId: await lineOf(coke.variantId), quantity: '1' }] }, t);
+  expect(await saleOf(first)).toMatchObject({ totalPesewas: 550, serviceChargePesewas: 50 });
+  expect((await ticketRow()).status).toBe('open');
+  expect(await quoteTicket(db, till, ticketId, t)).toMatchObject({ totalPesewas: 9900 });
+  const last = await payTicket(db, till, { ticketId, tenders: cash(9900) }, t);
+  expect(await saleOf(last)).toMatchObject({ totalPesewas: 9900 });
+  expect(await ticketRow()).toMatchObject({ status: 'paid', saleId: (last as { saleId: string }).saleId });
+});
+
+it('a shared dish is split by quantity, and a part cannot exceed what is unpaid', async () => {
+  const jl = await lineOf(jollof.variantId);
+  expect(await payTicket(db, till, { ticketId, tenders: cash(20000), part: [{ lineId: jl, quantity: '3' }] }, t)).toEqual({ ok: false, error: 'order_changed' });
+  expect(await saleOf(await payTicket(db, till, { ticketId, tenders: cash(4950), part: [{ lineId: jl, quantity: '1' }] }, t))).toMatchObject({ totalPesewas: 4950 });
+  expect((await ticketRow()).status).toBe('open');
+  expect(await saleOf(await payTicket(db, till, { ticketId, tenders: cash(4950), part: [{ lineId: jl, quantity: '1' }] }, t))).toMatchObject({ totalPesewas: 4950 });
+  expect((await ticketRow()).status).toBe('paid');
+});
+
+it('paying the same line twice at once', async () => {
+  const part = [{ lineId: await lineOf(jollof.variantId), quantity: '2' }];
+  const [x, y] = await Promise.all([payTicket(db, till, { ticketId, tenders: cash(9900), part }, t), payTicket(db, till, { ticketId, tenders: cash(9900), part }, t)]);
+  expect([x, y].filter((r) => r.ok)).toHaveLength(1);
+  expect([x, y].find((r) => !r.ok)).toMatchObject({ ok: false });
 });
 
 it('the bill preview matches what is paid', async () => {

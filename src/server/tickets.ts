@@ -10,7 +10,7 @@ import {
 import { withTenant } from '@/db/tenant';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { businessDate, todayIn } from '@/lib/dates';
-import { multiplyQty } from '@/lib/decimal';
+import { multiplyQty, toMilli } from '@/lib/decimal';
 import { formatReceiptNumber } from '@/device/sale';
 import { addOnTotal, DINING_OPTIONS, type DiningOption, KITCHEN_STATIONS, packCount, serviceChargePesewas } from '@/lib/food';
 import { choosePriceList, resolvePrice } from '@/lib/pricing';
@@ -21,13 +21,13 @@ import { type Fail, fail, isUuid, itemLabel } from './products';
 import { verifyStaffPin } from './devices';
 import { costFor } from './pots';
 import { loadPriceRules } from './price-lists';
-import { checkOrderLine, completeSale, isUniqueViolation, loadAddOnGroups, type OrderLineError, type SaleInput, type SaleResult } from './sales';
+import { checkOrderLine, completeSale, dueTicketLines, isUniqueViolation, loadAddOnGroups, type OrderLineError, type SaleInput, type SaleResult } from './sales';
 import { deductRecipe } from './stock';
 import { costOf } from './variants';
 
 export type TicketView = {
   id: string; label: string; tableId: string | null; status: TicketStatus; diningOption: DiningOption; waiterName: string; openedAt: Date;
-  lines: Array<{ id: string; lineNo: number; name: string; quantity: string; addOns: string[]; note: string | null; station: KitchenStation; kitchenStatus: TicketLineStatus }>;
+  lines: Array<{ id: string; lineNo: number; name: string; quantity: string; addOns: string[]; note: string | null; station: KitchenStation; kitchenStatus: TicketLineStatus; seat: number | null; paidQuantity: string }>;
 };
 
 const myBranches = async (tx: Tx, ctx: Ctx) => (await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId)))[0]?.branchIds ?? [];
@@ -94,7 +94,7 @@ export async function getTicket(db: Db, ctx: Ctx, ticketId: string): Promise<Tic
     return {
       id: t.ticket.id, label: t.ticket.label, tableId: t.ticket.tableId, status: t.ticket.status, diningOption: t.ticket.diningOption, waiterName: t.waiterName, openedAt: t.ticket.openedAt,
       lines: lines.map(({ line: l, productName, variantName }) => ({
-        id: l.id, lineNo: l.lineNo, name: itemLabel(productName, variantName), quantity: l.quantity, note: l.note, station: l.station, kitchenStatus: l.kitchenStatus,
+        id: l.id, lineNo: l.lineNo, name: itemLabel(productName, variantName), quantity: l.quantity, note: l.note, station: l.station, kitchenStatus: l.kitchenStatus, seat: l.seat, paidQuantity: l.paidQuantity,
         addOns: l.addOns.map((a) => names.find((n) => n.id === a.optionId)?.name ?? 'Add-on'),
       })),
     };
@@ -171,6 +171,7 @@ const lineSchema = z.object({
   choices: z.array(z.object({ slotId: z.uuid(), variantId: z.uuid() })).max(20).optional(),
   addOns: z.array(z.object({ groupId: z.uuid(), optionId: z.uuid() })).max(30).optional(),
   note: z.string().trim().max(140).optional(),
+  seat: z.number().int().min(1).max(50).optional(),
 });
 type AddLineResult = { ok: true; lineId: string } | Fail<'not_found' | 'not_open' | 'invalid_input' | OrderLineError>;
 
@@ -193,23 +194,24 @@ export async function addTicketLine(db: Db, ctx: Ctx, ticketId: string, line: z.
     const [row] = await tx.insert(ticketLines).values({
       tenantId: ctx.tenantId, ticketId: t.id, lineNo: Number(last) + 1, variantId: checked.variantId, unitId: checked.unitId, quantity: checked.quantity,
       byAmount: checked.byAmount === true, amountPesewas: checked.amountPesewas ?? null, choices: checked.choices ?? [], addOns: checked.addOns ?? [],
-      note: checked.note ?? null, station,
+      note: checked.note ?? null, station, seat: l.seat ?? null,
     }).returning({ id: ticketLines.id });
     return { ok: true, lineId: row.id };
   });
 }
 
 /** A line not yet sent can be taken off freely; a sent one needs a void. */
-export async function removeTicketLine(db: Db, ctx: Ctx, lineId: string): Promise<{ ok: true } | Fail<'not_found' | 'already_sent'>> {
+export async function removeTicketLine(db: Db, ctx: Ctx, lineId: string): Promise<{ ok: true } | Fail<'not_found' | 'already_sent' | 'already_paid'>> {
   assertPermission(ctx, 'take_orders');
   if (!isUuid(lineId)) return fail('not_found');
-  return withTenant(db, ctx.tenantId, async (tx): Promise<{ ok: true } | Fail<'not_found' | 'already_sent'>> => {
+  return withTenant(db, ctx.tenantId, async (tx): Promise<{ ok: true } | Fail<'not_found' | 'already_sent' | 'already_paid'>> => {
     const [first] = await tx.select({ ticketId: ticketLines.ticketId }).from(ticketLines).where(eq(ticketLines.id, lineId));
     const t = first ? await openTicketRow(tx, ctx, first.ticketId) : 'not_found';
     if (typeof t === 'string') return fail('not_found');
     // read the line again under the ticket lock: a send or a move may have changed it meanwhile
     const [line] = await tx.select().from(ticketLines).where(and(eq(ticketLines.id, lineId), eq(ticketLines.ticketId, t.id))).for('update');
     if (!line) return fail('not_found');
+    if (toMilli(line.paidQuantity) > 0n) return fail('already_paid');
     if (line.kitchenStatus !== 'new') return fail('already_sent');
     await tx.delete(ticketLines).where(eq(ticketLines.id, line.id));
     return { ok: true };
@@ -233,7 +235,7 @@ export async function sendToKitchen(db: Db, ctx: Ctx, ticketId: string, now: Dat
   });
 }
 
-type VoidResult = { ok: true } | Fail<'not_found' | 'not_sent' | 'invalid_input' | 'self_approval' | 'not_authorised' | 'wrong_pin' | 'pin_locked'>;
+type VoidResult = { ok: true } | Fail<'not_found' | 'not_sent' | 'invalid_input' | 'self_approval' | 'not_authorised' | 'wrong_pin' | 'pin_locked' | 'already_paid'>;
 
 /** Spec 6.37: a line already sent is voided only with a reason and another person's manager PIN; a prepared dish is recorded as waste. */
 export async function voidSentLine(db: Db, ctx: Ctx, input: { lineId: string; reason: string; prepared: boolean; approverId: string; approverPin: string }, now: Date): Promise<VoidResult> {
@@ -248,6 +250,7 @@ export async function voidSentLine(db: Db, ctx: Ctx, input: { lineId: string; re
     const [line] = await tx.select().from(ticketLines).where(and(eq(ticketLines.id, input.lineId), eq(ticketLines.ticketId, t.id))).for('update');
     if (!line) return fail('not_found');
     if (line.kitchenStatus !== 'sent' && line.kitchenStatus !== 'ready') return fail('not_sent');
+    if (toMilli(line.paidQuantity) > 0n) return fail('already_paid'); // someone paid for it already
     if (input.approverId === ctx.userId) return fail('self_approval');
     const [approver] = await tx.select().from(users).where(eq(users.id, input.approverId)).for('update');
     if (!approver || approver.status !== 'active' || !approver.permissions.includes('void_sent_items') || !approver.branchIds.includes(t.branchId)) return fail('not_authorised');
@@ -275,7 +278,7 @@ async function wasteVoidedLine(tx: Tx, ctx: Ctx, branchId: string, line: typeof 
   await deductRecipe(tx, { tenantId: ctx.tenantId, branchId, userId: ctx.userId }, line.variantId, quantity, 'waste', { type: 'wastage', id: w.id });
 }
 
-type MoveResult = { ok: true; merged: boolean } | Fail<'not_found' | 'not_open' | 'invalid_input'>;
+type MoveResult = { ok: true; merged: boolean } | Fail<'not_found' | 'not_open' | 'invalid_input' | 'already_paid'>;
 
 /** Spec 6.37: lines move to another open ticket of the branch; moving all of them merges the tickets and frees the first table. */
 export async function moveTicketLines(db: Db, ctx: Ctx, input: { fromTicketId: string; toTicketId: string; lineIds: string[] }, now: Date): Promise<MoveResult> {
@@ -293,6 +296,7 @@ export async function moveTicketLines(db: Db, ctx: Ctx, input: { fromTicketId: s
     if (from.branchId !== to.branchId) return fail('invalid_input');
     const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, from.id), inArray(ticketLines.id, ids))).orderBy(asc(ticketLines.lineNo));
     if (lines.length !== ids.length || lines.some((l) => l.kitchenStatus === 'void')) return fail('invalid_input');
+    if (lines.some((l) => toMilli(l.paidQuantity) > 0n)) return fail('already_paid');
     const [{ last }] = await tx.select({ last: sql<number>`coalesce(max(${ticketLines.lineNo}), 0)::int` }).from(ticketLines).where(eq(ticketLines.ticketId, to.id));
     for (const [i, l] of lines.entries()) await tx.update(ticketLines).set({ ticketId: to.id, lineNo: Number(last) + i + 1 }).where(eq(ticketLines.id, l.id));
     const [{ left }] = await tx.select({ left: count() }).from(ticketLines).where(and(eq(ticketLines.ticketId, from.id), ne(ticketLines.kitchenStatus, 'void')));
@@ -340,7 +344,7 @@ export async function cancelTicket(db: Db, ctx: Ctx, ticketId: string, reason: s
 }
 
 /** Spec 6.37: closes a ticket into one sale at today's prices with the shop's service charge; the server numbers the receipt. Online only. */
-export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; tenders: SaleInput['tenders'] }, now: Date): Promise<SaleResult> {
+export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; tenders: SaleInput['tenders']; part?: Array<{ lineId: string; quantity: string }> }, now: Date): Promise<SaleResult> {
   assertPermission(ctx, 'take_orders');
   assertPermission(ctx, 'make_sale');
   if (!isUuid(input.ticketId)) return { ok: false, error: 'ticket_not_open' };
@@ -351,18 +355,18 @@ export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; ten
     if (!t || t.status !== 'open') return null;
     const [reg] = await tx.select({ counter: registers.receiptCounter, registerCode: registers.registerCode, branchCode: branches.branchCode })
       .from(registers).innerJoin(branches, eq(branches.id, registers.branchId)).where(eq(registers.id, registerId));
-    return { t, lines: await ticketSaleLines(tx, t), reg };
+    return { t, lines: await ticketSaleLines(tx, t, input.part), reg };
   });
   if (!found) return { ok: false, error: 'ticket_not_open' };
   if (!found.reg) return { ok: false, error: 'no_register' };
   const { t, reg, lines } = found;
-  if (!lines.length) return { ok: false, error: 'invalid_input' };
+  if (!lines.length) return { ok: false, error: input.part ? 'order_changed' : 'invalid_input' };
   const saleId = randomUUID();
   let counter = Number(reg.counter) + 1;
   for (let attempt = 0; ; attempt++) {
     const r = await completeSale(db, ctx, {
       saleId, receiptNumber: formatReceiptNumber(reg.branchCode, reg.registerCode, counter), lines, tenders: input.tenders, deviceCreatedAt: now.toISOString(),
-      food: { serviceMode: 'table', diningOption: t.diningOption, ticketId: t.id },
+      food: { serviceMode: 'table', diningOption: t.diningOption, ticketId: t.id, ...(input.part ? { ticketPart: input.part } : {}) },
     }, now);
     if (r.ok || r.error !== 'duplicate_receipt_number' || attempt === 1) return r;
     counter++; // another sale on this till took the number first
@@ -370,8 +374,10 @@ export async function payTicket(db: Db, ctx: Ctx, input: { ticketId: string; ten
 }
 
 /** The sale lines a ticket becomes: its live lines in order, then the packs a takeaway or delivery ticket owes (spec 6.56); prices are left to the caller. */
-async function ticketSaleLines(tx: Tx, t: typeof tickets.$inferSelect): Promise<SaleInput['lines']> {
-  const lines = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, t.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
+async function ticketSaleLines(tx: Tx, t: typeof tickets.$inferSelect, part?: Array<{ lineId: string; quantity: string }>): Promise<SaleInput['lines']> {
+  const rows = await tx.select().from(ticketLines).where(and(eq(ticketLines.ticketId, t.id), ne(ticketLines.kitchenStatus, 'void'))).orderBy(asc(ticketLines.lineNo));
+  // the quantity due replaces the line's quantity: a part, or what is still unpaid
+  const lines = (dueTicketLines(rows, part) ?? []).map((l) => ({ ...l, quantity: l.due }));
   const [settings] = await tx.select().from(foodSettings);
   const packId = settings?.packVariantId ?? null;
   const flags = lines.length ? await tx.select({ id: variants.id, needsPack: variants.needsPack }).from(variants).where(inArray(variants.id, lines.map((l) => l.variantId))) : [];
@@ -394,7 +400,7 @@ export type TicketQuote = {
 };
 
 /** The bill before payment, priced as completeSale prices the ticket: list price plus add-ons, packs, tax, and the service charge. */
-export async function quoteTicket(db: Db, ctx: Ctx, ticketId: string, now: Date): Promise<TicketQuote | null> {
+export async function quoteTicket(db: Db, ctx: Ctx, ticketId: string, now: Date, part?: Array<{ lineId: string; quantity: string }>): Promise<TicketQuote | null> {
   assertPermission(ctx, 'take_orders');
   if (!isUuid(ticketId)) return null;
   return withTenant(db, ctx.tenantId, async (tx) => {
@@ -405,7 +411,7 @@ export async function quoteTicket(db: Db, ctx: Ctx, ticketId: string, now: Date)
     const list = choosePriceList(await loadPriceRules(tx), { cartListId: null, customerListId: null, branchId: t.branchId, today: todayIn(shop.timezone, now) });
     const rules = await tx.select().from(taxRules).where(eq(taxRules.active, true));
     const priced = [];
-    for (const l of await ticketSaleLines(tx, t)) {
+    for (const l of await ticketSaleLines(tx, t, part)) {
       const [item] = await tx.select({
         unitPrice: variantUnits.pricePesewas, factor: variantUnits.factor, basePrice: variants.basePricePesewas, taxRuleId: products.taxRuleId,
         productName: products.name, variantName: variants.name,
