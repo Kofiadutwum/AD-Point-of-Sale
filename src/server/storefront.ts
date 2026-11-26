@@ -93,10 +93,10 @@ export async function setTakenDown(db: Db, adminToken: string | undefined, tenan
   return { ok: true };
 }
 
-type LiveShop = { id: string; slug: string; name: string; phone: string | null; address: string | null; taxMode: string; settings: StorefrontSettings; today: string };
+export type LiveShop = { id: string; slug: string; name: string; phone: string | null; address: string | null; taxMode: string; settings: StorefrontSettings; today: string };
 
 /** Spec 6.18: a missing, suspended, unpublished, taken-down, or read-only shop has no storefront (the grace period still shows it). */
-async function liveShop(tx: Tx, slug: string, now: Date): Promise<LiveShop | null> {
+export async function liveShop(tx: Tx, slug: string, now: Date): Promise<LiveShop | null> {
   const [row] = await tx.select({ t: tenants, s: subscriptions }).from(tenants).innerJoin(subscriptions, eq(subscriptions.tenantId, tenants.id)).where(eq(tenants.slug, slug));
   if (!row) return null;
   const { t, s } = row;

@@ -365,6 +365,27 @@
       "when": 1795715254383,
       "tag": "0051_growth_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1795726850019,
+      "tag": "0052_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1795726858144,
+      "tag": "0053_integrations_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1795728809832,
+      "tag": "0054_paystack_tender",
+      "breakpoints": true
     }
   ]
 }

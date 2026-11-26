@@ -1,12 +1,13 @@
 import 'server-only';
+import { emitEvent } from './webhooks';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Db, Tx } from '@/db/client';
 import {
   addOnGroups, addOnOptions, branches, branchOrderCounters, channelReceivables, comboChoices, comboSlots, components, customers, foodSettings, kitchenOrders, payments, products, registers, sales, saleLines,
   salesChannels, taxRules, ticketLines, tickets, variantAddOnGroups, diningTables,
-  customerLedger, prescriptions, TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
+  customerLedger, prescriptions, stockBalances, TENDER_METHODS, type TenderMethod, tenants, users, variants, variantUnits,
 } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { cashRounding } from '@/lib/cash-rounding';
@@ -109,7 +110,7 @@ const inputSchema = z.object({
   }).optional(),
 });
 
-const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer', 'channel_settlement', 'gift_card']; // a gift card's reference is its code
+const NEEDS_REFERENCE: readonly TenderMethod[] = ['momo_manual', 'card_terminal', 'bank_transfer', 'channel_settlement', 'gift_card', 'paystack']; // a gift card's reference is its code
 const MONEY: readonly TenderMethod[] = ['cash', 'momo_manual', 'card_terminal', 'bank_transfer']; // what earns loyalty points (6.30)
 
 /** A refusal found after the first write: thrown so the whole transaction rolls back. */
@@ -147,7 +148,7 @@ export function throwSaleFailure(r: Extract<SaleResult, { ok: false }>): never {
  * serverPrices: lines are charged today's catalogue price (web screens). exchangeCreditPesewas: returned goods pay up to this much (6.32).
  * quote: an unpaid sale is allowed so a caller can read the totals and roll back.
  */
-export type SaleOptions = { serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string; quotedPrices?: boolean; depositPesewas?: number }; // depositPesewas: a customer order's payments pay towards it (6.34) // quotedPrices: a quote's prices and discounts stand (6.35) // salespersonId: 6.39
+export type SaleOptions = { paystack?: { reference: string; amountPesewas: number }; serverPrices?: boolean; exchangeCreditPesewas?: number; quote?: boolean; salespersonId?: string; quotedPrices?: boolean; depositPesewas?: number }; // depositPesewas: a customer order's payments pay towards it (6.34) // quotedPrices: a quote's prices and discounts stand (6.35) // salespersonId: 6.39
 
 export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Date, opts: SaleOptions = {}): Promise<SaleResult> {
   assertPermission(ctx, 'make_sale');
@@ -335,6 +336,8 @@ export async function completeSaleTx(tx: Tx, ctx: Ctx, input: SaleInput, now: Da
   if (exchangeCredit > 0) s.tenders.push({ id: randomUUID(), method: 'exchange_credit', amountPesewas: exchangeCredit });
   const deposit = Math.min(opts.depositPesewas ?? 0, saleTotal); // money already paid towards a customer order
   if (deposit > 0) s.tenders.push({ id: randomUUID(), method: 'deposit', amountPesewas: deposit });
+  // spec 6.11: a charge Paystack verified on the shop's own account (server only, never from the till's tenders)
+  if (opts.paystack) s.tenders.push({ id: randomUUID(), method: 'paystack', amountPesewas: opts.paystack.amountPesewas, reference: opts.paystack.reference });
   // spec 6.57: an app that collects the money pays the shop later, so its order has exactly one settlement for the total
   const settlements = s.tenders.filter((t) => t.method === 'channel_settlement');
   if (channel?.collectedBy === 'app') {
@@ -715,6 +718,21 @@ async function repeat(tx: Tx, ctx: Ctx, sale: StoredSale, deviceNumber: string |
   return { ok: true, saleId: sale.id, status, changeDuePesewas: sale.changeDuePesewas, alreadyExisted: true, orderNumber };
 }
 
+/** stock.low fires once, when this sale takes an item from above its reorder level to at or below it. */
+async function emitStockLow(tx: Tx, tenantId: string, branchId: string, lines: Array<{ variantId: string; baseQuantity: string }>, at: Date) {
+  const sold = new Map<string, bigint>();
+  for (const l of lines) sold.set(l.variantId, (sold.get(l.variantId) ?? 0n) + toMilli(l.baseQuantity));
+  if (!sold.size) return;
+  const rows = await tx.select({ variantId: variants.id, reorder: variants.reorderLevel, onHand: stockBalances.onHand }).from(variants)
+    .innerJoin(stockBalances, and(eq(stockBalances.variantId, variants.id), eq(stockBalances.branchId, branchId)))
+    .where(and(inArray(variants.id, [...sold.keys()]), isNotNull(variants.reorderLevel)));
+  for (const r of rows) {
+    const now = toMilli(r.onHand);
+    const level = toMilli(r.reorder!);
+    if (now <= level && now + sold.get(r.variantId)! > level) await emitEvent(tx, tenantId, 'stock.low', { variantId: r.variantId, branchId, onHand: r.onHand, reorderLevel: r.reorder }, at);
+  }
+}
+
 /** Spec 6.9: safe to call many times; only a fully paid pending sale is completed, and its stock goes down once. */
 export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, now: Date): Promise<{ status: 'completed' | 'pending'; problems: DeductProblems }> {
   const problems: DeductProblems = { negative: false, onlyExpired: false, serialsMissing: false };
@@ -751,6 +769,12 @@ export async function finaliseSaleTx(tx: Tx, tenantId: string, saleId: string, n
     tenantId, actorType: 'user', actorId: sale.cashierId, action: 'sale_completed', recordType: 'sale', recordId: saleId,
     changes: { receiptNumber: sale.receiptNumber, totalPesewas: sale.totalPesewas },
   });
+  // spec 4.29: outgoing webhooks, queued in this transaction
+  await emitEvent(tx, tenantId, 'sale.completed', {
+    saleId, receiptNumber: sale.receiptNumber, branchId: sale.branchId, totalPesewas: sale.totalPesewas, completedAt: now.toISOString(),
+    lines: lines.map((l) => ({ variantId: l.variantId, quantity: l.quantity, totalPesewas: l.totalPesewas })),
+  }, now);
+  await emitStockLow(tx, tenantId, sale.branchId, lines.filter((l) => !l.byAmount && !giftCardVariants.has(l.variantId)), now);
   return { status: 'completed', problems };
 }
 

@@ -25,10 +25,13 @@ async function registerBranch(tx: Tx, ctx: Ctx): Promise<string | null> {
   return r?.branchId ?? null;
 }
 
-async function changeReserved(tx: Tx, ctx: Ctx, branchId: string, lines: OrderLine[], sign: 1 | -1) {
+const changeReserved = (tx: Tx, ctx: Ctx, branchId: string, lines: OrderLine[], sign: 1 | -1) => reserveStock(tx, ctx.tenantId, branchId, lines, sign);
+
+/** Holds (+1) or releases (−1) stock for an order: available = on hand − reserved. Also used by online orders (6.49). */
+export async function reserveStock(tx: Tx, tenantId: string, branchId: string, lines: OrderLine[], sign: 1 | -1) {
   for (const l of lines) {
     const delta = sign === 1 ? sql`${l.baseQuantity}::numeric` : sql`(0 - ${l.baseQuantity}::numeric)`;
-    await tx.insert(stockBalances).values({ tenantId: ctx.tenantId, branchId, variantId: l.variantId, reserved: sql`greatest(${delta}, 0)` as unknown as string })
+    await tx.insert(stockBalances).values({ tenantId, branchId, variantId: l.variantId, reserved: sql`greatest(${delta}, 0)` as unknown as string })
       .onConflictDoUpdate({ target: [stockBalances.tenantId, stockBalances.branchId, stockBalances.variantId], set: { reserved: sql`greatest(${stockBalances.reserved} + ${delta}, 0)` } });
   }
 }

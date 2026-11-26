@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getDb } from '@/db/client';
+import { publicOrderOptions } from '@/server/online-orders';
 import { publicStorefront } from '@/server/storefront';
 import { ProductCard, ShopHeader } from './storefront-parts';
 
@@ -25,9 +26,11 @@ export default async function StorefrontPage({ params, searchParams }: Props) {
   const { q, category } = await searchParams;
   const shop = await publicStorefront(getDb(), slug, new Date(), { q: q?.slice(0, 60) || undefined, category: category || undefined });
   if (!shop) notFound();
+  const ordering = await publicOrderOptions(getDb(), slug, new Date());
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-4 p-4" style={{ ['--brand' as string]: shop.settings.themeColor }}>
       <ShopHeader shop={shop} />
+      {ordering && <a href={`/${slug}/order`} className="self-start rounded px-4 py-2 font-semibold text-white" style={{ background: 'var(--brand)' }}>Order online</a>}
       <form className="flex flex-wrap gap-2" role="search">
         <input name="q" defaultValue={q} placeholder="Search products" className="min-w-0 flex-1 rounded border border-gray-400 px-3 py-2" aria-label="Search products" />
         {shop.categories.length > 0 && (

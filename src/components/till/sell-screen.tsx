@@ -1,7 +1,7 @@
 'use client';
 import { cashRounding } from '@/lib/cash-rounding';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { checkCouponAction, findCustomersAction, findItemAction, priceItemAction, rxApprovalAction } from '@/app/[slug]/app/sell/actions';
+import { checkCouponAction, checkPaystackAction, findCustomersAction, findItemAction, priceItemAction, rxApprovalAction, startPaystackAction } from '@/app/[slug]/app/sell/actions';
 import { calculateCartTotals } from '@/lib/cart-totals';
 import { formatCedis, parseCedis, pesewasTimesQty } from '@/lib/money';
 import { applyPromotions, type Promo, promoRunning } from '@/lib/promotions';
@@ -47,7 +47,8 @@ function writeCounter(key: string, n: number) {
   try { localStorage.setItem(key, String(n)); } catch { /* private mode: the server counter still protects uniqueness */ }
 }
 
-export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0, canDispense = true, pharmacists = [], promotions = [], timeZone = 'Africa/Accra' }: {
+export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0, canDispense = true, pharmacists = [], promotions = [], timeZone = 'Africa/Accra', paystack = false }: {
+  paystack?: boolean; // Phase 6: the shop connected its own Paystack account
   slug: string; till: TillRegister; canDiscount: boolean; taxMode: 'inclusive' | 'exclusive'; roundingStep?: number;
   promotions?: Promo[]; timeZone?: string; // spec 6.29: the till works out the same automatic promotions as the server
   canDispense?: boolean; pharmacists?: Array<{ id: string; name: string }>; // spec 6.36
@@ -70,6 +71,20 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
   useEffect(() => { const t = setInterval(() => setClock(new Date()), 60_000); return () => clearInterval(t); }, []);
   const [done, setDone] = useState<{ saleId: string; change: number; receiptNumber: string; total: number; giftCards?: Array<{ code: string; amountPesewas: number }> } | null>(null);
   const saleId = useRef<string | null>(null);
+  const [charge, setCharge] = useState<{ reference: string; url: string; qr: string; amountPesewas: number; note: string | null } | null>(null);
+  // spec 4.3: poll the Paystack charge; the sale exists only once Paystack confirms the money
+  useEffect(() => {
+    if (!charge) return;
+    let stop = false;
+    const t = setInterval(async () => {
+      const r = await checkPaystackAction(slug, charge.reference).catch(() => null);
+      if (stop || !r) return;
+      if (r.state === 'paid') { setDone({ saleId: r.saleId ?? '', change: 0, receiptNumber: r.receiptNumber ?? '', total: charge.amountPesewas }); setCharge(null); }
+      else if (r.state === 'failed') { setCharge(null); setMessage('The Paystack payment failed or was cancelled.'); }
+      else if (r.state === 'stuck') setCharge((c) => (c ? { ...c, note: r.error } : c));
+    }, 3000);
+    return () => { stop = true; clearInterval(t); };
+  }, [charge, slug]);
   const codeInput = useRef<HTMLInputElement>(null);
   const counterKey = `receipt-counter:${till.registerId}`;
 
@@ -341,6 +356,24 @@ export function SellScreen({ slug, till, canDiscount, taxMode, roundingStep = 0,
         {totals && paid > 0 && <p className="text-lg">Change due: <strong>{formatCedis(change)}</strong></p>}
         <button type="button" disabled={busy || lines.length === 0 || !totals} onClick={() => void complete()}
           className="rounded bg-green-700 px-4 py-3 text-lg text-white disabled:opacity-50">{busy ? 'Please wait…' : 'Complete sale'}</button>
+        {paystack && !charge && (
+          <button type="button" disabled={busy || lines.length === 0 || !totals || lines.some((l) => l.prescriptionOnly)} className="rounded border border-green-700 px-4 py-3 text-lg text-green-800 disabled:opacity-50"
+            onClick={async () => {
+              setBusy(true); setMessage(null);
+              const r = await startPaystackAction(slug, { customerId: customer?.id ?? null, lines: lines.map((l) => ({ variantId: l.variantId, unitId: l.unitId, quantity: l.quantity, discountPesewas: l.discountPesewas })) });
+              setBusy(false);
+              if (r.ok) setCharge({ reference: r.reference, url: r.url, qr: r.qr, amountPesewas: r.amountPesewas, note: null }); else setMessage(r.error);
+            }}>Charge with Paystack (card or MoMo)</button>
+        )}
+        {charge && (
+          <div role="status" className="flex flex-col items-center gap-2 rounded border border-green-700 p-3 text-center">
+            <p className="text-lg">Customer scans to pay <strong>{formatCedis(charge.amountPesewas)}</strong></p>
+            <div className="w-48" dangerouslySetInnerHTML={{ __html: charge.qr }} />
+            <a href={charge.url} target="_blank" rel="noreferrer" className="break-all text-sm text-blue-800 underline">Open the payment page on this device</a>
+            <p className="text-sm">{charge.note ?? 'Waiting for Paystack to confirm…'}</p>
+            <button type="button" className="text-sm underline" onClick={() => setCharge(null)}>Stop waiting (a payment that arrives later is still recorded)</button>
+          </div>
+        )}
       </section>
     </main>
   );

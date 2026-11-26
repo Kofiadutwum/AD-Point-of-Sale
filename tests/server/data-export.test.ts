@@ -42,7 +42,7 @@ it('exports each dataset as CSV in cedis and audits it', async () => {
   expect(rows((sales as { csv: string }).csv)).toHaveLength(2);
   expect((sales as { csv: string }).csv).toContain(',2.000,5.00,0.00,');
   const acc = (await exportData(db, owner, 'accounting', { from: '2026-11-26', to: '2026-11-26' })) as { csv: string };
-  expect(rows(acc.csv)[1]).toMatch(/^2026-11-26,10\.00,0\.00,[\d.]+,10\.00,0\.00,0\.00,0\.00,0\.00,0\.00,0\.00,0\.00,0\.00,3\.00$/);
+  expect(rows(acc.csv)[1]).toMatch(/^2026-11-26,10\.00,0\.00,[\d.]+,10\.00(,0\.00){12},3\.00$/);
   const stock = (await exportData(db, owner, 'stock', {})) as { csv: string };
   expect(rows(stock.csv)[1]).toContain(',8.000,16.00');
   const customers = (await exportData(db, owner, 'customers', {})) as { csv: string };
