@@ -4,7 +4,7 @@ import { barcodes, products, variants, variantUnits } from '@/db/schema';
 import { asPlatform } from '@/db/tenant';
 import type { Module } from '@/lib/permissions';
 import type { Ctx } from '@/server/context';
-import { getSalesSettings, getSellingSettings, saveSalesSettings, saveSellingSettings } from '@/server/shop-settings';
+import { getReturnSettings, getSalesSettings, getSellingSettings, saveReturnSettings, saveSalesSettings, saveSellingSettings } from '@/server/shop-settings';
 import { ctxFor, expectAccess, PRICE_LAYOUT, productFor, type SeededShop, seedShop, WEIGHT_LAYOUT } from '../helpers/fixtures';
 import { createTestDb } from '../helpers/test-db';
 
@@ -71,4 +71,11 @@ it('saves the sales settings and audits them', async () => {
   expect(await saveSalesSettings(db, owner, { allowNegativeStock: false, taxNumber: ' C0001234567 ', receiptFooter: 'No returns after 7 days.' })).toEqual({ ok: true });
   expect(await getSalesSettings(db, owner)).toEqual({ allowNegativeStock: false, taxNumber: 'C0001234567', receiptFooter: 'No returns after 7 days.' });
   expect(await saveSalesSettings(db, owner, { allowNegativeStock: true, taxNumber: '  ', receiptFooter: 'x'.repeat(301) })).toEqual({ ok: false, error: 'invalid_input' });
+});
+
+it('saves the refund limit and no-receipt returns', async () => {
+  expect(await getReturnSettings(db, owner)).toEqual({ refundLimitPesewas: 0, allowNoReceiptReturns: false, noReceiptMonthlyLimit: 2 });
+  expect(await saveReturnSettings(db, owner, { refundLimitPesewas: 5000, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 })).toEqual({ ok: true });
+  expect(await getReturnSettings(db, owner)).toEqual({ refundLimitPesewas: 5000, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 });
+  expect(await saveReturnSettings(db, owner, { refundLimitPesewas: -1, allowNoReceiptReturns: true, noReceiptMonthlyLimit: 3 })).toEqual({ ok: false, error: 'invalid_input' });
 });

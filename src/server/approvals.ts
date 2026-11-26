@@ -1,5 +1,5 @@
 import 'server-only';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import { approvals, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
@@ -44,4 +44,15 @@ export async function consumeApproval(tx: Tx, ctx: Ctx, input: { token: string; 
   if (!a || a.usedAt || a.expiresAt.getTime() <= now.getTime() || a.requestedBy !== ctx.userId || a.action !== input.action || a.contextKey !== input.contextKey) return null;
   await tx.update(approvals).set({ usedAt: now }).where(eq(approvals.id, a.id));
   return { approverId: a.approvedBy };
+}
+
+/** People who could approve for this user: active, not themselves, with a PIN and `approve_actions`, sharing a branch. */
+export async function listApprovers(db: Db, ctx: Ctx): Promise<Array<{ id: string; name: string }>> {
+  return withTenant(db, ctx.tenantId, async (tx) => {
+    const [me] = await tx.select({ branchIds: users.branchIds }).from(users).where(eq(users.id, ctx.userId));
+    const rows = await tx.select({ id: users.id, name: users.name, permissions: users.permissions, branchIds: users.branchIds, pinHash: users.pinHash })
+      .from(users).where(and(eq(users.status, 'active'), ne(users.id, ctx.userId))).orderBy(asc(users.name));
+    return rows.filter((u) => u.pinHash && u.permissions.includes('approve_actions') && u.branchIds.some((b) => me?.branchIds.includes(b)))
+      .map((u) => ({ id: u.id, name: u.name }));
+  });
 }
