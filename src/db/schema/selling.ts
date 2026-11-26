@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, id, timestamptz } from './columns';
 import { priceLists, variants, variantUnits } from './catalogue';
 import { users } from './people';
@@ -28,6 +28,7 @@ export const customers = pgTable('customers', {
   reminderConsent: boolean('reminder_consent').notNull().default(false), // agreed to debt reminders by SMS
   address: text('address'), // business customers on invoices (spec 4.22)
   tin: text('tin'), // taxpayer identification number on invoices
+  marketingConsent: boolean('marketing_consent').notNull().default(false), // agreed to promotional SMS (spec 4.25)
   createdAt: createdAt(),
 }, (t) => [
   unique('customers_tenant_id').on(t.tenantId, t.id),
@@ -462,4 +463,54 @@ export const invoices = pgTable('invoices', {
   foreignKey({ name: 'invoices_customer_fk', columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id] }),
   foreignKey({ name: 'invoices_quote_fk', columns: [t.tenantId, t.quoteId], foreignColumns: [quotes.tenantId, quotes.id] }),
   foreignKey({ name: 'invoices_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
+]);
+
+export type NotificationKind = 'report' | 'marketing';
+export type NotificationStatus = 'queued' | 'sent' | 'failed' | 'blocked_quota';
+
+/** Spec 4.8, 6.17: one SMS to one phone; the key makes a job that runs twice queue it once. */
+export const notifications = pgTable('notifications', {
+  id: id(),
+  tenantId: tenantId(),
+  key: text('key').notNull(),
+  kind: text('kind').$type<NotificationKind>().notNull(),
+  toPhone: text('to_phone').notNull(),
+  body: text('body').notNull(),
+  parts: integer('parts').notNull(),
+  status: text('status').$type<NotificationStatus>().notNull().default('queued'),
+  attempts: integer('attempts').notNull().default(0),
+  error: text('error'),
+  sendAfter: timestamptz('send_after').notNull(),
+  sentAt: timestamptz('sent_at'),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('notifications_key').on(t.tenantId, t.key),
+  index('notifications_queue').on(t.status, t.sendAfter),
+  check('notifications_kind', sql`${t.kind} in ('report', 'marketing')`),
+  check('notifications_status', sql`${t.status} in ('queued', 'sent', 'failed', 'blocked_quota')`),
+]);
+
+/** Spec 6.42: a phone that asked for no more promotional SMS from this shop. */
+export const marketingOptOuts = pgTable('marketing_opt_outs', {
+  tenantId: tenantId(),
+  phone: text('phone').notNull(),
+  createdAt: createdAt(),
+}, (t) => [primaryKey({ name: 'marketing_opt_outs_pk', columns: [t.tenantId, t.phone] })]);
+
+export type CampaignSegment = 'all' | 'recent' | 'lapsed';
+
+/** Spec 4.25, 6.42: a promotional SMS sent to a segment of opted-in customers. */
+export const smsCampaigns = pgTable('sms_campaigns', {
+  id: id(),
+  tenantId: tenantId(),
+  segment: text('segment').$type<CampaignSegment>().notNull(),
+  message: text('message').notNull(),
+  recipients: integer('recipients').notNull(),
+  parts: integer('parts').notNull(),
+  sendAfter: timestamptz('send_after').notNull(),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  check('sms_campaigns_segment', sql`${t.segment} in ('all', 'recent', 'lapsed')`),
+  foreignKey({ name: 'sms_campaigns_created_by_fk', columns: [t.tenantId, t.createdBy], foreignColumns: [users.tenantId, users.id] }),
 ]);

@@ -281,6 +281,20 @@
       "when": 1795695418364,
       "tag": "0039_quotes_invoices_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795697144972,
+      "tag": "0040_sms",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795697159021,
+      "tag": "0041_sms_rls",
+      "breakpoints": true
     }
   ]
 }
