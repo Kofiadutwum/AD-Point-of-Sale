@@ -7,7 +7,7 @@ import { branches, tenants } from './tenancy';
 
 // Stock is always held in base units (spec 6.0). Balances may go below zero: a sale is allowed even when recorded stock runs out (4.1).
 
-export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste' | 'return_restock';
+export type MovementType = 'opening_stock' | 'received' | 'sale' | 'used_in_production' | 'waste' | 'return_restock' | 'produced';
 export type SerialStatus = 'in_stock' | 'sold';
 
 const tenantId = () => uuid('tenant_id').notNull().references(() => tenants.id);
@@ -86,7 +86,7 @@ export const stockMovements = pgTable('stock_movements', {
   batchId: uuid('batch_id'),
   serialId: uuid('serial_id'),
   unitCost: numeric('unit_cost', { precision: 14, scale: 4 }), // pesewas per base unit, receipts only
-  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage' | 'return'>().notNull(),
+  referenceType: text('reference_type').$type<'stock_receipt' | 'sale' | 'pot_record' | 'wastage' | 'return' | 'production'>().notNull(),
   referenceId: uuid('reference_id').notNull(),
   saleLineId: uuid('sale_line_id'),
   userId: uuid('user_id'),
@@ -97,7 +97,41 @@ export const stockMovements = pgTable('stock_movements', {
   foreignKey({ name: 'stock_movements_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
   foreignKey({ name: 'stock_movements_batch_fk', columns: [t.tenantId, t.batchId], foreignColumns: [stockBatches.tenantId, stockBatches.id] }),
   foreignKey({ name: 'stock_movements_serial_fk', columns: [t.tenantId, t.serialId], foreignColumns: [serials.tenantId, serials.id] }),
-  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock')`),
-  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return')`),
+  check('stock_movements_type', sql`${t.type} in ('opening_stock', 'received', 'sale', 'used_in_production', 'waste', 'return_restock', 'produced')`),
+  check('stock_movements_reference', sql`${t.referenceType} in ('stock_receipt', 'sale', 'pot_record', 'wastage', 'return', 'production')`),
   check('stock_movements_quantity', sql`${t.quantity} <> 0`),
+]);
+
+/** Spec 6.27: what one base unit of a made item uses. Separate from bundle and recipe components, which are sold, not made ahead. */
+export const productionIngredients = pgTable('production_ingredients', {
+  id: id(),
+  tenantId: tenantId(),
+  variantId: uuid('variant_id').notNull(), // the made item
+  ingredientVariantId: uuid('ingredient_variant_id').notNull(),
+  quantity: quantity('quantity').notNull(), // ingredient base units per one made base unit
+  createdAt: createdAt(),
+}, (t) => [
+  unique('production_ingredients_pair').on(t.tenantId, t.variantId, t.ingredientVariantId),
+  check('production_ingredients_quantity', sql`${t.quantity} > 0`),
+  check('production_ingredients_not_self', sql`${t.variantId} <> ${t.ingredientVariantId}`),
+  foreignKey({ name: 'production_ingredients_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  foreignKey({ name: 'production_ingredients_ingredient_fk', columns: [t.tenantId, t.ingredientVariantId], foreignColumns: [variants.tenantId, variants.id] }),
+]);
+
+/** One batch made: e.g. 40 loaves baked this morning. */
+export const productionRuns = pgTable('production_runs', {
+  id: id(),
+  tenantId: tenantId(),
+  branchId: uuid('branch_id').notNull(),
+  variantId: uuid('variant_id').notNull(),
+  quantity: quantity('quantity').notNull(),
+  unitCost: numeric('unit_cost', { precision: 14, scale: 4 }).notNull(), // pesewas per base unit, from the ingredients' average costs
+  userId: uuid('user_id').notNull(),
+  createdAt: createdAt(),
+}, (t) => [
+  unique('production_runs_tenant_id').on(t.tenantId, t.id),
+  check('production_runs_quantity', sql`${t.quantity} > 0`),
+  foreignKey({ name: 'production_runs_branch_fk', columns: [t.tenantId, t.branchId], foreignColumns: [branches.tenantId, branches.id] }),
+  foreignKey({ name: 'production_runs_variant_fk', columns: [t.tenantId, t.variantId], foreignColumns: [variants.tenantId, variants.id] }),
+  foreignKey({ name: 'production_runs_user_fk', columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id] }),
 ]);
