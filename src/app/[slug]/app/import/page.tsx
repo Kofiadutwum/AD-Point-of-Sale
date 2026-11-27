@@ -5,6 +5,9 @@ import { TEMPLATES } from '@/server/csv-import';
 import { pageCtx } from '../page-ctx';
 import { importAction } from './actions';
 
+// a 2,000-row import can take most of a minute; the host would cut a request off sooner by default
+export const maxDuration = 300;
+
 const select = 'rounded border border-gray-400 px-3 py-2';
 const LABELS = { products: 'Products', customers: 'Customers', opening_stock: 'Opening stock' } as const;
 const NOTES = {

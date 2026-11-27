@@ -82,3 +82,8 @@ it('imports an opening stock file longer than one receipt (100 lines), all or no
   expect(await runImport(db, owner, { kind: 'opening_stock', text: stock(() => '30.00'), branchId: shop.branchId, skipFailing: false }, t0)).toEqual({ ok: true, imported: 250, skipped: 0 });
   expect(await onHand('BULK-249')).toEqual('10.000');
 });
+
+it('refuses a file over 2,000 rows (split it), so one import stays within the host time limit', async () => {
+  const rows = ['name,phone', ...Array.from({ length: 2001 }, (_, i) => `Customer ${i},024${String(1000000 + i)}`)];
+  expect(await checkImport(db, owner, { kind: 'customers', text: rows.join('\n') })).toEqual({ ok: false, error: 'too_large' });
+});

@@ -20,7 +20,8 @@ export const TEMPLATES: Record<ImportKind, readonly string[]> = {
   opening_stock: ['code', 'quantity', 'total_cost', 'batch_number', 'expiry_date'],
 };
 const MAX_BYTES = 5 * 1024 * 1024;
-const MAX_ROWS = 10_000;
+// 2,000 rows import in well under a minute; bigger files risk the host's request time limit, so they are split
+const MAX_ROWS = 2_000;
 export type RowError = { row: number; message: string }; // row = line in the file, the header being line 1
 export type ImportCheck = { ok: true; rows: number; errors: RowError[]; preview: string[][] };
 export type ImportFail = Fail<'invalid_input' | 'too_large' | 'wrong_headers' | 'has_errors' | 'nothing_to_import'>;
@@ -169,7 +170,7 @@ async function stockLines(db: Db, ctx: Ctx, rows: string[][]): Promise<{ lines: 
 }
 
 export const importMessage = (e: ImportFail): string => ({
-  invalid_input: 'That file could not be read as CSV.', too_large: `Files can have at most ${MAX_ROWS.toLocaleString('en-GH')} rows and 5 MB.`,
+  invalid_input: 'That file could not be read as CSV.', too_large: `Files can have at most ${MAX_ROWS.toLocaleString('en-GH')} rows and 5 MB. Split a bigger file into parts and import them one after another.`,
   wrong_headers: `The first line must be exactly: ${e.detail ?? ''}`,
   has_errors: e.detail ? `Nothing was imported: ${e.detail}.` : 'Some rows have errors. Fix them, or tick "Skip rows with errors".',
   nothing_to_import: 'There are no rows to import.',
