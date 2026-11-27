@@ -2,6 +2,7 @@ import { getDb } from '@/db/client';
 import { getHomeSummary } from '@/server/home';
 import { ActionForm, Field } from '@/components/form';
 import { formatCedis } from '@/lib/money';
+import type { Module } from '@/lib/permissions';
 import { listHeldSales } from '@/server/held-sales';
 import { resolveHeldAction, signOutAction } from './actions';
 import { pageCtx } from './page-ctx';
@@ -11,6 +12,7 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
   const ctx = await pageCtx(slug, null);
   const home = await getHomeSummary(getDb(), ctx, new Date());
   const held = ctx.permissions.includes('view_dashboard') ? await listHeldSales(getDb(), ctx) : [];
+  const has = (m: Module) => home.modules.includes(m);
   const links = [
     { href: `/${slug}/app/sell`, label: 'Sell', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/dashboard`, label: 'Dashboard', allowed: ctx.permissions.includes('view_dashboard') },
@@ -19,12 +21,12 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/stock`, label: 'Stock (counts, transfers, low stock)', allowed: ctx.permissions.includes('receive_stock') },
     { href: `/${slug}/app/purchasing`, label: 'Suppliers and orders', allowed: ctx.permissions.includes('manage_purchasing') },
     { href: `/${slug}/app/customers`, label: 'Customers', allowed: ctx.permissions.includes('make_sale') },
-    { href: `/${slug}/app/counter-orders`, label: 'Counter orders', allowed: ctx.permissions.includes('make_sale') },
+    { href: `/${slug}/app/counter-orders`, label: 'Counter orders', allowed: ctx.permissions.includes('make_sale') && has('kitchen') },
     { href: `/${slug}/app/shift`, label: 'Shift and cash', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/expenses`, label: 'Expenses', allowed: ctx.permissions.includes('record_expenses') },
     { href: `/${slug}/app/quotes`, label: 'Quotes', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/invoices`, label: 'Invoices', allowed: ctx.permissions.includes('issue_invoices') },
-    { href: `/${slug}/app/production`, label: 'Production', allowed: ctx.permissions.includes('record_production') },
+    { href: `/${slug}/app/production`, label: 'Production', allowed: ctx.permissions.includes('record_production') && has('recipes') },
     { href: `/${slug}/app/returns`, label: 'Returns', allowed: ctx.permissions.includes('process_return') },
     { href: `/${slug}/app/products`, label: 'Products', allowed: ctx.permissions.includes('manage_products') },
     { href: `/${slug}/app/import`, label: 'Import from CSV', allowed: ctx.permissions.includes('import_data') },
@@ -32,15 +34,15 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/settings`, label: 'Settings', allowed: ctx.permissions.includes('manage_shop_settings') },
     { href: `/${slug}/app/staff`, label: 'Staff', allowed: ctx.permissions.includes('manage_staff') },
     { href: `/${slug}/app/devices`, label: 'Devices', allowed: ctx.permissions.includes('manage_devices') },
-    { href: `/${slug}/app/kitchen`, label: 'Kitchen', allowed: ctx.permissions.includes('run_kitchen') },
-    { href: `/${slug}/app/tables`, label: 'Tables', allowed: ctx.permissions.includes('take_orders') },
-    { href: `/${slug}/app/kitchen/stations`, label: 'Kitchen stations', allowed: ctx.permissions.includes('run_kitchen') },
-    { href: `/${slug}/app/kitchen-stock`, label: 'Kitchen stock', allowed: ctx.permissions.includes('record_kitchen_stock') },
-    { href: `/${slug}/app/settings/food`, label: 'Food settings', allowed: ctx.permissions.includes('manage_shop_settings') },
-    { href: `/${slug}/app/add-ons`, label: 'Add-ons', allowed: ctx.permissions.includes('manage_products') },
-    { href: `/${slug}/app/settings/channels`, label: 'Sales channels', allowed: ctx.permissions.includes('manage_channels') },
-    { href: `/${slug}/app/channels/payouts`, label: 'App payouts', allowed: ctx.permissions.includes('manage_channels') },
-    { href: `/${slug}/app/reports/food`, label: 'Food report', allowed: ctx.permissions.includes('view_reports') },
+    { href: `/${slug}/app/kitchen`, label: 'Kitchen', allowed: ctx.permissions.includes('run_kitchen') && has('kitchen') },
+    { href: `/${slug}/app/tables`, label: 'Tables', allowed: ctx.permissions.includes('take_orders') && has('tickets') },
+    { href: `/${slug}/app/kitchen/stations`, label: 'Kitchen stations', allowed: ctx.permissions.includes('run_kitchen') && has('kitchen') },
+    { href: `/${slug}/app/kitchen-stock`, label: 'Kitchen stock', allowed: ctx.permissions.includes('record_kitchen_stock') && has('kitchen') },
+    { href: `/${slug}/app/settings/food`, label: 'Food settings', allowed: ctx.permissions.includes('manage_shop_settings') && has('kitchen') },
+    { href: `/${slug}/app/add-ons`, label: 'Add-ons', allowed: ctx.permissions.includes('manage_products') && has('addons') },
+    { href: `/${slug}/app/settings/channels`, label: 'Sales channels', allowed: ctx.permissions.includes('manage_channels') && has('kitchen') },
+    { href: `/${slug}/app/channels/payouts`, label: 'App payouts', allowed: ctx.permissions.includes('manage_channels') && has('kitchen') },
+    { href: `/${slug}/app/reports/food`, label: 'Food report', allowed: ctx.permissions.includes('view_reports') && has('kitchen') },
     { href: `/${slug}/app/export`, label: 'Export data', allowed: ctx.permissions.includes('export_data') },
     { href: `/${slug}/app/marketing`, label: 'Promotional SMS', allowed: ctx.permissions.includes('marketing') },
     { href: `/${slug}/app/storefront`, label: 'Storefront', allowed: ctx.permissions.includes('manage_storefront') },
@@ -51,9 +53,8 @@ export default async function ShopHome({ params }: { params: Promise<{ slug: str
     { href: `/${slug}/app/orders`, label: 'Layaway and special orders', allowed: ctx.permissions.includes('layaway') },
     { href: `/${slug}/app/commissions`, label: 'Staff commission', allowed: ctx.permissions.includes('manage_commissions') },
     { href: `/${slug}/app/display`, label: 'Customer display', allowed: ctx.permissions.includes('make_sale') },
-    { href: `/${slug}/app/reports/pharmacy`, label: 'Pharmacy report', allowed: ctx.permissions.includes('view_reports') },
+    { href: `/${slug}/app/reports/pharmacy`, label: 'Pharmacy report', allowed: ctx.permissions.includes('view_reports') && has('prescriptions') },
     { href: `/${slug}/till`, label: 'Till PIN screen', allowed: true },
-    { href: `/${slug}/till/sell`, label: 'Selling screen', allowed: ctx.permissions.includes('make_sale') },
     { href: `/${slug}/app/security`, label: 'Two-step sign-in', allowed: ctx.sessionKind === 'password' },
   ].filter((l) => l.allowed);
   return (
