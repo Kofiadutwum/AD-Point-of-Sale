@@ -82,6 +82,38 @@ export async function receiveStock(
   return res.ok ? { ok: true, receiptId: res.receiptId } : res;
 }
 
+const RECEIPT_MAX_LINES = 100;
+class PartRefused extends Error { constructor(readonly refusal: Fail<ReceiveError>) { super('part refused'); } }
+
+/**
+ * Opening stock from a CSV file can have thousands of lines; a receipt holds at most 100. The lines are received as
+ * receipts of 100 in ONE transaction, so the whole file goes in or nothing does. A refusal names the line in the whole file.
+ */
+export async function receiveStockInParts(
+  db: Db, ctx: Ctx, input: { branchId: string; kind: 'received' | 'opening_stock'; note?: string; lines: ReceiveLine[] }, now: Date,
+): Promise<{ ok: true; receipts: number } | Fail<ReceiveError>> {
+  assertPermission(ctx, 'receive_stock');
+  if (!isUuid(input.branchId)) return fail('unknown_branch');
+  const today = todayIn(ctx.timezone, now);
+  try {
+    return await withTenant(db, ctx.tenantId, async (tx) => {
+      let receipts = 0;
+      for (let start = 0; start < input.lines.length; start += RECEIPT_MAX_LINES) {
+        const parsed = receiptSchema.safeParse({ ...input, lines: input.lines.slice(start, start + RECEIPT_MAX_LINES) });
+        if (!parsed.success) throw new PartRefused(fail('invalid_input', String(start)));
+        const done = await receiveStockTx(tx, ctx, parsed.data, today);
+        if (!done.ok) throw new PartRefused({ ...done, detail: done.detail !== undefined && /^d+$/.test(done.detail) ? String(start + Number(done.detail)) : done.detail });
+        await markSpecialOrdersReady(tx, ctx.tenantId, input.branchId, done.planned.map((p) => p.variantId), now);
+        receipts++;
+      }
+      return { ok: true as const, receipts };
+    });
+  } catch (e) {
+    if (e instanceof PartRefused) return e.refusal;
+    throw e;
+  }
+}
+
 /** The receipt inside a caller's transaction (purchase orders add to it before it commits). The caller checks receive_stock. */
 export async function receiveStockTx(tx: Tx, ctx: Ctx, r: ReceiptInput, today: string): Promise<{ ok: true; receiptId: string; planned: Array<{ variantId: string; baseQty: string; unitCost: string }> } | Fail<ReceiveError>> {
   {
@@ -184,7 +216,7 @@ export async function deductStockForLine(
   tx: Tx, s: { tenantId: string; branchId: string; saleId: string; saleLineId: string; userId: string; today: string },
   line: { variantId: string; baseQty: string; serials: string[]; choices?: string[] },
 ): Promise<DeductProblems> {
-  const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking }).from(variants)
+  const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking, trackStock: products.trackStock }).from(variants)
     .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.id, line.variantId));
   if (!v) throw new Error(`unknown variant ${line.variantId}`);
   const problems: DeductProblems = { negative: false, onlyExpired: false, serialsMissing: false };
@@ -256,10 +288,11 @@ export async function deductStockForLine(
     await move(minus(left));
   }
 
-  problems.negative = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  const short = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  problems.negative = short && v.trackStock; // an item whose stock is not counted is never "negative"
   // spec 13: stock held for a layaway or online order cannot be sold to someone else
-  const [held] = await tx.select({ onHand: stockBalances.onHand, reserved: stockBalances.reserved }).from(stockBalances)
-    .where(and(eq(stockBalances.branchId, s.branchId), eq(stockBalances.variantId, line.variantId)));
+  const [held] = v.trackStock ? await tx.select({ onHand: stockBalances.onHand, reserved: stockBalances.reserved }).from(stockBalances)
+    .where(and(eq(stockBalances.branchId, s.branchId), eq(stockBalances.variantId, line.variantId))) : [];
   if (held && Number(held.reserved) > 0 && Number(held.onHand) < Number(held.reserved)) problems.reservedTaken = true;
   if (problems.negative) {
     await writeAudit(tx, {

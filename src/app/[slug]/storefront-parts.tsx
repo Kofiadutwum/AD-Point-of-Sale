@@ -1,7 +1,7 @@
 import { formatCedis } from '@/lib/money';
 import type { PublicProduct, PublicShop } from '@/server/storefront';
 
-type Shop = Omit<PublicShop, 'products' | 'categories'>;
+type Shop = Omit<PublicShop, 'products' | 'categories' | 'page' | 'hasMore'>;
 
 export function ShopHeader({ shop }: { shop: Shop }) {
   const s = shop.settings;
@@ -43,5 +43,23 @@ export function ProductCard({ slug, product }: { slug: string; product: PublicPr
       <Price product={product} />
       <Availability product={product} />
     </a>
+  );
+}
+
+/** Previous / next page links that keep the search; page is 0-based, the URL is 1-based. */
+export function Pager({ base, params, page, hasMore }: { base: string; params: Record<string, string | undefined>; page: number; hasMore: boolean }) {
+  if (page === 0 && !hasMore) return null;
+  const href = (p: number) => {
+    const q = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => !!e[1]));
+    if (p > 0) q.set('page', String(p + 1));
+    const s = q.toString();
+    return s ? `${base}?${s}` : base;
+  };
+  return (
+    <nav aria-label="Pages" className="flex items-center justify-between text-sm">
+      {page > 0 ? <a className="rounded border px-3 py-2" href={href(page - 1)}>← Previous</a> : <span />}
+      <span>Page {page + 1}</span>
+      {hasMore ? <a className="rounded border px-3 py-2" href={href(page + 1)}>Next →</a> : <span />}
+    </nav>
   );
 }

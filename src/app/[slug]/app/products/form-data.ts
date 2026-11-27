@@ -16,6 +16,7 @@ export function readProductFields(fd: FormData): ProductFields {
     categoryId: value(fd, 'categoryId') || null, taxRuleId: value(fd, 'taxRuleId') || null,
     tracking: (['batch', 'serial'].includes(tracking) ? tracking : 'none') as Tracking,
     showOnStorefront: ticked(fd, 'showOnStorefront'), featured: ticked(fd, 'featured'),
+    trackStock: fd.has('trackStockShown') ? ticked(fd, 'trackStock') : undefined, // a form without the box keeps the saved value (or the shop-type default)
     // the pharmacy fields are shown only with the prescriptions module; when hidden, leave them out so the save keeps them
     pharmacy: fd.has('genericName') ? {
       genericName: value(fd, 'genericName'), strength: value(fd, 'strength'), dosageForm: value(fd, 'dosageForm'),

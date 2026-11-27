@@ -1,7 +1,7 @@
 import 'server-only';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
-import { customerOrders, customers, type OrderLine, orderPayments, registers, stockBalances, tenants, variantUnits } from '@/db/schema';
+import { customerOrders, customers, type OrderLine, orderPayments, products, registers, stockBalances, tenants, variants, variantUnits } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { multiplyQty } from '@/lib/decimal';
 import { consumeApproval } from './approvals';
@@ -29,7 +29,11 @@ const changeReserved = (tx: Tx, ctx: Ctx, branchId: string, lines: OrderLine[], 
 
 /** Holds (+1) or releases (−1) stock for an order: available = on hand − reserved. Also used by online orders (6.49). */
 export async function reserveStock(tx: Tx, tenantId: string, branchId: string, lines: OrderLine[], sign: 1 | -1) {
+  if (!lines.length) return;
+  const counted = new Set((await tx.select({ id: variants.id }).from(variants).innerJoin(products, eq(products.id, variants.productId))
+    .where(and(inArray(variants.id, lines.map((l) => l.variantId)), eq(products.trackStock, true)))).map((r) => r.id));
   for (const l of lines) {
+    if (!counted.has(l.variantId)) continue; // made to order: nothing to hold
     const delta = sign === 1 ? sql`${l.baseQuantity}::numeric` : sql`(0 - ${l.baseQuantity}::numeric)`;
     await tx.insert(stockBalances).values({ tenantId, branchId, variantId: l.variantId, reserved: sql`greatest(${delta}, 0)` as unknown as string })
       .onConflictDoUpdate({ target: [stockBalances.tenantId, stockBalances.branchId, stockBalances.variantId], set: { reserved: sql`greatest(${stockBalances.reserved} + ${delta}, 0)` } });

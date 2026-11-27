@@ -93,7 +93,7 @@ function PinPanel({ d }: { d: Device }) {
         <legend className="mb-2 text-sm">Who is selling?</legend>
         {staff.map((s) => (
           <label key={s.id} className="flex items-center gap-2 rounded border p-3">
-            <input type="radio" name="staffId" value={s.id} checked={staffId === s.id} onChange={() => setStaffId(s.id)} required /> {s.name}
+            <input type="radio" name="staffId" value={s.id} aria-label={s.name} checked={staffId === s.id} onChange={() => setStaffId(s.id)} required /> {s.name}
           </label>
         ))}
       </fieldset>

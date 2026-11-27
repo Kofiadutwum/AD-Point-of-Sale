@@ -56,6 +56,8 @@ export const products = pgTable('products', {
   tracking: text('tracking').$type<Tracking>().notNull().default('none'),
   status: text('status').$type<CatalogueStatus>().notNull().default('active'),
   showOnStorefront: boolean('show_on_storefront').notNull().default(false),
+  // counts stock; off for things made to order (a plate of jollof): always available online, never "out of stock" or "negative"
+  trackStock: boolean('track_stock').notNull().default(true),
   featured: boolean('featured').notNull().default(false),
   genericName: text('generic_name'),
   strength: text('strength'),

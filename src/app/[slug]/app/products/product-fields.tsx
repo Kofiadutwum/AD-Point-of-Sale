@@ -6,7 +6,7 @@ const select = 'rounded border border-gray-400 px-3 py-2';
 
 type Defaults = {
   name?: string; description?: string | null; categoryId?: string | null; brand?: string | null; taxRuleId?: string | null;
-  tracking?: string; showOnStorefront?: boolean; featured?: boolean; genericName?: string | null; strength?: string | null;
+  tracking?: string; showOnStorefront?: boolean; featured?: boolean; trackStock?: boolean; genericName?: string | null; strength?: string | null;
   dosageForm?: string | null; registrationNumber?: string | null; prescriptionOnly?: boolean;
 };
 
@@ -51,6 +51,8 @@ export function ProductFieldsInputs({ product = {}, categories, taxRules, module
           <Check name="prescriptionOnly" label="Prescription only" defaultChecked={product.prescriptionOnly ?? false} />
         </fieldset>
       )}
+      <input type="hidden" name="trackStockShown" value="1" />
+      <Check name="trackStock" label="Count stock for this item (untick for things made to order, like a plate of food)" defaultChecked={product.trackStock ?? !modules.includes('kitchen')} />
       <Check name="showOnStorefront" label="Show on storefront" defaultChecked={product.showOnStorefront ?? false} />
       <Check name="featured" label="Featured on storefront" defaultChecked={product.featured ?? false} />
     </>

@@ -9,7 +9,7 @@ import type { Ctx } from '@/server/context';
 import { exportData } from '@/server/data-export';
 import { addDomain, slugForHost, verifyDomain } from '@/server/domains';
 import {
-  completeOnlineOrder, confirmTransfer, expireOnlineOrders, orderAwaitingPaystack, placeOnlineOrder, publicOrder, requestPhoneCode, saveOnlineOrderSettings, verifyPhoneCode,
+  completeOnlineOrder, confirmTransfer, expireOnlineOrders, orderAwaitingPaystack, orderableItems, placeOnlineOrder, publicOrder, requestPhoneCode, saveOnlineOrderSettings, verifyPhoneCode,
 } from '@/server/online-orders';
 import type { Paystack, VerifiedTransaction } from '@/server/paystack';
 import { completeSale } from '@/server/sales';
@@ -261,4 +261,16 @@ it('a visitor who left Paystack checkout can go back to it, and only for their o
   await startOrderCharge(db, a.tenantId, shop.slug, { id: a.orderId, number: a.number, totalPesewas: a.totalPesewas }, fake.shopClient);
   expect((await publicOrder(db, shop.slug, a.orderId, token, t0))!.payUrl).toContain('checkout.paystack.test');
   expect(await publicOrder(db, shop.slug, a.orderId, 'someone-else', t0)).toBeNull();
+});
+
+it('the order page searches and pages the menu, 40 items at a time', async () => {
+  await openForOrders();
+  for (let i = 0; i < 44; i++) await productFor(db, owner, { name: `Waakye ${String(i).padStart(2, '0')}` });
+  await asPlatform(db, (tx) => tx.update(products).set({ showOnStorefront: true }));
+  const first = await orderableItems(db, shop.slug, t0);
+  expect(first.items).toHaveLength(40);
+  expect(first.hasMore).toBe(true);
+  expect((await orderableItems(db, shop.slug, t0, { page: 1 })).items).toHaveLength(5);
+  const found = await orderableItems(db, shop.slug, t0, { q: 'waakye 4' });
+  expect(found.items.map((i) => i.name).sort()).toEqual(['Waakye 40', 'Waakye 41', 'Waakye 42', 'Waakye 43']);
 });

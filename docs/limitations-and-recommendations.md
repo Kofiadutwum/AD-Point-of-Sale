@@ -11,7 +11,7 @@ State of `main` after Phase 8 and the final check (2026-11-27): typecheck clean,
 | Product photo, stored | WebP, at most **30 KB** and 800 px (640 or 480 px if needed). EXIF, GPS and other metadata are removed. | `src/lib/images.ts`, `src/server/images.ts` |
 | Photos per product | **5** | `src/server/product-images.ts` |
 | Online-order transfer screenshot, stored | WebP, at most **200 KB** and 1600 px, so small reference numbers stay readable (changed in this check) | `PROOF_TARGET` |
-| CSV import | **5 MB** and **10,000 rows** per file; product names up to 80 characters | `src/server/csv-import.ts` |
+| CSV import | **5 MB** and **2,000 rows** per file (split bigger files); product names up to 80 characters | `src/server/csv-import.ts` |
 | Server action body | 10 MB (but Vercel's 4.5 MB applies first) | `next.config.ts` |
 
 Both photo uploaders shrink the picture **on the phone** before sending, so a normal upload is a few hundred KB at most, well under the 4.5 MB host limit. On an iPhone, Safari turns a HEIC photo into WebP during that step, so iPhone photos work. Only a raw HEIC sent without the uploader is refused.

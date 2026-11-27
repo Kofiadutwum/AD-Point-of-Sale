@@ -33,7 +33,7 @@ export default async function VisitorOrderPage({ params, searchParams }: { param
       <p className="font-semibold">Total {formatCedis(o.totalPesewas)}{o.deliveryFeePesewas > 0 ? ` (+ ${formatCedis(o.deliveryFeePesewas)} delivery, paid on delivery)` : ''}</p>
       {o.payUrl && <a href={o.payUrl} className="self-start rounded bg-green-700 px-4 py-3 font-semibold text-white">Pay now (card or MoMo)</a>}
       {!o.payUrl && o.payMethod === 'paystack' && o.status === 'awaiting_payment' && <ActionForm action={payAgainAction.bind(null, slug, id)} submitLabel="Pay now (card or MoMo)"><span /></ActionForm>}
-      {o.status === 'awaiting_payment' && <p className="text-sm">Pay by {o.expiresAt.toISOString().slice(11, 16)} UTC or the order lapses. We text you at each step.</p>}
+      {o.status === 'awaiting_payment' && <p className="text-sm">Pay by {o.payBy} or the order lapses. We text you at each step.</p>}
       {o.payMethod === 'transfer' && (o.status === 'awaiting_payment' || o.status === 'proof_uploaded') && (
         <section className="flex flex-col gap-2 rounded border p-3">
           <h2 className="font-semibold">Pay by transfer</h2>

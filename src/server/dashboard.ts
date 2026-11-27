@@ -49,9 +49,9 @@ export async function getDashboard(db: Db, ctx: Ctx, now: Date): Promise<Dashboa
     const stockFrom = () => tx.select(stockCols).from(stockBalances)
       .innerJoin(variants, eq(variants.id, stockBalances.variantId)).innerJoin(products, eq(products.id, variants.productId))
       .innerJoin(branches, eq(branches.id, stockBalances.branchId));
-    const low = await stockFrom().where(and(isNotNull(variants.reorderLevel), sql`${stockBalances.onHand} >= 0`, sql`${stockBalances.onHand} <= ${variants.reorderLevel}`))
+    const low = await stockFrom().where(and(eq(products.trackStock, true), isNotNull(variants.reorderLevel), sql`${stockBalances.onHand} >= 0`, sql`${stockBalances.onHand} <= ${variants.reorderLevel}`))
       .orderBy(asc(products.name)).limit(50);
-    const negative = await stockFrom().where(sql`${stockBalances.onHand} < 0`).orderBy(asc(products.name)).limit(50);
+    const negative = await stockFrom().where(and(eq(products.trackStock, true), sql`${stockBalances.onHand} < 0`)).orderBy(asc(products.name)).limit(50);
     // spec 6.54: pots still waiting for a closing count, and flagged gaps of the last 7 days
     const reminders = await potReminders(tx, day);
     const variances = await tx.select({ name: products.name, businessDate: potRecords.businessDate, expectedPesewas: potRecords.expectedPesewas,

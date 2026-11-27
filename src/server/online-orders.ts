@@ -1,6 +1,6 @@
 import 'server-only';
 import { createHash, randomInt, randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
   branches, type OnlineOrderStatus, onlineOrders, type OrderLine, type OrderSource, phoneVerifications, products, shopCharges, stockBalances, tenants, variants, variantUnits,
@@ -70,18 +70,24 @@ async function orderShop(db: Db, slug: string, now: Date): Promise<OrderShop | n
 }
 
 /** Spec 6.49 (Phase 7): what can be ordered online, one row per sellable variant, at its base-unit price; never cost or exact stock. */
-export async function orderableItems(db: Db, slug: string, now: Date): Promise<Array<{ productId: string; variantId: string; name: string; pricePesewas: number; inStock: boolean }>> {
+export const ORDER_PAGE = 40;
+export type OrderableItem = { productId: string; variantId: string; name: string; pricePesewas: number; inStock: boolean };
+export async function orderableItems(db: Db, slug: string, now: Date, opts: { q?: string; page?: number } = {}): Promise<{ items: OrderableItem[]; hasMore: boolean }> {
   const shop = await orderShop(db, slug, now);
-  if (!shop) return [];
+  if (!shop) return { items: [], hasMore: false };
+  const page = Number.isInteger(opts.page) && opts.page! > 0 ? Math.min(opts.page!, 500) : 0;
+  const q = opts.q?.trim().slice(0, 60).replace(/[%_\\]/g, '');
   return withTenant(db, shop.id, async (tx) => {
     const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(asc(branches.createdAt)).limit(1);
-    const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas,
+    const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas, trackStock: products.trackStock,
       onHand: stockBalances.onHand, reserved: stockBalances.reserved })
       .from(variants).innerJoin(products, eq(products.id, variants.productId))
       .leftJoin(stockBalances, and(eq(stockBalances.variantId, variants.id), eq(stockBalances.branchId, branch.id)))
-      .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
-      .orderBy(asc(products.name), asc(variants.basePricePesewas)).limit(300);
-    return rows.map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+      .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false),
+        q ? or(ilike(products.name, `%${q}%`), ilike(variants.name, `%${q}%`)) : undefined))
+      .orderBy(asc(products.name), asc(variants.basePricePesewas), asc(variants.id)).limit(ORDER_PAGE + 1).offset(page * ORDER_PAGE);
+    const items = rows.slice(0, ORDER_PAGE).map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: !r.trackStock || r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+    return { items, hasMore: rows.length > ORDER_PAGE };
   });
 }
 
@@ -174,7 +180,7 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
     // the chosen variant (or the product's cheapest active one), in its base unit
     const picked = [];
     for (const i of items) {
-      const [v] = await tx.select({ variantId: variants.id, unitId: variantUnits.id }).from(variants)
+      const [v] = await tx.select({ variantId: variants.id, unitId: variantUnits.id, trackStock: products.trackStock }).from(variants)
         .innerJoin(products, eq(products.id, variants.productId)).innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
         .where(and(eq(products.id, i.productId), i.variantId ? eq(variants.id, i.variantId) : undefined, eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false),
           eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
@@ -182,7 +188,7 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
       if (!v) return fail('unavailable');
       const [bal] = await tx.select({ free: sql<string>`${stockBalances.onHand} - ${stockBalances.reserved}` }).from(stockBalances)
         .where(and(eq(stockBalances.branchId, branch.id), eq(stockBalances.variantId, v.variantId)));
-      if (bal && Number(bal.free) < i.quantity) return fail('unavailable'); // no balance row = not stock-tracked
+      if (v.trackStock && bal && Number(bal.free) < i.quantity) return fail('unavailable'); // not counted, or no balance row: available
       picked.push({ variantId: v.variantId, unitId: v.unitId, quantity: String(i.quantity), discountPesewas: 0 });
     }
     let priced;
@@ -234,13 +240,14 @@ export async function publicOrder(db: Db, slug: string, orderId: string, token: 
     const phone = await phoneOfToken(tx, token);
     const [o] = await tx.select().from(onlineOrders).where(eq(onlineOrders.id, orderId));
     if (!o || !phone || o.contactPhone !== phone) return null;
-    const [t] = await tx.select({ transferInstructions: tenants.transferInstructions }).from(tenants).where(eq(tenants.id, shop.id));
+    const [t] = await tx.select({ transferInstructions: tenants.transferInstructions, timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, shop.id));
     // a visitor who closed the Paystack tab can go back to the same checkout
     const [charge] = o.payMethod === 'paystack' && o.status === 'awaiting_payment'
       ? await tx.select({ url: shopCharges.authorizationUrl }).from(shopCharges).where(and(eq(shopCharges.orderId, o.id), eq(shopCharges.status, 'pending'))).orderBy(desc(shopCharges.createdAt)).limit(1)
       : [];
     return {
       payUrl: charge?.url ?? null,
+      payBy: new Intl.DateTimeFormat('en-GB', { timeZone: t.timezone, hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }).format(o.expiresAt),
       shopName: shop.name, number: o.number, status: o.status, fulfilment: o.fulfilment, payMethod: o.payMethod, lines: o.lines, totalPesewas: o.totalPesewas,
       deliveryFeePesewas: o.deliveryFeePesewas, expiresAt: o.expiresAt, hasProof: !!o.proofKey, transferInstructions: o.payMethod === 'transfer' ? t.transferInstructions : null,
     };

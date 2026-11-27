@@ -109,14 +109,15 @@ export type PublicProduct = {
   id: string; name: string; description: string | null; category: string | null; featured: boolean; prescriptionOnly: boolean;
   pricePesewas: number | null; inStock: boolean | null; imageIds: string[];
 };
-export type PublicShop = Omit<LiveShop, 'id' | 'taxMode' | 'today'> & { announcement: string | null; categories: string[]; products: PublicProduct[] };
+export type PublicShop = Omit<LiveShop, 'id' | 'taxMode' | 'today'> & { announcement: string | null; categories: string[]; products: PublicProduct[]; page: number; hasMore: boolean };
+export const STOREFRONT_PAGE = 40; // keeps the page light on mobile data
 
 /** The public catalogue: active products marked for the storefront only; never cost, exact stock, suppliers, staff, or sales. */
-async function catalogue(tx: Tx, shop: LiveShop, where: { productId?: string; q?: string; category?: string }): Promise<PublicProduct[]> {
+async function catalogue(tx: Tx, shop: LiveShop, where: { productId?: string; q?: string; category?: string; page?: number }): Promise<PublicProduct[]> {
   const rows = await tx.select({ p: products, category: categories.name }).from(products).leftJoin(categories, eq(categories.id, products.categoryId))
     .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), where.productId ? eq(products.id, where.productId) : undefined,
       where.q ? ilike(products.name, `%${where.q.replace(/[%_\\]/g, '')}%`) : undefined, where.category ? eq(categories.name, where.category) : undefined))
-    .orderBy(desc(products.featured), asc(products.name)).limit(200);
+    .orderBy(desc(products.featured), asc(products.name), asc(products.id)).limit(STOREFRONT_PAGE + 1).offset((where.page ?? 0) * STOREFRONT_PAGE); // one extra row says whether a next page exists
   const ids = rows.map((r) => r.p.id);
   if (!ids.length) return [];
   const prices = await tx.select({ productId: variants.productId, min: sql<number>`min(${variants.basePricePesewas})::int` }).from(variants)
@@ -130,7 +131,7 @@ async function catalogue(tx: Tx, shop: LiveShop, where: { productId?: string; q?
       id: p.id, name: p.name, description: p.description, category, featured: p.featured, prescriptionOnly: p.prescriptionOnly,
       // shortcut: shows the base price, which is the shelf price for tax-inclusive shops; tax-exclusive shops show it before tax.
       pricePesewas: shop.settings.showPrices ? (prices.find((x) => x.productId === p.id)?.min ?? null) : null,
-      inStock: shop.settings.showStock ? (s ? Number(s.onHand) > 0 : true) : null, // no stock records = not stock-tracked
+      inStock: shop.settings.showStock ? (!p.trackStock || !s ? true : Number(s.onHand) > 0) : null, // not counted, or no stock records: available
       imageIds: images.filter((i) => i.productId === p.id).map((i) => i.id),
     };
   });
@@ -144,20 +145,21 @@ async function bump(tx: Tx, tenantId: string, day: string, key: string) {
 }
 
 /** Spec 6.18: the storefront page; counts a page view (date and count only). */
-export async function publicStorefront(db: Db, slug: string, now: Date, filter: { q?: string; category?: string; count?: boolean } = {}): Promise<PublicShop | null> {
+export async function publicStorefront(db: Db, slug: string, now: Date, filter: { q?: string; category?: string; count?: boolean; page?: number } = {}): Promise<PublicShop | null> {
+  const page = Number.isInteger(filter.page) && filter.page! > 0 ? Math.min(filter.page!, 500) : 0;
   const shop = await asPlatform(db, (tx) => liveShop(tx, slug, now));
   if (!shop) return null;
   return withTenant(db, shop.id, async (tx) => {
-    const list = await catalogue(tx, shop, filter);
+    const list = await catalogue(tx, shop, { ...filter, page });
     const cats = await tx.selectDistinct({ name: categories.name }).from(categories).innerJoin(products, eq(products.categoryId, categories.id))
       .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'))).orderBy(asc(categories.name));
     if (filter.count !== false) await bump(tx, shop.id, shop.today, 'view');
-    return { slug: shop.slug, name: shop.name, phone: shop.phone, address: shop.address, settings: shop.settings, announcement: announcementOf(shop), categories: cats.map((c) => c.name), products: list };
+    return { slug: shop.slug, name: shop.name, phone: shop.phone, address: shop.address, settings: shop.settings, announcement: announcementOf(shop), categories: cats.map((c) => c.name), products: list.slice(0, STOREFRONT_PAGE), page, hasMore: list.length > STOREFRONT_PAGE };
   });
 }
 
 /** Spec 6.18: one product page; counts a product view. */
-export async function publicProduct(db: Db, slug: string, productId: string, now: Date, count = true): Promise<{ shop: Omit<PublicShop, 'products' | 'categories'>; product: PublicProduct } | null> {
+export async function publicProduct(db: Db, slug: string, productId: string, now: Date, count = true): Promise<{ shop: Omit<PublicShop, 'products' | 'categories' | 'page' | 'hasMore'>; product: PublicProduct } | null> {
   if (!isUuid(productId)) return null;
   const shop = await asPlatform(db, (tx) => liveShop(tx, slug, now));
   if (!shop) return null;

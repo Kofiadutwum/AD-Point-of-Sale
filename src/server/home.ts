@@ -4,12 +4,13 @@ import type { Db } from '@/db/client';
 import { auditLog, subscriptions, tenants, users } from '@/db/schema';
 import { withTenant } from '@/db/tenant';
 import { addDays, daysBetween, todayIn } from '@/lib/dates';
-import type { RolePreset } from '@/lib/permissions';
+import type { Module, RolePreset } from '@/lib/permissions';
 import type { SubscriptionState } from '@/lib/subscription';
 import type { Ctx } from './context';
 
 export type HomeSummary = {
   shopName: string; userName: string; rolePreset: RolePreset; banner: string | null;
+  modules: Module[]; // the home menu shows only the features this shop uses
   securityEvents: Array<{ action: string; at: Date; detail: string }>;
 };
 
@@ -40,7 +41,7 @@ function bannerFor(state: SubscriptionState, sub: { endDate: string; graceDays: 
 
 export async function getHomeSummary(db: Db, ctx: Ctx, now: Date): Promise<HomeSummary> {
   return withTenant(db, ctx.tenantId, async (tx) => {
-    const [shop] = await tx.select({ name: tenants.name, sub: subscriptions }).from(tenants)
+    const [shop] = await tx.select({ name: tenants.name, modules: tenants.modules, sub: subscriptions }).from(tenants)
       .innerJoin(subscriptions, eq(subscriptions.tenantId, tenants.id)).where(eq(tenants.id, ctx.tenantId));
     const events = ctx.permissions.includes('view_dashboard')
       ? await tx.select({ e: auditLog, staffName: users.name }).from(auditLog)
@@ -50,6 +51,7 @@ export async function getHomeSummary(db: Db, ctx: Ctx, now: Date): Promise<HomeS
       : [];
     return {
       shopName: shop.name,
+      modules: shop.modules as Module[],
       userName: ctx.name,
       rolePreset: ctx.rolePreset,
       banner: bannerFor(ctx.subscription, shop.sub, todayIn(ctx.timezone, now)),
