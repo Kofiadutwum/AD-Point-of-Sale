@@ -11,7 +11,9 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/migrate.ts",
-    "create-platform-admin": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/create-platform-admin.ts"
+    "create-platform-admin": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/create-platform-admin.ts",
+    "db:backup": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/backup.ts",
+    "db:restore": "tsx --conditions=react-server --env-file-if-exists=.env.local scripts/restore.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.10",
