@@ -39,14 +39,14 @@ export async function addCustomer(
 }
 
 /** Readable by any signed-in member: the till looks customers up by name or phone. */
-export async function listCustomers(db: Db, ctx: Ctx, opts: { query?: string; limit?: number }): Promise<Customer[]> {
+export async function listCustomers(db: Db, ctx: Ctx, opts: { query?: string; limit?: number; offset?: number }): Promise<Customer[]> {
   const query = opts.query?.trim() ?? '';
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 200);
   const phone = query ? normaliseGhanaPhone(query) : null;
   const pattern = `%${query.replace(/[\%_]/g, '\$&')}%`;
   return withTenant(db, ctx.tenantId, (tx) => tx.select(columns).from(customers)
     .where(query ? or(ilike(customers.name, pattern), phone ? eq(customers.phone, phone) : ilike(customers.phone, pattern)) : undefined)
-    .orderBy(sql`lower(${customers.name})`, asc(customers.id)).limit(limit));
+    .orderBy(sql`lower(${customers.name})`, asc(customers.id)).limit(limit).offset(Math.max(Math.trunc(opts.offset ?? 0), 0)));
 }
 
 /** Adds to a customer's store credit with a ledger entry; the new balance, or null for an unknown customer. Used by returns (Phase 1b). */

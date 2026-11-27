@@ -240,13 +240,14 @@ export async function publicOrder(db: Db, slug: string, orderId: string, token: 
     const phone = await phoneOfToken(tx, token);
     const [o] = await tx.select().from(onlineOrders).where(eq(onlineOrders.id, orderId));
     if (!o || !phone || o.contactPhone !== phone) return null;
-    const [t] = await tx.select({ transferInstructions: tenants.transferInstructions }).from(tenants).where(eq(tenants.id, shop.id));
+    const [t] = await tx.select({ transferInstructions: tenants.transferInstructions, timezone: tenants.timezone }).from(tenants).where(eq(tenants.id, shop.id));
     // a visitor who closed the Paystack tab can go back to the same checkout
     const [charge] = o.payMethod === 'paystack' && o.status === 'awaiting_payment'
       ? await tx.select({ url: shopCharges.authorizationUrl }).from(shopCharges).where(and(eq(shopCharges.orderId, o.id), eq(shopCharges.status, 'pending'))).orderBy(desc(shopCharges.createdAt)).limit(1)
       : [];
     return {
       payUrl: charge?.url ?? null,
+      payBy: new Intl.DateTimeFormat('en-GB', { timeZone: t.timezone, hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }).format(o.expiresAt),
       shopName: shop.name, number: o.number, status: o.status, fulfilment: o.fulfilment, payMethod: o.payMethod, lines: o.lines, totalPesewas: o.totalPesewas,
       deliveryFeePesewas: o.deliveryFeePesewas, expiresAt: o.expiresAt, hasProof: !!o.proofKey, transferInstructions: o.payMethod === 'transfer' ? t.transferInstructions : null,
     };

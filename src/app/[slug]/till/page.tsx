@@ -21,7 +21,7 @@ export default async function TillPage({ params }: { params: Promise<{ slug: str
           <legend className="mb-2 text-sm">Who is selling?</legend>
           {staff.map((s, i) => (
             <label key={s.id} className="flex items-center gap-2 rounded border p-3">
-              <input type="radio" name="staffId" value={s.id} required defaultChecked={i === 0 && staff.length === 1} /> {s.name}
+              <input type="radio" name="staffId" value={s.id} aria-label={s.name} required defaultChecked={i === 0 && staff.length === 1} /> {s.name}
             </label>
           ))}
         </fieldset>

@@ -29,7 +29,7 @@ export default async function BillingPage({ params }: { params: Promise<{ slug: 
           {b.plans.map((p) => (
             <label key={p.id} className="flex items-center gap-2 text-sm">
               <input type="radio" name="planId" value={p.id} defaultChecked={p.id === current?.id} required />
-              <span><strong>{p.name}</strong> · {formatCedis(p.annualPesewas)} a year · {p.branches} branch{p.branches === 1 ? '' : 'es'}, {p.registers} tills</span>
+              <span><strong>{p.name}</strong> · {formatCedis(p.annualPesewas)} a year · {p.branches} branch{p.branches === 1 ? '' : 'es'}, {p.registers} tills, {p.staff} staff (owner included), {p.products.toLocaleString('en-GH')} products</span>
             </label>
           ))}
         </fieldset>

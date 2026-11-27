@@ -27,7 +27,7 @@ export const consentWording = (planName: string, annualPesewas: number) =>
 
 export type BillingOverview = {
   planId: string; planName: string; status: string; state: string; endDate: string; autoRenew: boolean; cardLabel: string | null; ownerEmail: string | null;
-  plans: Array<{ id: string; name: string; annualPesewas: number; branches: number; registers: number }>;
+  plans: Array<{ id: string; name: string; annualPesewas: number; branches: number; registers: number; staff: number; products: number }>;
   payments: Array<{ reference: string; method: string; amountPesewas: number; at: Date }>;
   lastFailure: string | null;
 };
@@ -45,7 +45,7 @@ export async function billingOverview(db: Db, ctx: Ctx, now: Date): Promise<Bill
       planId: row.s.planId, planName: row.planName, status: row.s.status, state: subscriptionState(row.s, todayIn(row.tz, now)), endDate: row.s.endDate,
       autoRenew: row.s.autoRenew, cardLabel: row.s.cardLabel, ownerEmail: me?.email ?? null,
       plans: PAID_PLANS.map((id) => paid.find((p) => p.id === id)).filter((p) => !!p)
-        .map((p) => ({ id: p.id, name: p.name, annualPesewas: p.pricePesewas * PERIOD_MONTHS, branches: p.limits.branches, registers: p.limits.registers })),
+        .map((p) => ({ id: p.id, name: p.name, annualPesewas: p.pricePesewas * PERIOD_MONTHS, branches: p.limits.branches, registers: p.limits.registers, staff: p.limits.staff, products: p.limits.products })),
       payments: payments.map((p) => ({ reference: p.reference, method: p.method, amountPesewas: p.amountPesewas, at: p.createdAt })),
       lastFailure: last && (last.status === 'failed' || last.status === 'mismatch') ? last.failureReason ?? last.status : null,
     };

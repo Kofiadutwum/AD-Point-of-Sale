@@ -6,13 +6,17 @@ import { listPriceLists } from '@/server/price-lists';
 import { pageCtx } from '../page-ctx';
 import { addCustomerAction, storeCreditAction } from './actions';
 
-export default async function CustomersPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string }> }) {
+export default async function CustomersPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string; page?: string }> }) {
   const { slug } = await params;
-  const { q } = await searchParams;
+  const { q, page: pageParam } = await searchParams;
+  const page = Math.max(0, (Number.parseInt(pageParam ?? '1', 10) || 1) - 1);
+  const PAGE = 50;
   const ctx = await pageCtx(slug, 'make_sale');
   const canCredit = ctx.permissions.includes('approve_actions');
   const lists = ctx.permissions.includes('manage_products') ? await listPriceLists(getDb(), ctx) : [];
-  const found = await listCustomers(getDb(), ctx, { query: q });
+  const rows = await listCustomers(getDb(), ctx, { query: q, limit: PAGE + 1, offset: page * PAGE }); // one extra row says whether a next page exists
+  const found = rows.slice(0, PAGE);
+  const href = (p: number) => { const sp = new URLSearchParams(); if (q) sp.set('q', q); if (p > 0) sp.set('page', String(p + 1)); const s = sp.toString(); return `/${slug}/app/customers${s ? `?${s}` : ''}`; };
   return (
     <main className="flex flex-col gap-6">
       <a href={`/${slug}/app`} className="text-sm text-blue-800 underline">← Home</a>
@@ -42,6 +46,13 @@ export default async function CustomersPage({ params, searchParams }: { params: 
         ))}
         {found.length === 0 && <li className="p-3 text-sm text-gray-600">No customers found.</li>}
       </ul>
+      {(page > 0 || rows.length > PAGE) && (
+        <nav aria-label="Pages" className="flex items-center justify-between text-sm">
+          {page > 0 ? <a className="rounded border px-3 py-2" href={href(page - 1)}>← Previous</a> : <span />}
+          <span>Page {page + 1}</span>
+          {rows.length > PAGE ? <a className="rounded border px-3 py-2" href={href(page + 1)}>Next →</a> : <span />}
+        </nav>
+      )}
       <section className="max-w-md">
         <h2 className="mb-3 text-lg font-semibold">Add a customer</h2>
         <ActionForm action={addCustomerAction.bind(null, slug)} submitLabel="Add customer">
