@@ -82,6 +82,38 @@ export async function receiveStock(
   return res.ok ? { ok: true, receiptId: res.receiptId } : res;
 }
 
+const RECEIPT_MAX_LINES = 100;
+class PartRefused extends Error { constructor(readonly refusal: Fail<ReceiveError>) { super('part refused'); } }
+
+/**
+ * Opening stock from a CSV file can have thousands of lines; a receipt holds at most 100. The lines are received as
+ * receipts of 100 in ONE transaction, so the whole file goes in or nothing does. A refusal names the line in the whole file.
+ */
+export async function receiveStockInParts(
+  db: Db, ctx: Ctx, input: { branchId: string; kind: 'received' | 'opening_stock'; note?: string; lines: ReceiveLine[] }, now: Date,
+): Promise<{ ok: true; receipts: number } | Fail<ReceiveError>> {
+  assertPermission(ctx, 'receive_stock');
+  if (!isUuid(input.branchId)) return fail('unknown_branch');
+  const today = todayIn(ctx.timezone, now);
+  try {
+    return await withTenant(db, ctx.tenantId, async (tx) => {
+      let receipts = 0;
+      for (let start = 0; start < input.lines.length; start += RECEIPT_MAX_LINES) {
+        const parsed = receiptSchema.safeParse({ ...input, lines: input.lines.slice(start, start + RECEIPT_MAX_LINES) });
+        if (!parsed.success) throw new PartRefused(fail('invalid_input', String(start)));
+        const done = await receiveStockTx(tx, ctx, parsed.data, today);
+        if (!done.ok) throw new PartRefused({ ...done, detail: done.detail !== undefined && /^d+$/.test(done.detail) ? String(start + Number(done.detail)) : done.detail });
+        await markSpecialOrdersReady(tx, ctx.tenantId, input.branchId, done.planned.map((p) => p.variantId), now);
+        receipts++;
+      }
+      return { ok: true as const, receipts };
+    });
+  } catch (e) {
+    if (e instanceof PartRefused) return e.refusal;
+    throw e;
+  }
+}
+
 /** The receipt inside a caller's transaction (purchase orders add to it before it commits). The caller checks receive_stock. */
 export async function receiveStockTx(tx: Tx, ctx: Ctx, r: ReceiptInput, today: string): Promise<{ ok: true; receiptId: string; planned: Array<{ variantId: string; baseQty: string; unitCost: string }> } | Fail<ReceiveError>> {
   {

@@ -65,3 +65,20 @@ it('imports opening stock as one receipt', async () => {
 it('refuses a file with the wrong headers', async () => {
   expect(await checkImport(db, owner, { kind: 'customers', text: 'full name,mobile\nAma,0244000001' })).toEqual({ ok: false, error: 'wrong_headers', detail: 'name,phone' });
 });
+
+it('imports an opening stock file longer than one receipt (100 lines), all or nothing', async () => {
+  const skus = Array.from({ length: 250 }, (_, i) => `BULK-${i}`);
+  const rows = ['name,sku,barcode,price,cost,unit,allows_fractions,tracking,generic_name,prescription_only', ...skus.map((s) => `Item ${s},${s},,5.00,3.00,piece,no,none,,no`)];
+  expect(await runImport(db, owner, { kind: 'products', text: rows.join('\n'), skipFailing: false }, t0)).toEqual({ ok: true, imported: 250, skipped: 0 });
+  const stock = (cost: (i: number) => string) => ['code,quantity,total_cost,batch_number,expiry_date', ...skus.map((s, i) => `${s},10,${cost(i)},,`)].join('\n');
+  // line 151 costs more than a line may (2 billion pesewas); it sits in the second receipt of 100 and stops the whole file
+  const bad = await runImport(db, owner, { kind: 'opening_stock', text: stock((i) => (i === 150 ? '30000000.00' : '30.00')), branchId: shop.branchId, skipFailing: false }, t0);
+  expect(bad).toMatchObject({ ok: false, error: 'has_errors' });
+  const onHand = async (sku: string) => {
+    const [p] = await asPlatform(db, (tx) => tx.query.variants.findMany({ where: (v, { eq }) => eq(v.sku, sku) }));
+    return withTenant(db, shop.tenantId, (tx) => stockOnHand(tx, shop.branchId, p.id));
+  };
+  expect(await onHand('BULK-0')).toEqual('0.000'); // the first receipt was undone too
+  expect(await runImport(db, owner, { kind: 'opening_stock', text: stock(() => '30.00'), branchId: shop.branchId, skipFailing: false }, t0)).toEqual({ ok: true, imported: 250, skipped: 0 });
+  expect(await onHand('BULK-249')).toEqual('10.000');
+});

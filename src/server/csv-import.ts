@@ -10,7 +10,7 @@ import { parseCedis } from '@/lib/money';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { createProductTx, type Fail, fail } from './products';
-import { lookupStockItem, type ReceiveLine, receiveStock } from './stock';
+import { lookupStockItem, type ReceiveLine, receiveStockInParts } from './stock';
 
 export type ImportKind = 'products' | 'customers' | 'opening_stock';
 /** The published templates: these headers, in this order (spec 6.45). */
@@ -72,8 +72,12 @@ export async function runImport(db: Db, ctx: Ctx, input: { kind: ImportKind; tex
     const { lines, errors } = await stockLines(db, ctx, file.rows);
     if (errors.length && !input.skipFailing) return fail('has_errors');
     if (!lines.length) return fail('nothing_to_import');
-    const r = await receiveStock(db, ctx, { branchId: input.branchId ?? '', kind: 'opening_stock', note: 'CSV import', lines }, now);
-    if (!r.ok) return fail('has_errors', `${MESSAGES[r.error] ?? r.error}${r.detail ? ` (${r.detail})` : ''}`);
+    // a file can hold up to 10,000 lines; they go in as receipts of 100, all or nothing
+    const r = await receiveStockInParts(db, ctx, { branchId: input.branchId ?? '', kind: 'opening_stock', note: 'CSV import', lines }, now);
+    if (!r.ok) {
+      const at = r.detail !== undefined && /^d+$/.test(r.detail) ? ` (stock line ${Number(r.detail) + 1})` : r.detail ? ` (${r.detail})` : '';
+      return fail('has_errors', `${MESSAGES[r.error] ?? r.error}${at}`);
+    }
     await withTenant(db, ctx.tenantId, (tx) => writeAudit(tx, {
       tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'import', changes: { kind: input.kind, rows: lines.length, skipped: errors.length },
     }));
