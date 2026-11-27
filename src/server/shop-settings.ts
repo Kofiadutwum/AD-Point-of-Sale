@@ -87,9 +87,10 @@ export async function getSalesSettings(db: Db, ctx: Ctx): Promise<SalesSettings>
 
 export async function saveSalesSettings(db: Db, ctx: Ctx, input: SalesSettings): Promise<{ ok: true } | { ok: false; error: 'invalid_input' }> {
   assertPermission(ctx, 'manage_shop_settings');
-  const clean = (v: string | null, max: number) => (typeof v === 'string' && v.trim() ? v.trim() : null) ?? (v === null || typeof v === 'string' ? null : undefined);
-  const taxNumber = clean(input.taxNumber, 30);
-  const receiptFooter = clean(input.receiptFooter, 300);
+  // lengths are checked below
+  const clean = (v: string | null) => (typeof v === 'string' && v.trim() ? v.trim() : null) ?? (v === null || typeof v === 'string' ? null : undefined);
+  const taxNumber = clean(input.taxNumber);
+  const receiptFooter = clean(input.receiptFooter);
   if (typeof input.allowNegativeStock !== 'boolean' || taxNumber === undefined || receiptFooter === undefined
     || (taxNumber?.length ?? 0) > 30 || (receiptFooter?.length ?? 0) > 300
     || !(CASH_ROUNDING_STEPS as readonly number[]).includes(input.cashRoundingStep)) return { ok: false, error: 'invalid_input' };

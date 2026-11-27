@@ -30,7 +30,6 @@ export default async function OnlineOrderPage({ params }: { params: Promise<{ sl
       {o.proofKey && (
         <section>
           <h2 className="font-semibold">Proof of transfer</h2>
-          {/* eslint-disable-next-line @next/next/no-img-element -- private image behind the staff session */}
           <img src={`/${slug}/app/online-orders/${o.id}/proof`} alt="Transfer proof uploaded by the customer" className="max-h-96 rounded border" />
         </section>
       )}

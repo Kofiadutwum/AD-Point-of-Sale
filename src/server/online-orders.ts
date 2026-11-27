@@ -3,7 +3,7 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
-  branches, type OnlineOrderStatus, onlineOrders, type OrderLine, type OrderSource, phoneVerifications, products, stockBalances, tenants, variants, variantUnits,
+  branches, type OnlineOrderStatus, onlineOrders, type OrderLine, type OrderSource, phoneVerifications, products, shopCharges, stockBalances, tenants, variants, variantUnits,
 } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { normaliseGhanaPhone } from '@/lib/contact';
@@ -234,10 +234,28 @@ export async function publicOrder(db: Db, slug: string, orderId: string, token: 
     const [o] = await tx.select().from(onlineOrders).where(eq(onlineOrders.id, orderId));
     if (!o || !phone || o.contactPhone !== phone) return null;
     const [t] = await tx.select({ transferInstructions: tenants.transferInstructions }).from(tenants).where(eq(tenants.id, shop.id));
+    // a visitor who closed the Paystack tab can go back to the same checkout
+    const [charge] = o.payMethod === 'paystack' && o.status === 'awaiting_payment'
+      ? await tx.select({ url: shopCharges.authorizationUrl }).from(shopCharges).where(and(eq(shopCharges.orderId, o.id), eq(shopCharges.status, 'pending'))).orderBy(desc(shopCharges.createdAt)).limit(1)
+      : [];
     return {
+      payUrl: charge?.url ?? null,
       shopName: shop.name, number: o.number, status: o.status, fulfilment: o.fulfilment, payMethod: o.payMethod, lines: o.lines, totalPesewas: o.totalPesewas,
       deliveryFeePesewas: o.deliveryFeePesewas, expiresAt: o.expiresAt, hasProof: !!o.proofKey, transferInstructions: o.payMethod === 'transfer' ? t.transferInstructions : null,
     };
+  });
+}
+
+/** The visitor's own unpaid Paystack order, so a new checkout can be opened when the first one could not be. */
+export async function orderAwaitingPaystack(db: Db, slug: string, orderId: string, token: string | undefined, now: Date) {
+  if (!isUuid(orderId)) return null;
+  const shop = await asPlatform(db, (tx) => liveShop(tx, slug, now));
+  if (!shop) return null;
+  return withTenant(db, shop.id, async (tx) => {
+    const phone = await phoneOfToken(tx, token);
+    const [o] = await tx.select().from(onlineOrders).where(eq(onlineOrders.id, orderId));
+    if (!o || !phone || o.contactPhone !== phone || o.payMethod !== 'paystack' || o.status !== 'awaiting_payment' || o.expiresAt <= now) return null;
+    return { tenantId: shop.id, id: o.id, number: o.number, totalPesewas: o.totalPesewas };
   });
 }
 

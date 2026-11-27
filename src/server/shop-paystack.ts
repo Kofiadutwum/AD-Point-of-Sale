@@ -11,7 +11,7 @@ import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
 import { markOrderPaid } from './online-orders';
 import { type Paystack, paystackWith, validSignature } from './paystack';
-import { type Fail, fail } from './products';
+import { type Fail, fail, isUuid } from './products';
 import { priceCart, tillSale } from './quotes';
 import { completeSaleTx, throwSaleFailure } from './sales';
 import { openSecret, sealSecret } from './secret-box';
@@ -124,6 +124,7 @@ export async function startTillCharge(db: Db, ctx: Ctx, input: { customerId?: st
 
 /** Opens a Paystack checkout for an online order on the shop's account (6.49). */
 export async function startOrderCharge(db: Db, tenantId: string, slug: string, order: { id: string; number: string; totalPesewas: number }, client: ShopClient = liveShopClient): Promise<string | null> {
+  if (!isUuid(order.id) || !Number.isInteger(order.totalPesewas) || order.totalPesewas <= 0) return null; // a charge must point at a real order
   const reference = newReference('W');
   const key = await withTenant(db, tenantId, async (tx) => {
     const k = await shopSecretKey(tx, tenantId);

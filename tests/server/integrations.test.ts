@@ -9,7 +9,7 @@ import type { Ctx } from '@/server/context';
 import { exportData } from '@/server/data-export';
 import { addDomain, slugForHost, verifyDomain } from '@/server/domains';
 import {
-  completeOnlineOrder, confirmTransfer, expireOnlineOrders, placeOnlineOrder, requestPhoneCode, saveOnlineOrderSettings, verifyPhoneCode,
+  completeOnlineOrder, confirmTransfer, expireOnlineOrders, orderAwaitingPaystack, placeOnlineOrder, publicOrder, requestPhoneCode, saveOnlineOrderSettings, verifyPhoneCode,
 } from '@/server/online-orders';
 import type { Paystack, VerifiedTransaction } from '@/server/paystack';
 import { completeSale } from '@/server/sales';
@@ -247,4 +247,18 @@ it('a coupon on a till Paystack charge is priced in and used up only when the mo
   fake.verified.set(c.reference, { status: 'success', amount: 400 });
   expect(await applyShopCharge(db, shop.tenantId, c.reference, t0, fake.shopClient)).toMatchObject({ outcome: 'completed' });
   expect(await used()).toBe(1);
+});
+
+it('a visitor who left Paystack checkout can go back to it, and only for their own order', async () => {
+  const fake = fakePaystack();
+  await openForOrders();
+  await saveShopPaystackKey(db, owner, KEY);
+  const token = await verifiedToken();
+  const a = await placeOnlineOrder(db, shop.slug, { token, fulfilment: 'pickup', name: 'Kofi', payMethod: 'paystack', items: [{ productId: p.productId, quantity: 1 }] }, '1.2.3.4', t0) as { orderId: string; number: string; totalPesewas: number; tenantId: string };
+  expect((await publicOrder(db, shop.slug, a.orderId, token, t0))!.payUrl).toBeNull(); // checkout never opened
+  expect(await orderAwaitingPaystack(db, shop.slug, a.orderId, token, t0)).toMatchObject({ id: a.orderId, totalPesewas: 500 });
+  expect(await orderAwaitingPaystack(db, shop.slug, a.orderId, 'someone-else', t0)).toBeNull();
+  await startOrderCharge(db, a.tenantId, shop.slug, { id: a.orderId, number: a.number, totalPesewas: a.totalPesewas }, fake.shopClient);
+  expect((await publicOrder(db, shop.slug, a.orderId, token, t0))!.payUrl).toContain('checkout.paystack.test');
+  expect(await publicOrder(db, shop.slug, a.orderId, 'someone-else', t0)).toBeNull();
 });
