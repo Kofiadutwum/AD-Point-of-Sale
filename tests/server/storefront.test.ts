@@ -76,3 +76,16 @@ it('a taken-down or suspended shop shows no storefront', async () => {
   await asPlatform(db, (tx) => tx.update(tenants).set({ status: 'suspended' }).where(eq(tenants.id, shop.tenantId)));
   expect(await publicStorefront(db, shop.slug, t0)).toBeNull();
 });
+
+it('pages the storefront 40 products at a time', async () => {
+  for (let i = 0; i < 44; i++) await productFor(db, owner, { name: `Item ${String(i).padStart(2, '0')}` });
+  await asPlatform(db, (tx) => tx.update(products).set({ showOnStorefront: true }));
+  expect(await setPublished(db, owner, true)).toEqual({ ok: true });
+  const first = await publicStorefront(db, shop.slug, t0, { count: false });
+  expect(first).toMatchObject({ page: 0, hasMore: true });
+  expect(first!.products).toHaveLength(40);
+  const second = await publicStorefront(db, shop.slug, t0, { count: false, page: 1 });
+  expect(second).toMatchObject({ page: 1, hasMore: false });
+  expect(second!.products).toHaveLength(5); // 45 shown in all
+  expect(new Set([...first!.products, ...second!.products].map((p) => p.id)).size).toBe(45);
+});

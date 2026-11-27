@@ -1,6 +1,6 @@
 import 'server-only';
 import { createHash, randomInt, randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
 import type { Db, Tx } from '@/db/client';
 import {
   branches, type OnlineOrderStatus, onlineOrders, type OrderLine, type OrderSource, phoneVerifications, products, shopCharges, stockBalances, tenants, variants, variantUnits,
@@ -70,18 +70,24 @@ async function orderShop(db: Db, slug: string, now: Date): Promise<OrderShop | n
 }
 
 /** Spec 6.49 (Phase 7): what can be ordered online, one row per sellable variant, at its base-unit price; never cost or exact stock. */
-export async function orderableItems(db: Db, slug: string, now: Date): Promise<Array<{ productId: string; variantId: string; name: string; pricePesewas: number; inStock: boolean }>> {
+export const ORDER_PAGE = 40;
+export type OrderableItem = { productId: string; variantId: string; name: string; pricePesewas: number; inStock: boolean };
+export async function orderableItems(db: Db, slug: string, now: Date, opts: { q?: string; page?: number } = {}): Promise<{ items: OrderableItem[]; hasMore: boolean }> {
   const shop = await orderShop(db, slug, now);
-  if (!shop) return [];
+  if (!shop) return { items: [], hasMore: false };
+  const page = Number.isInteger(opts.page) && opts.page! > 0 ? Math.min(opts.page!, 500) : 0;
+  const q = opts.q?.trim().slice(0, 60).replace(/[%_\\]/g, '');
   return withTenant(db, shop.id, async (tx) => {
     const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(asc(branches.createdAt)).limit(1);
     const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas, trackStock: products.trackStock,
       onHand: stockBalances.onHand, reserved: stockBalances.reserved })
       .from(variants).innerJoin(products, eq(products.id, variants.productId))
       .leftJoin(stockBalances, and(eq(stockBalances.variantId, variants.id), eq(stockBalances.branchId, branch.id)))
-      .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
-      .orderBy(asc(products.name), asc(variants.basePricePesewas)).limit(300);
-    return rows.map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: !r.trackStock || r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+      .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false),
+        q ? or(ilike(products.name, `%${q}%`), ilike(variants.name, `%${q}%`)) : undefined))
+      .orderBy(asc(products.name), asc(variants.basePricePesewas), asc(variants.id)).limit(ORDER_PAGE + 1).offset(page * ORDER_PAGE);
+    const items = rows.slice(0, ORDER_PAGE).map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: !r.trackStock || r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+    return { items, hasMore: rows.length > ORDER_PAGE };
   });
 }
 

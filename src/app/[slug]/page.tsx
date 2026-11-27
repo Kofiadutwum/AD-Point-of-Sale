@@ -3,9 +3,9 @@ import { notFound } from 'next/navigation';
 import { getDb } from '@/db/client';
 import { publicOrderOptions } from '@/server/online-orders';
 import { publicStorefront } from '@/server/storefront';
-import { ProductCard, ShopHeader } from './storefront-parts';
+import { Pager, ProductCard, ShopHeader } from './storefront-parts';
 
-type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string; category?: string }> };
+type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string; category?: string; page?: string }> };
 
 const appUrl = () => process.env.APP_URL ?? 'http://localhost:3000';
 
@@ -23,8 +23,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 /** Spec 4.12, 6.18: the shop's public page, built from the POS catalogue. */
 export default async function StorefrontPage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const { q, category } = await searchParams;
-  const shop = await publicStorefront(getDb(), slug, new Date(), { q: q?.slice(0, 60) || undefined, category: category || undefined });
+  const { q, category, page: pageParam } = await searchParams;
+  const shop = await publicStorefront(getDb(), slug, new Date(), { q: q?.slice(0, 60) || undefined, category: category || undefined, page: Math.max(0, (Number.parseInt(pageParam ?? '1', 10) || 1) - 1) });
   if (!shop) notFound();
   const ordering = await publicOrderOptions(getDb(), slug, new Date());
   return (
@@ -43,6 +43,7 @@ export default async function StorefrontPage({ params, searchParams }: Props) {
       {shop.products.length === 0 ? <p className="text-gray-700">No products found.</p> : (
         <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">{shop.products.map((p) => <li key={p.id}><ProductCard slug={slug} product={p} /></li>)}</ul>
       )}
+      <Pager base={`/${slug}`} params={{ q, category }} page={shop.page} hasMore={shop.hasMore} />
       <footer className="mt-6 border-t pt-3 text-xs text-gray-600">
         <a className="underline" href={`mailto:${process.env.REPORT_EMAIL ?? 'report@example.com'}?subject=${encodeURIComponent(`Report storefront /${slug}`)}`}>Report this page</a>
       </footer>

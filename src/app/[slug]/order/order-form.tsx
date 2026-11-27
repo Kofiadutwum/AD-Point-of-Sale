@@ -1,5 +1,5 @@
 'use client';
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { formatCedis } from '@/lib/money';
 import { placeOrderAction, requestCodeAction, verifyCodeAction } from './actions';
 
@@ -7,10 +7,23 @@ type Item = { id: string; productId: string; name: string; pricePesewas: number 
 type Options = { paystack: boolean; transfer: boolean; deliveryFeePesewas: number };
 
 const input = 'rounded border border-gray-400 px-3 py-2';
+type CartLine = { productId: string; name: string; pricePesewas: number; qty: number };
+const cartKey = (slug: string) => `order-cart:${slug}`;
+const readCart = (slug: string): Record<string, CartLine> => { try { return JSON.parse(sessionStorage.getItem(cartKey(slug)) ?? '{}'); } catch { return {}; } };
 
 /** Spec 6.49: pick items, confirm the phone by SMS code (first order only), choose pickup or delivery, and pay. */
 export function OrderForm({ slug, items, options, verifiedPhone, source }: { slug: string; items: Item[]; options: Options; verifiedPhone: string | null; source: string }) {
-  const [qty, setQty] = useState<Record<string, number>>({});
+  // the cart survives searches and page changes (kept in this tab only); loaded after mount so the server render matches
+  const [cart, setCart] = useState<Record<string, CartLine>>({});
+  const [loaded, setLoaded] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reads the browser's saved cart once, after mount
+  useEffect(() => { setCart(readCart(slug)); setLoaded(true); }, [slug]);
+  useEffect(() => { if (loaded) try { sessionStorage.setItem(cartKey(slug), JSON.stringify(cart)); } catch { /* private mode: the cart lasts until the page changes */ } }, [cart, slug, loaded]);
+  const setQty = (i: Item, n: number) => setCart((c) => {
+    const next = { ...c };
+    if (n > 0) next[i.id] = { productId: i.productId, name: i.name, pricePesewas: i.pricePesewas ?? 0, qty: n }; else delete next[i.id];
+    return next;
+  });
   const [phone, setPhone] = useState(verifiedPhone ?? '');
   const [verified, setVerified] = useState(!!verifiedPhone);
   const [verificationId, setVerificationId] = useState<string | null>(null);
@@ -20,8 +33,9 @@ export function OrderForm({ slug, items, options, verifiedPhone, source }: { slu
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  const chosen = items.filter((i) => (qty[i.id] ?? 0) > 0);
-  const total = chosen.reduce((a, i) => a + (i.pricePesewas ?? 0) * qty[i.id], 0);
+  const chosen = Object.entries(cart);
+  const total = chosen.reduce((a, [, l]) => a + l.pricePesewas * l.qty, 0);
+  const count = chosen.reduce((a, [, l]) => a + l.qty, 0);
 
   return (
     <form className="flex flex-col gap-4" onSubmit={(e) => {
@@ -29,19 +43,32 @@ export function OrderForm({ slug, items, options, verifiedPhone, source }: { slu
       const fd = new FormData(e.currentTarget);
       start(async () => {
         const r = await placeOrderAction(slug, {
-          items: chosen.map((i) => ({ productId: i.productId, variantId: i.id, quantity: qty[i.id] })), fulfilment, payMethod, source,
+          items: chosen.map(([id, l]) => ({ productId: l.productId, variantId: id, quantity: l.qty })), fulfilment, payMethod, source,
           name: String(fd.get('name') ?? ''), address: String(fd.get('address') ?? ''), note: String(fd.get('note') ?? ''),
         });
-        if (r.ok) window.location.assign(r.next); else setError(r.error);
+        if (r.ok) { try { sessionStorage.removeItem(cartKey(slug)); } catch { /* fine */ } window.location.assign(r.next); } else setError(r.error);
       });
     }}>
       <ul className="divide-y">{items.map((i) => (
         <li key={i.id} className="flex items-center justify-between gap-2 py-2">
           <span>{i.name}<br /><span className="text-sm text-gray-600">{i.pricePesewas != null ? formatCedis(i.pricePesewas) : ''}{i.inStock === false ? ' · out of stock' : ''}</span></span>
-          <input type="number" min={0} max={99} value={qty[i.id] ?? 0} disabled={i.inStock === false} aria-label={`How many ${i.name}`}
-            onChange={(e) => setQty({ ...qty, [i.id]: Math.max(0, Math.min(99, Number(e.target.value) || 0)) })} className={`${input} w-20`} />
+          <input type="number" min={0} max={99} value={cart[i.id]?.qty ?? 0} disabled={i.inStock === false} aria-label={`How many ${i.name}`}
+            onChange={(e) => setQty(i, Math.max(0, Math.min(99, Number(e.target.value) || 0)))} className={`${input} w-20`} />
         </li>
       ))}</ul>
+      {count > 0 && (
+        <a href="#checkout" className="sticky bottom-2 z-10 flex justify-between rounded px-4 py-3 font-semibold text-white shadow" style={{ background: 'var(--brand)' }}>
+          <span>{count} item{count === 1 ? '' : 's'} · {formatCedis(total)}</span><span>Checkout ↓</span>
+        </a>
+      )}
+      <section id="checkout" className="flex flex-col gap-1 rounded border p-3">
+        <h2 className="font-semibold">Your order</h2>
+        {chosen.length === 0 ? <p className="text-sm text-gray-600">Nothing yet: set how many you want above.</p> : (
+          <ul className="text-sm">{chosen.map(([id, l]) => (
+            <li key={id} className="flex justify-between gap-2"><span>{l.qty} × {l.name}</span><span>{formatCedis(l.pricePesewas * l.qty)} <button type="button" className="underline" onClick={() => setCart((c) => { const n = { ...c }; delete n[id]; return n; })}>remove</button></span></li>
+          ))}</ul>
+        )}
+      </section>
       <p className="text-lg font-semibold">Items: {formatCedis(total)}{fulfilment === 'delivery' && options.deliveryFeePesewas > 0 ? ` + ${formatCedis(options.deliveryFeePesewas)} delivery, paid on delivery` : ''}</p>
 
       <fieldset className="flex flex-col gap-2">
