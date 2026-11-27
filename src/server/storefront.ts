@@ -130,7 +130,7 @@ async function catalogue(tx: Tx, shop: LiveShop, where: { productId?: string; q?
       id: p.id, name: p.name, description: p.description, category, featured: p.featured, prescriptionOnly: p.prescriptionOnly,
       // shortcut: shows the base price, which is the shelf price for tax-inclusive shops; tax-exclusive shops show it before tax.
       pricePesewas: shop.settings.showPrices ? (prices.find((x) => x.productId === p.id)?.min ?? null) : null,
-      inStock: shop.settings.showStock ? (s ? Number(s.onHand) > 0 : true) : null, // no stock records = not stock-tracked
+      inStock: shop.settings.showStock ? (!p.trackStock || !s ? true : Number(s.onHand) > 0) : null, // not counted, or no stock records: available
       imageIds: images.filter((i) => i.productId === p.id).map((i) => i.id),
     };
   });

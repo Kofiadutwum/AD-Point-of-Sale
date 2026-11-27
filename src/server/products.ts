@@ -18,6 +18,7 @@ export type PharmacyFields = { genericName?: string; strength?: string; dosageFo
 export type ProductFields = {
   name: string; description?: string; categoryId?: string | null; brand?: string; taxRuleId?: string | null;
   tracking: Tracking; showOnStorefront?: boolean; featured?: boolean; pharmacy?: PharmacyFields;
+  trackStock?: boolean; // left out: on, except in food shops
 };
 export type NewVariantInput = {
   name?: string; sku?: string; barcodes?: string[]; basePricePesewas: number; costPesewas: number; reorderLevel?: string; scaleItemCode?: number;
@@ -45,6 +46,7 @@ const fieldsSchema = z.object({
   tracking: z.enum(['none', 'batch', 'serial']),
   showOnStorefront: z.boolean().optional(),
   featured: z.boolean().optional(),
+  trackStock: z.boolean().optional(),
   pharmacy: z.object({
     genericName: optionalText(60), strength: optionalText(60), dosageForm: optionalText(60), registrationNumber: optionalText(60),
     prescriptionOnly: z.boolean().optional(),
@@ -63,6 +65,7 @@ function productColumns(f: CleanFields) {
     tracking: f.tracking,
     showOnStorefront: f.showOnStorefront ?? false,
     featured: f.featured ?? false,
+    trackStock: f.trackStock ?? true,
     genericName: f.pharmacy?.genericName ?? null,
     strength: f.pharmacy?.strength ?? null,
     dosageForm: f.pharmacy?.dosageForm ?? null,
@@ -236,7 +239,12 @@ export async function createProductTx(tx: Tx, ctx: Ctx, input: NewProductInput):
       scaleCodes: clean.flatMap((v) => (v.scaleItemCode === null ? [] : [v.scaleItemCode])),
     });
     if (clash) return clash;
-    const [product] = await tx.insert(products).values({ tenantId: ctx.tenantId, ...productColumns(f.data) }).returning({ id: products.id });
+    const columns = productColumns(f.data);
+    if (f.data.trackStock === undefined) { // food shops sell made-to-order plates; everyone else counts stock
+      const [shop] = await tx.select({ type: tenants.shopType }).from(tenants).where(eq(tenants.id, ctx.tenantId));
+      columns.trackStock = shop?.type !== 'food';
+    }
+    const [product] = await tx.insert(products).values({ tenantId: ctx.tenantId, ...columns }).returning({ id: products.id });
     const made = [];
     for (const v of clean) made.push(await insertVariant(tx, ctx.tenantId, product.id, shape, v));
     await writeAudit(tx, { tenantId: ctx.tenantId, actorType: 'user', actorId: ctx.userId, action: 'product_created', recordType: 'product', recordId: product.id });
@@ -270,6 +278,7 @@ export async function updateProduct(db: Db, ctx: Ctx, productId: string, input: 
     if (input.taxRuleId === undefined) keep('taxRuleId');
     if (input.showOnStorefront === undefined) keep('showOnStorefront');
     if (input.featured === undefined) keep('featured');
+    if (input.trackStock === undefined) keep('trackStock');
     if (input.pharmacy === undefined) keep('genericName', 'strength', 'dosageForm', 'registrationNumber', 'prescriptionOnly');
     const changed = (Object.keys(next) as Array<keyof typeof next>).filter((k) => next[k] !== old[k]);
     if (changed.length) {

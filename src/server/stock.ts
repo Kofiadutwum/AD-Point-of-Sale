@@ -216,7 +216,7 @@ export async function deductStockForLine(
   tx: Tx, s: { tenantId: string; branchId: string; saleId: string; saleLineId: string; userId: string; today: string },
   line: { variantId: string; baseQty: string; serials: string[]; choices?: string[] },
 ): Promise<DeductProblems> {
-  const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking }).from(variants)
+  const [v] = await tx.select({ kind: variants.kind, tracking: products.tracking, trackStock: products.trackStock }).from(variants)
     .innerJoin(products, eq(products.id, variants.productId)).where(eq(variants.id, line.variantId));
   if (!v) throw new Error(`unknown variant ${line.variantId}`);
   const problems: DeductProblems = { negative: false, onlyExpired: false, serialsMissing: false };
@@ -288,10 +288,11 @@ export async function deductStockForLine(
     await move(minus(left));
   }
 
-  problems.negative = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  const short = await changeBalance(tx, s.tenantId, s.branchId, line.variantId, line.baseQty, true);
+  problems.negative = short && v.trackStock; // an item whose stock is not counted is never "negative"
   // spec 13: stock held for a layaway or online order cannot be sold to someone else
-  const [held] = await tx.select({ onHand: stockBalances.onHand, reserved: stockBalances.reserved }).from(stockBalances)
-    .where(and(eq(stockBalances.branchId, s.branchId), eq(stockBalances.variantId, line.variantId)));
+  const [held] = v.trackStock ? await tx.select({ onHand: stockBalances.onHand, reserved: stockBalances.reserved }).from(stockBalances)
+    .where(and(eq(stockBalances.branchId, s.branchId), eq(stockBalances.variantId, line.variantId))) : [];
   if (held && Number(held.reserved) > 0 && Number(held.onHand) < Number(held.reserved)) problems.reservedTaken = true;
   if (problems.negative) {
     await writeAudit(tx, {

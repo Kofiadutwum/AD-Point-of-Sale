@@ -75,13 +75,13 @@ export async function orderableItems(db: Db, slug: string, now: Date): Promise<A
   if (!shop) return [];
   return withTenant(db, shop.id, async (tx) => {
     const [branch] = await tx.select({ id: branches.id }).from(branches).orderBy(asc(branches.createdAt)).limit(1);
-    const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas,
+    const rows = await tx.select({ productId: products.id, variantId: variants.id, product: products.name, variant: variants.name, price: variants.basePricePesewas, trackStock: products.trackStock,
       onHand: stockBalances.onHand, reserved: stockBalances.reserved })
       .from(variants).innerJoin(products, eq(products.id, variants.productId))
       .leftJoin(stockBalances, and(eq(stockBalances.variantId, variants.id), eq(stockBalances.branchId, branch.id)))
       .where(and(eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false), eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
       .orderBy(asc(products.name), asc(variants.basePricePesewas)).limit(300);
-    return rows.map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
+    return rows.map((r) => ({ productId: r.productId, variantId: r.variantId, name: r.variant ? `${r.product} – ${r.variant}` : r.product, pricePesewas: r.price, inStock: !r.trackStock || r.onHand === null || Number(r.onHand) - Number(r.reserved) > 0 })); // no balance row = not stock-tracked
   });
 }
 
@@ -174,7 +174,7 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
     // the chosen variant (or the product's cheapest active one), in its base unit
     const picked = [];
     for (const i of items) {
-      const [v] = await tx.select({ variantId: variants.id, unitId: variantUnits.id }).from(variants)
+      const [v] = await tx.select({ variantId: variants.id, unitId: variantUnits.id, trackStock: products.trackStock }).from(variants)
         .innerJoin(products, eq(products.id, variants.productId)).innerJoin(variantUnits, and(eq(variantUnits.variantId, variants.id), eq(variantUnits.isBase, true)))
         .where(and(eq(products.id, i.productId), i.variantId ? eq(variants.id, i.variantId) : undefined, eq(products.showOnStorefront, true), eq(products.status, 'active'), eq(products.prescriptionOnly, false),
           eq(variants.status, 'active'), eq(variants.sellable, true), eq(variants.isGiftCard, false)))
@@ -182,7 +182,7 @@ export async function placeOnlineOrder(db: Db, slug: string, input: PlaceInput, 
       if (!v) return fail('unavailable');
       const [bal] = await tx.select({ free: sql<string>`${stockBalances.onHand} - ${stockBalances.reserved}` }).from(stockBalances)
         .where(and(eq(stockBalances.branchId, branch.id), eq(stockBalances.variantId, v.variantId)));
-      if (bal && Number(bal.free) < i.quantity) return fail('unavailable'); // no balance row = not stock-tracked
+      if (v.trackStock && bal && Number(bal.free) < i.quantity) return fail('unavailable'); // not counted, or no balance row: available
       picked.push({ variantId: v.variantId, unitId: v.unitId, quantity: String(i.quantity), discountPesewas: 0 });
     }
     let priced;

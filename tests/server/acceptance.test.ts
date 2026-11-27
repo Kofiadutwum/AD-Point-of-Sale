@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import type { Db } from '@/db/client';
-import { coupons, customers, loyaltyEntries } from '@/db/schema';
+import { coupons, customers, loyaltyEntries, stockBalances } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { ROLE_PRESETS } from '@/lib/permissions';
 import type { Ctx } from '@/server/context';
@@ -11,6 +11,7 @@ import { addCustomer } from '@/server/customers';
 import { saveCoupon, savePromotion } from '@/server/promotions';
 import { overLimit } from '@/server/rate-limit';
 import { expireAllPoints, redeemPoints, saveLoyaltySettings } from '@/server/rewards';
+import { getDashboard } from '@/server/dashboard';
 import { completeSale } from '@/server/sales';
 import { addStaff } from '@/server/staff';
 import { ctxFor, productFor, saleInput, type SeededShop, seedShop, stockFor, tillCtxFor } from '../helpers/fixtures';
@@ -96,4 +97,19 @@ it('the API rate limit counts per key within a window', async () => {
   const hit = (now: Date) => asPlatform(db, (tx) => overLimit(tx, 'api:test', now, 3, 60_000));
   expect([await hit(t0), await hit(t0), await hit(t0), await hit(t0)]).toEqual([false, false, false, true]);
   expect(await hit(new Date(t0.getTime() + 61_000))).toBe(false); // a new window
+});
+
+it('an item whose stock is not counted (made to order) never goes negative, is never held, and sells freely', async () => {
+  const plate = await productFor(db, owner, { name: 'Jollof plate', trackStock: false });
+  const sellPlate = (qty: string) => completeSale(db, till, saleInput({
+    lines: [{ variantId: plate.variantId, unitId: plate.baseUnitId, quantity: qty, unitPricePesewas: 500, discountPesewas: 0 }],
+    tenders: [{ id: randomUUID(), method: 'cash', amountPesewas: 100000 }], deviceCreatedAt: t0.toISOString(),
+  }), t0);
+  expect(await sellPlate('3')).toMatchObject({ ok: true }); // no stock was ever received
+  // a layaway of an uncounted item holds nothing, so the till can still sell it
+  await createOrder(db, till, { kind: 'layaway', customerId: ama, lines: [{ variantId: plate.variantId, unitId: plate.baseUnitId, quantity: '2' }], deposit: { method: 'cash', amountPesewas: 500 } }, t0);
+  expect(await sellPlate('1')).toMatchObject({ ok: true });
+  const [bal] = await asPlatform(db, (tx) => tx.select().from(stockBalances).where(eq(stockBalances.variantId, plate.variantId)));
+  expect(bal.reserved).toBe('0.000');
+  expect((await getDashboard(db, owner, t0)).negativeStock.map((n) => n.variantId)).not.toContain(plate.variantId);
 });
