@@ -53,3 +53,6 @@ next-env.d.ts
 
 # print helper config holds the pairing token
 print-helper/config.json
+
+# database backups hold password hashes and sealed secrets
+/backups/

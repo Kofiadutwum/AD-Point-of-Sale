@@ -8,6 +8,9 @@ import { runWebhookDeliveries } from '@/server/webhooks';
 import { paystack } from '@/server/paystack';
 import { sendSms } from '@/server/sms';
 
+// Vercel Cron calls this every 15 minutes (vercel.json) and sends Authorization: Bearer $CRON_SECRET by itself; the jobs can take a while
+export const maxDuration = 300;
+
 const authorised = (header: string | null) => {
   const secret = process.env.CRON_SECRET;
   if (!secret || !header) return false;
