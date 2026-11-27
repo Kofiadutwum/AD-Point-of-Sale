@@ -1,10 +1,11 @@
 'use server';
 import { cookies, headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
 import type { FormState } from '@/components/form';
 import { getDb } from '@/db/client';
 import { getImageStore } from '@/server/image-store';
-import { type PlaceInput, placeOnlineOrder, requestPhoneCode, uploadProof, verifyPhoneCode } from '@/server/online-orders';
+import { orderAwaitingPaystack, type PlaceInput, placeOnlineOrder, requestPhoneCode, uploadProof, verifyPhoneCode } from '@/server/online-orders';
 import { clientIp } from '@/server/rate-limit';
 import { startOrderCharge } from '@/server/shop-paystack';
 import { orderTokenCookie } from './token';
@@ -46,4 +47,14 @@ export async function uploadProofAction(slug: string, orderId: string, _prev: Fo
   if (!r.ok) return { error: r.error === 'bad_image' ? 'Use a JPG, PNG or WebP picture under 10 MB.' : 'This order is not waiting for payment.' };
   revalidatePath(`/${slug}/order/${orderId}`);
   return { error: null, message: 'Thank you. The shop will confirm once the money arrives.' };
+}
+
+/** Opens a new Paystack checkout for the visitor's unpaid order (the first one failed to open). */
+export async function payAgainAction(slug: string, orderId: string): Promise<FormState> {
+  const token = (await cookies()).get(orderTokenCookie(slug))?.value;
+  const o = await orderAwaitingPaystack(getDb(), slug, orderId, token, new Date());
+  if (!o) return { error: 'This order cannot be paid now.' };
+  const url = await startOrderCharge(getDb(), o.tenantId, slug, o);
+  if (!url) return { error: 'Paystack is not answering. Try again in a minute.' };
+  redirect(url);
 }
