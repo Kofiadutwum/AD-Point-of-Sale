@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { compressToTarget, TOP_QUALITY } from '@/lib/images';
+import { compressToTarget, type ImageTarget, PHOTO_TARGET, TOP_QUALITY } from '@/lib/images';
 
 type Upload = (formData: FormData) => Promise<{ error: string | null; message?: string | null }>;
 
@@ -11,7 +11,7 @@ const toBlob = (canvas: HTMLCanvasElement, type: string, quality: number) =>
  * Spec 6.4 on the device, to save the shop's mobile data: rotate, resize, and search for the highest WebP quality under 30 KB.
  * A browser that cannot encode WebP sends one 800 px JPEG instead; the server re-compresses every upload anyway.
  */
-async function prepare(file: File): Promise<Blob | 'not_a_photo' | 'too_detailed'> {
+async function prepare(file: File, target: ImageTarget): Promise<Blob | 'not_a_photo' | 'too_detailed'> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -27,16 +27,17 @@ async function prepare(file: File): Promise<Blob | 'not_a_photo' | 'too_detailed
     return canvas;
   };
   const probe = await toBlob(draw(16), 'image/webp', TOP_QUALITY);
-  if (probe?.type !== 'image/webp') return (await toBlob(draw(800), 'image/jpeg', TOP_QUALITY)) ?? 'not_a_photo';
+  if (probe?.type !== 'image/webp') return (await toBlob(draw(target.sizes[0]), 'image/jpeg', TOP_QUALITY)) ?? 'not_a_photo';
   const r = await compressToTarget(async (side, quality) => {
     const blob = await toBlob(draw(side), 'image/webp', quality);
     if (!blob) throw new Error('could not encode the photo');
     return { size: blob.size, data: blob };
-  });
+  }, target);
   return r.ok ? r.result.data : 'too_detailed';
 }
 
-export function PhotoUpload({ upload }: { upload: Upload }) {
+/** Compresses on the phone before sending (keeps uploads far under the host's 4.5 MB request limit and saves mobile data). */
+export function PhotoUpload({ upload, target = PHOTO_TARGET, label = 'Add a photo' }: { upload: Upload; target?: ImageTarget; label?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -49,7 +50,7 @@ export function PhotoUpload({ upload }: { upload: Upload }) {
     setError(null);
     setMessage('Compressing photo…');
     try {
-      const prepared = await prepare(file);
+      const prepared = await prepare(file, target);
       if (prepared === 'not_a_photo') return setError('Choose a photo');
       if (prepared === 'too_detailed') return setError('Photo too detailed. Try a closer or plainer photo.');
       setMessage('Uploading…');
@@ -66,7 +67,7 @@ export function PhotoUpload({ upload }: { upload: Upload }) {
 
   return (
     <div className="flex flex-col gap-1 text-sm">
-      <label className="flex flex-col gap-1">Add a photo
+      <label className="flex flex-col gap-1">{label}
         <input type="file" accept="image/*" onChange={onChange} disabled={busy} />
       </label>
       {error && <p role="alert" className="text-red-700">{error}</p>}

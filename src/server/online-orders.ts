@@ -7,6 +7,7 @@ import {
 } from '@/db/schema';
 import { asPlatform, withTenant } from '@/db/tenant';
 import { normaliseGhanaPhone } from '@/lib/contact';
+import { PROOF_TARGET } from '@/lib/images';
 import { formatCedis } from '@/lib/money';
 import { writeAudit } from './audit';
 import { assertPermission, type Ctx } from './context';
@@ -264,7 +265,7 @@ export async function uploadProof(db: Db, store: ImageStore, slug: string, order
   if (!isUuid(orderId)) return fail('not_found');
   const shop = await asPlatform(db, (tx) => liveShop(tx, slug, now));
   if (!shop) return fail('not_found');
-  const img = await processUpload(file);
+  const img = await processUpload(file, PROOF_TARGET); // small print on a payment screenshot must stay readable
   if (!img.ok) return fail('bad_image');
   const key = `${shop.id}/${orderId}/${randomUUID()}.webp`;
   return withTenant(db, shop.id, async (tx) => {
