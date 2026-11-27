@@ -58,3 +58,12 @@ export async function payAgainAction(slug: string, orderId: string): Promise<For
   if (!url) return { error: 'Paystack is not answering. Try again in a minute.' };
   redirect(url);
 }
+
+/** The transfer screenshot, already compressed on the phone (PhotoUpload sends it as "photo"). */
+export async function uploadProofPhotoAction(slug: string, orderId: string, fd: FormData): Promise<{ error: string | null; message?: string | null }> {
+  const proof = new FormData();
+  const photo = fd.get('photo');
+  if (photo) proof.set('proof', photo);
+  const r = await uploadProofAction(slug, orderId, { error: null }, proof);
+  return { error: r.error, message: r.message ?? null };
+}

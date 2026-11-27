@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { expect, it } from 'vitest';
+import { PROOF_TARGET } from '@/lib/images';
 import { type ProcessedImage, processUpload } from '@/server/images';
 
 /** A photo-like image: smooth blurred noise, which compresses about as well as a real product photo. */
@@ -47,4 +48,14 @@ it('rejects HEIC, other types, oversize files, and image bombs', async () => {
 it('fails with could_not_compress for an image too detailed to fit', async () => {
   // unblurred strong noise stays over 30 KB even at 480 px and quality 0.40; kept small so the 24 encodes stay fast under load
   expect(await processUpload(await photo(600, 600, 120, 0.3).png().toBuffer())).toEqual({ ok: false, error: 'could_not_compress' });
+});
+
+it('keeps payment screenshots larger and sharper than product photos (up to 1600 px and 200 KB)', async () => {
+  const input = await photo(2400, 1600, 30, 2).jpeg().toBuffer();
+  const asPhoto = await processUpload(input) as { ok: true; image: ProcessedImage };
+  const asProof = await processUpload(input, PROOF_TARGET) as { ok: true; image: ProcessedImage };
+  expect(asProof.ok).toBe(true);
+  expect(asProof.image.bytes).toBeLessThanOrEqual(200 * 1024);
+  expect(asProof.image.bytes).toBeGreaterThan(asPhoto.image.bytes);
+  expect(Math.max(asProof.image.width, asProof.image.height)).toBeGreaterThan(800);
 });

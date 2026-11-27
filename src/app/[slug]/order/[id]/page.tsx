@@ -5,7 +5,8 @@ import { getDb } from '@/db/client';
 import { formatCedis } from '@/lib/money';
 import { publicOrder } from '@/server/online-orders';
 import { confirmOrderReturn } from '@/server/shop-paystack';
-import { payAgainAction, uploadProofAction } from '../actions';
+import { payAgainAction } from '../actions';
+import { ProofUpload } from './proof-upload';
 import { orderTokenCookie } from '../token';
 
 export const metadata = { robots: { index: false } };
@@ -38,9 +39,7 @@ export default async function VisitorOrderPage({ params, searchParams }: { param
           <h2 className="font-semibold">Pay by transfer</h2>
           <p className="whitespace-pre-line text-sm">{o.transferInstructions}</p>
           <p className="text-sm">Use <strong>{o.number}</strong> as the reference, then upload a screenshot.</p>
-          <ActionForm action={uploadProofAction.bind(null, slug, id)} submitLabel={o.hasProof ? 'Replace screenshot' : 'Upload screenshot'}>
-            <input type="file" name="proof" accept="image/jpeg,image/png,image/webp" required aria-label="Transfer screenshot" />
-          </ActionForm>
+          <ProofUpload slug={slug} orderId={id} label={o.hasProof ? 'Replace the screenshot' : 'Upload the screenshot'} />
         </section>
       )}
     </main>

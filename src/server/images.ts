@@ -1,6 +1,6 @@
 import 'server-only';
 import sharp from 'sharp';
-import { compressToTarget, sniffImageType } from '@/lib/images';
+import { compressToTarget, type ImageTarget, PHOTO_TARGET, sniffImageType } from '@/lib/images';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const MAX_INPUT_PIXELS = 40_000_000; // stops decompression bombs (spec 6.4)
@@ -12,7 +12,7 @@ export type ProcessedImage = { webp: Uint8Array; width: number; height: number; 
  * The server never trusts the device (spec 4.13): every upload is checked by content, rotated, stripped of all
  * metadata, and re-encoded to WebP of at most 30 KB. sharp drops EXIF, GPS, XMP, and ICC data unless asked to keep them.
  */
-export async function processUpload(file: Uint8Array): Promise<{ ok: true; image: ProcessedImage } | { ok: false; error: ProcessError }> {
+export async function processUpload(file: Uint8Array, target: ImageTarget = PHOTO_TARGET): Promise<{ ok: true; image: ProcessedImage } | { ok: false; error: ProcessError }> {
   if (file.byteLength > MAX_UPLOAD_BYTES) return { ok: false, error: 'too_large' };
   const type = sniffImageType(file);
   if (type === 'heic') return { ok: false, error: 'heic_not_supported' };
@@ -33,7 +33,7 @@ export async function processUpload(file: Uint8Array): Promise<{ ok: true; image
         .webp({ quality: Math.round(quality * 100) })
         .toBuffer({ resolveWithObject: true });
       return { size: data.byteLength, data: { data, width: info.width, height: info.height } };
-    });
+    }, target);
     if (!r.ok) return { ok: false, error: 'could_not_compress' };
     const { data, width, height } = r.result.data;
     return { ok: true, image: { webp: new Uint8Array(data), width, height, bytes: data.byteLength } };

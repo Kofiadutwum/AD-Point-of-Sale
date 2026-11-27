@@ -10,25 +10,30 @@ export const SEARCH_STEPS = 7;
 
 export type Encoded<T> = { size: number; data: T };
 
-/** Spec 6.4: the highest quality that fits in 30 KB, trying smaller sizes when the largest cannot fit. */
+/** Size budget for one kind of image: product photos stay tiny; payment screenshots must keep small print readable. */
+export type ImageTarget = { maxBytes: number; minBytes: number; sizes: readonly number[] };
+export const PHOTO_TARGET: ImageTarget = { maxBytes: IMAGE_MAX_BYTES, minBytes: IMAGE_MIN_BYTES, sizes: PRODUCT_IMAGE_SIZES };
+export const PROOF_TARGET: ImageTarget = { maxBytes: 200 * 1024, minBytes: 120 * 1024, sizes: [1600, 1280, 1024] }; // transfer screenshots (6.49)
+
+/** Spec 6.4: the highest quality that fits the budget (30 KB for photos), trying smaller sizes when the largest cannot fit. */
 export async function compressToTarget<T>(
-  encode: (maxSide: number, quality: number) => Promise<Encoded<T>>, sizes: readonly number[] = PRODUCT_IMAGE_SIZES,
+  encode: (maxSide: number, quality: number) => Promise<Encoded<T>>, target: ImageTarget = PHOTO_TARGET,
 ): Promise<{ ok: true; maxSide: number; quality: number; result: Encoded<T> } | { ok: false }> {
-  for (const maxSide of sizes) {
+  for (const maxSide of target.sizes) {
     const top = await encode(maxSide, TOP_QUALITY);
-    if (top.size <= IMAGE_MAX_BYTES) return { ok: true, maxSide, quality: TOP_QUALITY, result: top };
+    if (top.size <= target.maxBytes) return { ok: true, maxSide, quality: TOP_QUALITY, result: top };
     let best: { quality: number; result: Encoded<T> } | null = null;
     let low = LOW_QUALITY;
     let high = TOP_QUALITY;
     for (let step = 0; step < SEARCH_STEPS; step++) {
       const q = (low + high) / 2;
       const candidate = await encode(maxSide, q);
-      if (candidate.size > IMAGE_MAX_BYTES) {
+      if (candidate.size > target.maxBytes) {
         high = q;
       } else {
         best = { quality: q, result: candidate };
         low = q;
-        if (candidate.size >= IMAGE_MIN_BYTES) break;
+        if (candidate.size >= target.minBytes) break;
       }
     }
     if (best) return { ok: true, maxSide, ...best };
